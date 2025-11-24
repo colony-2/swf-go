@@ -12,11 +12,7 @@ type StartJob struct {
 type RestartJob struct {
 	PriorJobId     JobId
 	LastStepToKeep int64
-
-	RetryPolicy     RetryPolicy
-	NewJobId        JobId
-	DataForNextTask TaskData
-	Dependencies    Dependencies
+	StartJob
 }
 
 type CancelJob struct {
@@ -32,9 +28,11 @@ type JobStatus struct {
 type JobData TaskData
 
 type JobContext interface {
-	jobRunApi
+	//jobRunApi
 	GetJobId() JobId
+	//RunChildJobSync(ctx context.Context, childJob StartJob) (JobId, error)
 	DoTask(retryPolicy RetryPolicy, taskType string, data TaskData) (TaskData, error)
+
 }
 
 type JobOutcome interface {

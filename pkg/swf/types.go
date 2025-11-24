@@ -122,9 +122,9 @@ type RetryPolicy struct {
 	NonRetryableErrorTypes []string `yaml:"non_retryable_error_types,omitempty"`
 }
 
-type Lease pgwf.Lease
-type Artifact strata.Artifact
-type Dependencies pgwf.JobDependencies
+type Lease = pgwf.Lease
+type Artifact = strata.Artifact
+type Dependencies = pgwf.JobDependencies
 
 type Capability string
 

@@ -4,25 +4,40 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"sync/atomic"
+	"time"
 
+	"github.com/cenkalti/backoff"
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	strataclient "github.com/colony-2/strata/strata-go/pkg/client"
 	"github.com/colony-2/strata/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/google/uuid"
+	"github.com/segmentio/ksuid"
 	"gorm.io/gorm"
 )
 
+const (
+	TASK_PREFIX   = "T-"
+	JOB_PREFIX    = "J-"
+	NOTIFY_PREFIX = "N-"
+)
+
 type swfEngineImpl struct {
-	tenantId     string
-	strata       *strataclient.Client
-	db           *gorm.DB
-	udb          *sql.DB
-	jobWorkers   map[string]swf.JobWorker
-	taskWorkers  map[string]swf.TaskWorker
-	capabilities []swf.Capability
-	workerId     string
+	tenantId        string
+	strata          *strataclient.Client
+	db              *gorm.DB
+	udb             *sql.DB
+	jobWorkers      map[string]swf.JobWorker
+	taskWorkers     map[string]swf.TaskWorker
+	workerId        string
+	runners         map[string]runner
+	activeWorkLimit int
+	running         atomic.Int64
 }
+
+
 
 func taskDataToChapter(jobData swf.TaskData, ordinal int64) (story.Chapter, error) {
 	var chapBuilder *story.ChapterBuilder
@@ -92,10 +107,10 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) erro
 
 	targetJob := story.Key{
 		AnthologyID: s.tenantId,
-		StoryID:     string(job.NewJobId),
+		StoryID:     string(job.JobId),
 	}
 
-	createOptions, err := taskDataToCreatOptions(job.DataForNextTask, job.LastStepToKeep+1)
+	createOptions, err := taskDataToCreatOptions(job.Data, job.LastStepToKeep+1)
 	if err != nil {
 		return err
 	}
@@ -110,7 +125,7 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) erro
 	if err != nil {
 		return err
 	}
-	return s.startJob(job.NewJobId, job.Dependencies)
+	return s.startJob(job.JobId, job.Dependencies)
 }
 
 func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error {
@@ -167,24 +182,77 @@ func (s swfEngineImpl) GetTaskData(ctx context.Context, jobId swf.JobId, step in
 	return chapterToTaskData(chapter), nil
 }
 
-func NewSWFEngine(tenantId string, workerId string, db *gorm.DB, strataClient *strataclient.Client) (swf.SWFEngine, error) {
+func NewSWFEngine(tenantId string, db *gorm.DB, strataClient *strataclient.Client) (swf.SWFEngine, error) {
 	underlying, err := db.DB()
 	if err != nil {
 		return nil, err
 	}
 
+	host, err := os.Hostname()
+	if err != nil {
+		return nil, err
+	}
+	workerId := fmt.Sprintf("%s:%i - %s", host, os.Getppid(), ksuid.New().String())
 	f := swfEngineImpl{
 		tenantId:     tenantId,
 		strata:       strataClient,
 		db:           db,
 		jobWorkers:   make(map[string]swf.JobWorker),
 		taskWorkers:  make(map[string]swf.TaskWorker),
-		capabilities: make([]swf.Capability, 0),
 		workerId:     workerId,
 		udb:          underlying,
+		runners:
 	}
 
 	return &f, nil
 }
+
+
+
+// notify runners of a notification
+func (s *swfEngineImpl) notify(job pgwf.JobID) {
+
+}
+
+// listen to notifications from pgwf with backoff.
+func (s *swfEngineImpl) listenForWork(ctx context.Context) {
+	allOptions := make([]pgwf.Capability, 0, len(s.jobWorkers)+len(s.taskWorkers))
+	for _, w := range s.jobWorkers {
+		allOptions = append(allOptions, pgwf.Capability(w.Name()))
+	}
+	for _, w := range s.taskWorkers {
+		allOptions = append(allOptions, pgwf.Capability(w.Name()))
+	}
+	notifyOnly := []pgwf.Capability{pgwf.Capability(NOTIFY_PREFIX+s.workerId)}
+
+	ch := make(chan *pgwf.Lease)
+	go func() {
+		defer close(ch)
+		b := backoff.NewExponentialBackOff()
+		b.MaxInterval = time.Second*30
+		for {
+			item, err := pgwf.GetWork(ctx, s.udb, pgwf.WorkerID(s.workerId), allOptions)
+			if err == nil {
+				b.Reset()
+				s.notify(item.JobID())
+				err := item.Complete(ctx, s.udb)
+				if err != nil {
+					fmt.Println(err)
+				}
+				continue // let's try again without a backoff.
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(b.NextBackOff()):
+			}
+		}
+	}()
+}
+
+
+
+
 
 var _ swf.SWFEngine = &swfEngineImpl{}
