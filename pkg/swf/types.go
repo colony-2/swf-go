@@ -126,8 +126,6 @@ type Lease = pgwf.Lease
 type Artifact = strata.Artifact
 type Dependencies = pgwf.JobDependencies
 
-type Capability string
-
 type JobId string
 
 type SimpleTaskData struct {
@@ -148,22 +146,8 @@ type TaskData interface {
 	GetArtifacts() ([]Artifact, error)
 }
 
-type taskHandleImpl struct {
-	jobId     JobId
-	step      int64
-	data      TaskData
-	dependsOn Dependencies
-	engine    SWFEngine
-}
 
-func (h *taskHandleImpl) GetData() TaskData {
-	return h.data
-}
-
-func (h *taskHandleImpl) GetJobId() JobId {
-	return h.jobId
-}
-
-func (h *taskHandleImpl) Finish(nextNeed Capability, waitFor []JobId, wait time.Duration) {
-
+type TaskWorker interface {
+	Name() string
+	Run(context TaskContext, input TaskData) (TaskData, error)
 }

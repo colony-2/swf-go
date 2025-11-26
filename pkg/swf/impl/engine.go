@@ -3,9 +3,10 @@ package impl
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"log"
 	"os"
-	"sync/atomic"
 	"time"
 
 	"github.com/cenkalti/backoff"
@@ -18,28 +19,19 @@ import (
 	"gorm.io/gorm"
 )
 
-const (
-	TASK_PREFIX   = "T-"
-	JOB_PREFIX    = "J-"
-	NOTIFY_PREFIX = "N-"
-)
-
 type swfEngineImpl struct {
 	tenantId        string
 	strata          *strataclient.Client
 	db              *gorm.DB
 	udb             *sql.DB
-	jobWorkers      map[string]swf.JobWorker
-	taskWorkers     map[string]swf.TaskWorker
+	workers         map[pgwf.Capability]*swf.WorkSet
 	workerId        string
 	runners         map[string]runner
 	activeWorkLimit int
-	running         atomic.Int64
 }
 
-
-
 func taskDataToChapter(jobData swf.TaskData, ordinal int64) (story.Chapter, error) {
+
 	var chapBuilder *story.ChapterBuilder
 
 	if jobData != nil {
@@ -80,26 +72,34 @@ func taskDataToCreatOptions(jobData swf.TaskData, ordinal int64) (story.CreateOp
 	return co, nil
 }
 
-func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) error {
+func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.JobId, error) {
+	jobId := swf.JobId(ksuid.New().String())
 	key := story.Key{
 		AnthologyID: s.tenantId,
-		StoryID:     string(job.JobId),
+		StoryID:     string(jobId),
 	}
 	taskData := swf.TaskData(job.Data)
 	co, err := taskDataToCreatOptions(taskData, 0)
 	if err != nil {
-		return err
+		return "", err
 	}
 	_, err = s.strata.CreateStory(context.TODO(), key, co)
+	if err != nil {
+		return "", err
+	}
 
-	return s.startJob(job.JobId, job.Dependencies)
+	return jobId, s.startJob(jobId, job.JobType, job.SingletonKey)
 }
 
-func (s *swfEngineImpl) startJob(jobId swf.JobId, dependencies swf.Dependencies) error {
-	return pgwf.SubmitJob(context.TODO(), s.udb, pgwf.JobID(jobId), pgwf.JobDependencies(dependencies), pgwf.WorkerID(s.workerId))
+func (s *swfEngineImpl) startJob(jobId swf.JobId, jobType string, singletonKey string) error {
+	dep := pgwf.JobDependencies{
+		NextNeed: pgwf.Capability(jobType),
+	}
+	return pgwf.SubmitJob(context.TODO(), s.udb, pgwf.JobID(jobId), dep, nil, pgwf.WorkerID(s.workerId), singletonKey, time.Time{})
 }
 
-func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) error {
+func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf.JobId, error) {
+	jobId := swf.JobId(ksuid.New().String())
 	sourceJob := story.Key{
 		AnthologyID: s.tenantId,
 		StoryID:     string(job.PriorJobId),
@@ -107,12 +107,12 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) erro
 
 	targetJob := story.Key{
 		AnthologyID: s.tenantId,
-		StoryID:     string(job.JobId),
+		StoryID:     string(jobId),
 	}
 
 	createOptions, err := taskDataToCreatOptions(job.Data, job.LastStepToKeep+1)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	cloneOptions := story.CloneOptions{
@@ -123,125 +123,97 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) erro
 	_, err = s.strata.CloneStory(context.TODO(), sourceJob, cloneOptions)
 
 	if err != nil {
-		return err
+		return "", err
 	}
-	return s.startJob(job.JobId, job.Dependencies)
+	return jobId, s.startJob(jobId, job.JobType, job.SingletonKey)
 }
 
 func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error {
 	return pgwf.CancelJob(ctx, s.udb, pgwf.JobID(job.JobId), pgwf.WorkerID(s.workerId), job.Reason)
 }
 
-func (s *swfEngineImpl) RegisterJobWorkers(workers ...swf.JobWorker) error {
-	// insert each in s.JobWorkers, failing if any already exist
-	for _, runner := range workers {
-		if _, ok := s.jobWorkers[runner.Name()]; ok {
-			return fmt.Errorf("job worker with name %s already registered", runner.Name())
-		}
-		s.jobWorkers[runner.Name()] = runner
-	}
-	return nil
+type taskWait struct {
+	Step int64  `json:"step"`
+	Next string `json:"next"`
 }
 
-func (s *swfEngineImpl) RegisterTaskWorkers(workers ...swf.TaskWorker) error {
-	// insert each in s.JobWorkers, failing if any already exist
-	for _, runner := range workers {
-		if _, ok := s.jobWorkers[runner.Name()]; ok {
-			return fmt.Errorf("job worker with name %s already registered", runner.Name())
-		}
-		s.taskWorkers[runner.Name()] = runner
-	}
-	return nil
-}
-
-func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, capability swf.Capability) ([]swf.TaskHandle, error) {
+func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobType string, taskType string) ([]swf.TaskHandle, error) {
 	var jobs []Job
-	err := s.db.Where(&Job{NextNeed: string(capability), Status: "READY"}).Find(&jobs).Error
+	err := s.db.Where(&Job{NextNeed: jobType + ":" + taskType, Status: "READY"}).Find(&jobs).Error
 	if err != nil {
 		return nil, err
 	}
 
 	handles := make([]swf.TaskHandle, 0, len(jobs))
 	for _, j := range jobs {
-		th := taskHandleImpl{
-			engine: s,
-			job:    j,
+		tw := taskWait{}
+		err = json.Unmarshal(j.Payload, &tw)
+		if err != nil {
+			return nil, err
 		}
-		handles = append(handles, th)
+		th := taskHandleImpl{
+			job:            j,
+			chapterOrdinal: tw.Step,
+			engine:         s,
+			nextNeed:       pgwf.Capability(tw.Next),
+		}
+		handles = append(handles, &th)
 	}
 
 	return handles, nil
 }
 
-func (s swfEngineImpl) GetTaskData(ctx context.Context, jobId swf.JobId, step int64) (swf.TaskData, error) {
-	chapter, err := s.strata.Chapter(context.TODO(), story.Key{AnthologyID: s.tenantId, StoryID: string(jobId)}, step)
-	if err != nil {
-		return nil, err
-	}
+var _ swf.SWFEngine = &swfEngineImpl{}
 
-	return chapterToTaskData(chapter), nil
-}
-
-func NewSWFEngine(tenantId string, db *gorm.DB, strataClient *strataclient.Client) (swf.SWFEngine, error) {
+var Builder swf.Builder = func(tenantId string, db *gorm.DB, strataClient *strataclient.Client, workers []swf.WorkSet) (swf.SWFEngine, error) {
 	underlying, err := db.DB()
 	if err != nil {
 		return nil, err
 	}
-
 	host, err := os.Hostname()
 	if err != nil {
 		return nil, err
 	}
+
+	// create a map of capabilities to workers (each task maps to the workset of the parent job. this way we avoid string splitting on each job to find things.
+	capMap := make(map[pgwf.Capability]*swf.WorkSet)
+	for _, w := range workers {
+		wp := &w
+		for _, c := range w.Capabilities {
+			capMap[c] = wp
+		}
+		capMap[pgwf.Capability(w.JobWorker.Name())] = wp
+	}
+
 	workerId := fmt.Sprintf("%s:%i - %s", host, os.Getppid(), ksuid.New().String())
 	f := swfEngineImpl{
-		tenantId:     tenantId,
-		strata:       strataClient,
-		db:           db,
-		jobWorkers:   make(map[string]swf.JobWorker),
-		taskWorkers:  make(map[string]swf.TaskWorker),
-		workerId:     workerId,
-		udb:          underlying,
-		runners:
+		tenantId: tenantId,
+		strata:   strataClient,
+		db:       db,
+		workers:  capMap,
+		workerId: workerId,
+		udb:      underlying,
 	}
 
 	return &f, nil
 }
 
-
-
-// notify runners of a notification
-func (s *swfEngineImpl) notify(job pgwf.JobID) {
-
-}
-
-// listen to notifications from pgwf with backoff.
-func (s *swfEngineImpl) listenForWork(ctx context.Context) {
-	allOptions := make([]pgwf.Capability, 0, len(s.jobWorkers)+len(s.taskWorkers))
-	for _, w := range s.jobWorkers {
-		allOptions = append(allOptions, pgwf.Capability(w.Name()))
+func (s *swfEngineImpl) Run(ctx context.Context) {
+	caps := make([]pgwf.Capability, 0, len(s.workers))
+	for k, v := range s.workers {
+		caps = append(caps, v.Capabilities...)
+		caps = append(caps, pgwf.Capability(k))
 	}
-	for _, w := range s.taskWorkers {
-		allOptions = append(allOptions, pgwf.Capability(w.Name()))
-	}
-	notifyOnly := []pgwf.Capability{pgwf.Capability(NOTIFY_PREFIX+s.workerId)}
-
-	ch := make(chan *pgwf.Lease)
 	go func() {
-		defer close(ch)
 		b := backoff.NewExponentialBackOff()
-		b.MaxInterval = time.Second*30
+		b.MaxInterval = time.Second * 30
 		for {
-			item, err := pgwf.GetWork(ctx, s.udb, pgwf.WorkerID(s.workerId), allOptions)
+			lease, err := pgwf.GetWork(ctx, s.udb, pgwf.WorkerID(s.workerId), caps)
 			if err == nil {
 				b.Reset()
-				s.notify(item.JobID())
-				err := item.Complete(ctx, s.udb)
-				if err != nil {
-					fmt.Println(err)
-				}
+				go s.runSomething(context.Background(), lease)
 				continue // let's try again without a backoff.
 			}
-
 			select {
 			case <-ctx.Done():
 				return
@@ -251,8 +223,23 @@ func (s *swfEngineImpl) listenForWork(ctx context.Context) {
 	}()
 }
 
+// runs inside goroutine for a specific lease.
+func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
+	cap := pgwf.Capability("")
+	workSet, ok := s.workers[cap]
+	if !ok {
+		// this should never happen. we don't want to crash so we'll just let the lease expire
+		log.Println("no workset found for capability %s. this shouldn't happen", cap)
+	}
 
-
-
+	runner := runner{
+		jobId:        lease.JobID(),
+		worker:       workSet,
+		storyCounter: 0,
+		engine:       s,
+		lease:        lease,
+	}
+	runner.Run(ctx)
+}
 
 var _ swf.SWFEngine = &swfEngineImpl{}

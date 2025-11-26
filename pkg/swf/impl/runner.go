@@ -5,160 +5,125 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"time"
 
-	"github.com/cenkalti/backoff"
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	"github.com/colony-2/strata/strata-go/pkg/client/core"
 	"github.com/colony-2/strata/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
-	"github.com/segmentio/ksuid"
 )
 
 type runner struct {
-	incoming     chan inmsg
-	outgoing     chan outmsg
-	jobWorker    swf.JobWorker
-	jobStart     swf.StartJob
-	story        story.Story
-	taskCounter  int64
-	capabilities map[string]swf.TaskWorker
+	jobId        pgwf.JobID
+	worker       *swf.WorkSet
+	storyCounter int64
 	engine       *swfEngineImpl
+	lease        *pgwf.Lease
 }
 
 func (r *runner) GetJobId() swf.JobId {
-	return r.jobStart.JobId
+	return swf.JobId(r.jobId)
 }
 
-func (r *runner) DoTask(retryPolicy swf.RetryPolicy, taskType string, data swf.TaskData) (swf.TaskData, error) {
-	r.taskCounter++
-	chap, err := r.story.Chapter(context.TODO(), r.taskCounter)
+func (r *runner) DoTask(taskType string, data swf.TaskData) (swf.TaskData, error) {
+	r.storyCounter++
+	chap, err := r.engine.strata.Chapter(context.TODO(), story.Key{AnthologyID: r.engine.tenantId, StoryID: string(r.jobId)}, r.storyCounter)
 
 	if err == nil {
 		return chapterToTaskData(chap), nil
 	}
 
 	if !errors.Is(core.ErrNotFound, err) {
-		return nil, fmt.Errorf("failed to get chapter %d: %w", r.taskCounter, err)
+		return nil, fmt.Errorf("failed to get chapter %d: %w", r.storyCounter, err)
 	}
 
-	if worker, ok := r.capabilities[taskType]; !ok {
-		// two new jobs: job to do the task, job to inform us that first job is done.
-		taskJobId := pgwf.JobID(ksuid.New().String())
+	worker, capabilityExistsLocally := r.worker.TaskWorkers[taskType]
 
-		tx, err := r.engine.udb.Begin()
+	if !capabilityExistsLocally {
+		// suspend and run remote task.
+		err = r.lease.Reschedule(context.TODO(), r.engine.udb, pgwf.JobDependencies{
+			NextNeed: pgwf.Capability(taskType),
+			WaitFor:  nil,
+		}, taskWait{
+			Step: r.storyCounter,
+			Next: r.worker.JobWorker.Name(),
+		})
+
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to reschedule job: %w", err)
 		}
-		pgwf.SubmitJob(context.TODO(), tx, taskJobId)
 
+		prematureCloseOut()
+		return nil, nil
 	}
-	//
 
-	// if chapter exists, get it.
-	// if not, determine if the task can be run locally. if not pause until chapter is available.
-	// run task locally.
-	// if can't run locally, generate a new job id and save it to the journal
-	// start a new pgwf job with the generated id. that job is an input job
-	//
+	output, err := worker.Run(swf.TaskContext{
+		JobId: r.GetJobId(),
+		Step:  r.storyCounter,
+	}, data)
 
-	// task is a story entry
-	//
-	//create a new pgwf sub-job and wait for it to complete. we will create the remote job as a child of this job. the remote job will write against this story. we will start the new job
-	// the subjob's id must be a determinsitic id so that if the parent dies just after starting it, we realized that we already created it.
+	if err != nil {
+		return nil, err
+	}
+	chap, err = taskDataToChapter(output, r.storyCounter)
+
+	if err != nil {
+		return nil, err
+	}
+
+	err = r.engine.strata.SaveChapter(context.TODO(), story.Key{
+		AnthologyID: r.engine.workerId,
+		StoryID:     string(r.GetJobId()),
+	}, chap)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return output, nil
 
 }
 
-type SingleTask struct {
-	story   string
-	chapter int64
-	notify  string
+func prematureCloseOut() {
+	// do any finalization
+	runtime.Goexit()
 }
 
 var _ swf.JobContext = &runner{}
 
-func (r *runner) Run() {
-	r.jobWorker.Run()
+type RunError struct {
+	Err error
 }
 
-type inmsg interface {
-	inmsg()
+func (r *runner) getChapter(ordinal int64) (story.Chapter, error) {
+	return r.engine.strata.Chapter(context.TODO(), story.Key{AnthologyID: r.engine.tenantId, StoryID: string(r.jobId)}, ordinal)
 }
 
-type outmsg interface {
-}
-
-func (r *runner) nextMessage() inmsg {
-	msgI := <-r.incoming
-	switch msg := msgI.(type) {
-	case exitRoutine:
-
-		runtime.Goexit()
-		return nil
-	default:
-		panic(fmt.Sprintf("unknown message type %s", msg))
+func (r *runner) Run(ctx context.Context) {
+	chap, err := r.getChapter(0)
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
-}
+	output, err := r.worker.JobWorker.Run(r, chapterToTaskData(chap))
 
-type taskComplete struct {
-	data swf.TaskData
-}
-
-func (e taskComplete) inmsg() {}
-
-type exitRoutine struct {
-}
-
-func (e exitRoutine) inmsg() {}
-
-type notify struct {
-	JobId swf.JobId
-}
-
-func (e notify) inmsg() {}
-
-func (r *runner) Kill() {
-	r.incoming <- exitRoutine{}
-}
-
-func (r *runner) incomingNotification(JobId swf.JobId) {
-	// look i we care about notification. if so, act on it.
-	r.incoming <- notify{JobId}
-}
-
-func (s *swfEngineImpl) listen(ctx context.Context) <-chan *pgwf.Lease {
-	capabilities := make([]pgwf.Capability, 0, len(s.jobWorkers)+len(s.taskWorkers)+1)
-	for _, w := range s.jobWorkers {
-		capabilities = append(capabilities, pgwf.Capability(w.Name()))
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
-	for _, w := range s.taskWorkers {
-		capabilities = append(capabilities, pgwf.Capability(w.Name()))
+
+	chap, err := taskDataToChapter(output, r.storyCounter)
+
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
-	capabilities = append(capabilities, pgwf.Capability(NOTIFY_PREFIX+s.workerId))
 
-	ch := make(chan *pgwf.Lease)
-	go func() {
-		defer close(ch)
-		b := backoff.NewExponentialBackOff()
-		b.InitialInterval = 0
-		b.MaxInterval = time.Second * 30
-		for {
-			item, err := pgwf.GetWork(ctx, s.udb, pgwf.WorkerID(s.workerId), capabilities)
-			if err == nil {
-				b.Reset()
-				select {
-				case ch <- item:
-				case <-ctx.Done():
-					return
-				}
-			}
+	err = r.engine.strata.SaveChapter(context.TODO(), story.Key{
+		AnthologyID: r.engine.workerId,
+		StoryID:     string(r.GetJobId()),
+	}, chap)
 
-			select {
-			case <-time.After(b.NextBackOff()):
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return ch
+	if err != nil {
+		fmt.Println(err)
+	}
 }
