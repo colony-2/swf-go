@@ -111,7 +111,7 @@ func (r *runner) Run(ctx context.Context) {
 		return
 	}
 
-	chap, err := taskDataToChapter(output, r.storyCounter)
+	chap, err = taskDataToChapter(output, r.storyCounter)
 
 	if err != nil {
 		fmt.Println(err)
