@@ -133,8 +133,9 @@ func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error 
 }
 
 type taskWait struct {
-	Step int64  `json:"step"`
-	Next string `json:"next"`
+	InputStep  int64  `json:"in"`
+	OutputStep int64  `json:"out"`
+	Next       string `json:"nex	t"`
 }
 
 func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobType string, taskType string) ([]swf.TaskHandle, error) {
@@ -152,10 +153,11 @@ func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobTy
 			return nil, err
 		}
 		th := taskHandleImpl{
-			job:            j,
-			chapterOrdinal: tw.Step,
-			engine:         s,
-			nextNeed:       pgwf.Capability(tw.Next),
+			job:           j,
+			inputOrdinal:  tw.InputStep,
+			outputOrdinal: tw.OutputStep,
+			engine:        s,
+			nextNeed:      pgwf.Capability(tw.Next),
 		}
 		handles = append(handles, &th)
 	}

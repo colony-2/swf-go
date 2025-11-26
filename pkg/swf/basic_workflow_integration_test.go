@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -45,6 +46,7 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 
 	baseURL, strata := startStrata(t)
 	defer strata.Shutdown()
+	waitForStrataReady(t, baseURL)
 
 	tenantID := "test-tenant"
 
@@ -70,6 +72,7 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 
 	go engine1.Run(ctx)
 	go engine2.Run(ctx)
+	go userInputWatcher(ctx, t, engine1)
 
 	initial := &swf.SimpleTaskData{
 		Data: swf.NewMapData(map[string]interface{}{"n": 1}),
@@ -88,8 +91,9 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 	}
 	key := story.Key{AnthologyID: tenantID, StoryID: string(jobID)}
 
-	// Expect four task chapters (ordinals 1-4) plus the final job output at ordinal 5.
-	expecteds := []int{2, 4, 5, 10, 10}
+	// Expect five task chapters (ordinals 1-5) plus the final job output at ordinal 5.
+	// Steps: t1(+1), t2(*2), userInput(+3), t1(+1), t2(*2) starting from 1 -> 2,4,7,8,16.
+	expecteds := []int{2, 4, 7, 8, 16}
 	for idx, expected := range expecteds {
 		ordinal := int64(idx + 1) // job data is ordinal 0
 		got := waitForChapterValue(t, strataClient, key, ordinal, 30*time.Second)
@@ -131,6 +135,21 @@ func startStrata(t *testing.T) (string, *strataHandle) {
 	return s.BaseURL, &strataHandle{BaseURL: s.BaseURL, APIKey: s.APIKey, Shutdown: s.Shutdown}
 }
 
+func waitForStrataReady(t *testing.T, baseURL string) {
+	t.Helper()
+	client := &http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(baseURL)
+		if err == nil {
+			resp.Body.Close()
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("strata not ready at %s", baseURL)
+}
+
 func waitForChapterValue(t *testing.T, client *strataclient.Client, key story.Key, ordinal int64, timeout time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -169,7 +188,7 @@ func (pipeJob) Run(ctx swf.JobContext, data swf.JobData) (swf.JobData, error) {
 	current := taskNumber(data)
 	payload := &swf.SimpleTaskData{Data: swf.NewMapData(map[string]interface{}{"n": current})}
 
-	steps := []string{addOneTaskName, doubleTaskName, addOneTaskName, doubleTaskName}
+	steps := []string{addOneTaskName, doubleTaskName, userInputTaskName, addOneTaskName, doubleTaskName}
 	var err error
 	var out swf.TaskData = payload
 	for _, step := range steps {
@@ -201,6 +220,42 @@ func (doubleTask) Name() string { return doubleTaskName }
 func (doubleTask) Run(_ swf.TaskContext, input swf.TaskData) (swf.TaskData, error) {
 	n := taskNumber(input)
 	return &swf.SimpleTaskData{Data: swf.NewMapData(map[string]interface{}{"n": n * 2})}, nil
+}
+
+const userInputTaskName = "userInput"
+
+// userInputWatcher completes externally-handled tasks that no engine claims.
+func userInputWatcher(ctx context.Context, t *testing.T, engine swf.SWFEngine) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		handles, err := engine.FindTasksWaitingForCapability(ctx, pipeJobName, userInputTaskName)
+		if err != nil {
+			// If the database is shutting down or context will end soon, just back off.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+				continue
+			}
+		}
+		for _, h := range handles {
+			data, err := h.Data()
+			if err != nil {
+				t.Fatalf("watcher failed to get data: %v", err)
+			}
+			n := taskNumber(data)
+			output := &swf.SimpleTaskData{Data: swf.NewMapData(map[string]interface{}{"n": n + 3})}
+			if err := h.Finish(ctx, output); err != nil {
+				t.Fatalf("watcher failed to finish task: %v", err)
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func taskNumber(td swf.TaskData) int {

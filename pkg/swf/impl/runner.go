@@ -35,19 +35,24 @@ func (r *runner) DoTask(taskType string, data swf.TaskData) (swf.TaskData, error
 	}
 
 	if !errors.Is(err, core.ErrNotFound) {
-		return nil, fmt.Errorf("failed to get chapter %d: %w", r.storyCounter, err)
+		return nil, fmt.Errorf("failed to get chapter %d: %w", ordinal, err)
 	}
 
 	worker, capabilityExistsLocally := r.worker.TaskWorkers[taskType]
 
 	if !capabilityExistsLocally {
-		// suspend and run remote task.
+		inputOrdinal := ordinal - 1
+		if inputOrdinal < 0 {
+			inputOrdinal = 0
+		}
+
 		err = r.lease.Reschedule(context.TODO(), r.engine.udb, pgwf.JobDependencies{
 			NextNeed: pgwf.Capability(r.worker.JobWorker.Name() + ":" + taskType),
 			WaitFor:  nil,
 		}, taskWait{
-			Step: ordinal,
-			Next: r.worker.JobWorker.Name(),
+			InputStep:  inputOrdinal,
+			OutputStep: ordinal,
+			Next:       r.worker.JobWorker.Name(),
 		})
 
 		if err != nil {

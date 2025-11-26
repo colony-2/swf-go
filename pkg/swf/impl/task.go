@@ -9,16 +9,17 @@ import (
 )
 
 type taskHandleImpl struct {
-	job            Job
-	chapterOrdinal int64
-	inputChapter   story.Chapter
-	engine         *swfEngineImpl
-	nextNeed       pgwf.Capability
+	job           Job
+	inputOrdinal  int64
+	outputOrdinal int64
+	inputChapter  story.Chapter
+	engine        *swfEngineImpl
+	nextNeed      pgwf.Capability
 }
 
 func (h *taskHandleImpl) chapter() (story.Chapter, error) {
 	if h.inputChapter == nil {
-		chapter, err := h.engine.strata.Chapter(context.TODO(), story.Key{AnthologyID: h.engine.tenantId, StoryID: string(h.JobId())}, h.chapterOrdinal)
+		chapter, err := h.engine.strata.Chapter(context.TODO(), story.Key{AnthologyID: h.engine.tenantId, StoryID: string(h.JobId())}, h.inputOrdinal)
 		if err != nil {
 			return nil, err
 		}
@@ -42,7 +43,7 @@ func (h *taskHandleImpl) JobId() swf.JobId {
 
 func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) error {
 	// write the story.
-	chap, err := taskDataToChapter(taskData, h.chapterOrdinal)
+	chap, err := taskDataToChapter(taskData, h.outputOrdinal)
 	if err != nil {
 		return err
 	}
