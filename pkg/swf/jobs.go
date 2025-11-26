@@ -53,6 +53,8 @@ type jobRunApi interface {
 	StartJob(ctx context.Context, start StartJob) (JobId, error)
 	RestartJob(ctx context.Context, restart RestartJob) (JobId, error)
 	CancelJob(ctx context.Context, cancel CancelJob) error
+	CheckJobStatus(ctx context.Context, jobId JobId) (JobStatus, error)
+	GetJobResult(ctx context.Context, jobId JobId) (TaskData, error)
 }
 
 type EngineBuilder struct {

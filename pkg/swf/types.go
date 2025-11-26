@@ -133,6 +133,12 @@ type SimpleTaskData struct {
 	Artifacts []Artifact
 }
 
+// EnvelopedTaskData preserves payload kind metadata for round-tripping through envelopes.
+type EnvelopedTaskData struct {
+	SimpleTaskData
+	Kind string
+}
+
 func (s *SimpleTaskData) GetData() (Data, error) {
 	return s.Data, nil
 }

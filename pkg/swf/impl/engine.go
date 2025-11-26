@@ -44,35 +44,11 @@ func taskDataToChapter(jobData swf.TaskData, ordinal int64, taskType string, wor
 	if err != nil {
 		return nil, err
 	}
-
-	if inputHash == "" {
-		return nil, fmt.Errorf("input hash is required")
-	}
-	meta := chapterMeta{
-		Version:   envelopeVersion,
-		Ordinal:   ordinal,
-		TaskType:  taskType,
-		WorkerID:  workerId,
-		CreatedAt: createdAt,
-		InputHash: inputHash,
-	}
-
-	payload := json.RawMessage(bytes)
-	envBytes, err := buildChapterEnvelope(meta, payloadKind, payload)
-	if err != nil {
-		return nil, err
-	}
-
-	chapBuilder := story.NewChapter().WithOrdinal(ordinal).WithBytes(envBytes)
 	artifacts, err := jobData.GetArtifacts()
 	if err != nil {
 		return nil, err
 	}
-	for _, v := range artifacts {
-		chapBuilder.AddArtifact(v)
-	}
-
-	return chapBuilder, nil
+	return payloadToChapter(json.RawMessage(bytes), artifacts, ordinal, taskType, workerId, payloadKind, inputHash, createdAt)
 }
 
 func taskDataToCreatOptions(jobData swf.TaskData, ordinal int64, taskType string, workerId string, payloadKind string, inputHash string, createdAt time.Time) (story.CreateOptions, error) {
@@ -156,6 +132,85 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 
 func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error {
 	return pgwf.CancelJob(ctx, s.udb, pgwf.JobID(job.JobId), pgwf.WorkerID(s.workerId), job.Reason)
+}
+
+// payloadToChapter builds a chapter from raw payload JSON and artifacts, bypassing TaskData.
+func payloadToChapter(payload json.RawMessage, artifacts []swf.Artifact, ordinal int64, taskType string, workerId string, payloadKind string, inputHash string, createdAt time.Time) (story.Chapter, error) {
+	if payload == nil {
+		return nil, fmt.Errorf("payload is required")
+	}
+	if inputHash == "" {
+		return nil, fmt.Errorf("input hash is required")
+	}
+	meta := chapterMeta{
+		Version:   envelopeVersion,
+		Ordinal:   ordinal,
+		TaskType:  taskType,
+		WorkerID:  workerId,
+		CreatedAt: createdAt,
+		InputHash: inputHash,
+	}
+
+	envBytes, err := buildChapterEnvelope(meta, payloadKind, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	chapBuilder := story.NewChapter().WithOrdinal(ordinal).WithBytes(envBytes)
+	for _, v := range artifacts {
+		chapBuilder.AddArtifact(v)
+	}
+	return chapBuilder, nil
+}
+
+func (s *swfEngineImpl) CheckJobStatus(ctx context.Context, jobId swf.JobId) (swf.JobStatus, error) {
+	var job Job
+	if err := s.db.WithContext(ctx).First(&job, "job_id = ?", string(jobId)).Error; err != nil {
+		return swf.JobStatus{}, err
+	}
+
+	// Attempt to derive the last ordinal from Strata; fallback to 0 on error.
+	key := story.Key{AnthologyID: s.tenantId, StoryID: string(jobId)}
+	step := int64(0)
+	if st, err := s.strata.Story(ctx, key); err == nil {
+		if chap, err := st.GetLastChapter(ctx); err == nil && chap != nil {
+			step = chap.Ordinal()
+		}
+	}
+
+	return swf.JobStatus{
+		JobId: swf.JobId(job.JobID),
+		Step:  step,
+	}, nil
+}
+
+func (s *swfEngineImpl) GetJobResult(ctx context.Context, jobId swf.JobId) (swf.TaskData, error) {
+	// Ensure job is complete (archived) before returning a result.
+	var archived int64
+	if err := s.db.WithContext(ctx).
+		Table("pgwf.jobs_archive").
+		Where("job_id = ?", string(jobId)).
+		Count(&archived).Error; err != nil {
+		return nil, err
+	}
+	if archived == 0 {
+		return nil, swf.ErrJobNotComplete
+	}
+
+	key := story.Key{AnthologyID: s.tenantId, StoryID: string(jobId)}
+	st, err := s.strata.Story(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	chap, err := st.GetLastChapter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	td, payloadErr := chapterToTaskData(chap)
+	if payloadErr != nil {
+		return td, payloadErr
+	}
+	return td, nil
 }
 
 type taskWait struct {

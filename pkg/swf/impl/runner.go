@@ -2,6 +2,7 @@ package impl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -50,7 +51,8 @@ func (r *runner) DoTask(taskType string, data swf.TaskData) (swf.TaskData, error
 		if env.Meta.InputHash != inputHash {
 			return nil, fmt.Errorf("%w: ordinal %d task %s", swf.ErrWorkflowNotDeterministic, ordinal, taskType)
 		}
-		return envelopeToTaskData(env, chap.Artifacts())
+		td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
+		return td, payloadErr
 	}
 
 	if !errors.Is(err, core.ErrNotFound) {
@@ -88,10 +90,34 @@ func (r *runner) DoTask(taskType string, data swf.TaskData) (swf.TaskData, error
 		Logger: r.logger.With("task", taskType, "step", r.storyCounter),
 	}, data)
 
+	payloadKind := payloadKindApp
+	originalErr := err
+	var payload json.RawMessage
+	artifacts := []swf.Artifact{}
 	if err != nil {
-		return nil, err
+		var tdErr error
+		payload, payloadKind, tdErr = errorPayloadFromError(err)
+		if tdErr != nil {
+			return nil, tdErr
+		}
+	} else {
+		// success
+		dataBytes, err := output.GetData()
+		if err != nil {
+			return nil, err
+		}
+		raw, err := dataBytes.ToBytes()
+		if err != nil {
+			return nil, err
+		}
+		payload = json.RawMessage(raw)
+		artifacts, err = output.GetArtifacts()
+		if err != nil {
+			return nil, err
+		}
 	}
-	chap, err = taskDataToChapter(output, ordinal, taskType, r.engine.workerId, payloadKindApp, inputHash, time.Now().UTC())
+
+	chap, err = payloadToChapter(payload, artifacts, ordinal, taskType, r.engine.workerId, payloadKind, inputHash, time.Now().UTC())
 
 	if err != nil {
 		return nil, err
@@ -106,7 +132,7 @@ func (r *runner) DoTask(taskType string, data swf.TaskData) (swf.TaskData, error
 		return nil, err
 	}
 
-	return output, nil
+	return output, originalErr
 
 }
 
@@ -142,11 +168,10 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		r.logger.Error("failed to decode initial chapter", "error", err)
 		return
 	}
-	output, err := r.worker.JobWorker.Run(r, inputData)
-
-	if err != nil {
-		r.logger.Error("job worker run failed", "error", err)
-		return
+	output, jobErr := r.worker.JobWorker.Run(r, inputData)
+	originalErr := jobErr
+	if jobErr != nil {
+		r.logger.Error("job worker run failed", "error", jobErr)
 	}
 
 	ordinal := r.storyCounter
@@ -158,7 +183,61 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		return
 	}
 
-	chap, err = taskDataToChapter(output, ordinal, r.worker.JobWorker.Name(), r.engine.workerId, payloadKindApp, inputHash, time.Now().UTC())
+	payloadKind := payloadKindApp
+	var payload json.RawMessage
+	artifacts := []swf.Artifact{}
+	if originalErr != nil {
+		var appErr swf.AppError
+		if errors.As(originalErr, &appErr) {
+			raw, mErr := json.Marshal(appErr.Payload)
+			if mErr != nil {
+				r.logger.Error("failed to marshal app error payload", "error", mErr)
+				return
+			}
+			payload = json.RawMessage(raw)
+			payloadKind = payloadKindAppError
+		} else {
+			var sysErr swf.SystemError
+			if errors.As(originalErr, &sysErr) {
+				raw, mErr := json.Marshal(sysErr.Payload)
+				if mErr != nil {
+					r.logger.Error("failed to marshal system error payload", "error", mErr)
+					return
+				}
+				payload = json.RawMessage(raw)
+				payloadKind = payloadKindSystemError
+			} else {
+				raw, _ := json.Marshal(swf.SystemErrorPayload{Message: originalErr.Error()})
+				payload = json.RawMessage(raw)
+				payloadKind = payloadKindSystemError
+			}
+		}
+	} else {
+		if output == nil {
+			raw, _ := json.Marshal(swf.SystemErrorPayload{Message: "missing job output"})
+			payload = json.RawMessage(raw)
+			payloadKind = payloadKindSystemError
+		} else {
+			dataBytes, err := output.GetData()
+			if err != nil {
+				r.logger.Error("failed to get job output data", "error", err)
+				return
+			}
+			raw, err := dataBytes.ToBytes()
+			if err != nil {
+				r.logger.Error("failed to marshal job output", "error", err)
+				return
+			}
+			payload = json.RawMessage(raw)
+			artifacts, err = output.GetArtifacts()
+			if err != nil {
+				r.logger.Error("failed to get job output artifacts", "error", err)
+				return
+			}
+		}
+	}
+
+	chap, err = payloadToChapter(payload, artifacts, ordinal, r.worker.JobWorker.Name(), r.engine.workerId, payloadKind, inputHash, time.Now().UTC())
 
 	if err != nil {
 		r.logger.Error("failed to build chapter", "error", err)
@@ -179,4 +258,7 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		r.logger.Error("failed to complete lease", "error", err)
 	}
 
+	if originalErr != nil {
+		return
+	}
 }

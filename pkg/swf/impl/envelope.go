@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -16,6 +17,7 @@ const (
 	payloadKindApp         = "App"
 	payloadKindAppError    = "AppError"
 	payloadKindSystemError = "SystemError"
+	payloadKindMissing     = "SystemError" // fallback kind for unexpected nils
 )
 
 type chapterMeta struct {
@@ -28,11 +30,12 @@ type chapterMeta struct {
 }
 
 type chapterEnvelope struct {
-	Meta        chapterMeta      `json:"meta"`
-	PayloadKind string           `json:"payload_kind"`
-	Payload     json.RawMessage  `json:"payload"`
+	Meta        chapterMeta     `json:"meta"`
+	PayloadKind string          `json:"payload_kind"`
+	Payload     json.RawMessage `json:"payload"`
 }
 
+// buildChapterEnvelope wraps a raw payload (already JSON) into the envelope.
 func buildChapterEnvelope(meta chapterMeta, payloadKind string, payload json.RawMessage) ([]byte, error) {
 	if payloadKind == "" {
 		return nil, fmt.Errorf("payload kind is required")
@@ -99,26 +102,59 @@ func computeInputHash(ctx context.Context, taskData swf.TaskData) (string, error
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+func errorPayloadFromError(err error) (json.RawMessage, string, error) {
+	var appErr swf.AppError
+	if errors.As(err, &appErr) {
+		raw, tdErr := json.Marshal(appErr.Payload)
+		return json.RawMessage(raw), payloadKindAppError, tdErr
+	}
+	var sysErr swf.SystemError
+	if errors.As(err, &sysErr) {
+		raw, tdErr := json.Marshal(sysErr.Payload)
+		return json.RawMessage(raw), payloadKindSystemError, tdErr
+	}
+	// default to system error envelope with message from err
+	raw, tdErr := json.Marshal(swf.SystemErrorPayload{Message: err.Error()})
+	return json.RawMessage(raw), payloadKindSystemError, tdErr
+}
+
 func artifactHash(ctx context.Context, art swf.Artifact) (string, error) {
 	return art.Sha256(ctx)
 }
 
 func envelopeToTaskData(env chapterEnvelope, artifacts []swf.Artifact) (swf.TaskData, error) {
-	if env.PayloadKind != payloadKindApp {
-		return nil, fmt.Errorf("unsupported payload kind %q", env.PayloadKind)
-	}
-
 	copiedArtifacts := make([]swf.Artifact, 0, len(artifacts))
 	for _, a := range artifacts {
 		copiedArtifacts = append(copiedArtifacts, a)
 	}
 
-	// Keep payload as-is (already validated).
 	payload := make([]byte, len(env.Payload))
 	copy(payload, env.Payload)
-	task := swf.SimpleTaskData{
-		Data:      swf.NewBytesData(payload),
-		Artifacts: copiedArtifacts,
+
+	td := &swf.EnvelopedTaskData{
+		SimpleTaskData: swf.SimpleTaskData{
+			Data:      swf.NewBytesData(payload),
+			Artifacts: copiedArtifacts,
+		},
+		Kind: env.PayloadKind,
 	}
-	return &task, nil
+
+	switch env.PayloadKind {
+	case payloadKindApp:
+		return td, nil
+	case payloadKindAppError:
+		var p swf.AppErrorPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return td, err
+		}
+		return td, swf.AppError{Payload: p}
+	case payloadKindSystemError:
+		var p swf.SystemErrorPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return td, err
+		}
+		return td, swf.SystemError{Payload: p}
+	default:
+		return td, fmt.Errorf("unsupported payload kind %q", env.PayloadKind)
+	}
 }
