@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff"
@@ -19,6 +20,25 @@ import (
 	"gorm.io/gorm"
 )
 
+type awaitSignal int
+
+const (
+	awaitSignalWake awaitSignal = iota
+	awaitSignalRecycle
+)
+
+const inlineAwaitMax = 2 * time.Second
+
+type awaitState struct {
+	ch    chan awaitSignal
+	timer *time.Timer
+}
+
+type jobPayload struct {
+	RunPolicy swf.RunPolicy `json:"run_policy,omitempty"`
+	TaskWait  *taskWait     `json:"task_wait,omitempty"`
+}
+
 type swfEngineImpl struct {
 	tenantId        string
 	strata          *strataclient.Client
@@ -29,6 +49,8 @@ type swfEngineImpl struct {
 	runners         map[string]runner
 	activeWorkLimit int
 	logger          *slog.Logger
+	awaitMu         sync.Mutex
+	awaits          map[pgwf.JobID]*awaitState
 }
 
 type chapterMetadata struct {
@@ -89,9 +111,7 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 	jobPolicy := job.RunPolicy
 	jobPolicy.Retry = normalizeRetryPolicy(jobPolicy.Retry)
 	co, err := taskDataToCreatOptions(taskData, 0, job.JobType, s.workerId, payloadKindApp, inputHash, now, chapterMetadata{
-		Attempt:     1,
-		MaxAttempts: int(jobPolicy.Retry.MaximumAttempts),
-		RunPolicy:   &jobPolicy,
+		Attempt: 1,
 	})
 	if err != nil {
 		return "", err
@@ -101,14 +121,14 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 		return "", err
 	}
 
-	return jobId, s.startJob(jobId, job.JobType, job.SingletonKey)
+	return jobId, s.startJob(jobId, job.JobType, job.SingletonKey, jobPayload{RunPolicy: jobPolicy})
 }
 
-func (s *swfEngineImpl) startJob(jobId swf.JobId, jobType string, singletonKey string) error {
+func (s *swfEngineImpl) startJob(jobId swf.JobId, jobType string, singletonKey string, payload jobPayload) error {
 	dep := pgwf.JobDependencies{
 		NextNeed: pgwf.Capability(jobType),
 	}
-	return pgwf.SubmitJob(context.TODO(), s.udb, pgwf.JobID(jobId), dep, nil, pgwf.WorkerID(s.workerId), singletonKey, time.Time{})
+	return pgwf.SubmitJob(context.TODO(), s.udb, pgwf.JobID(jobId), dep, payload, pgwf.WorkerID(s.workerId), singletonKey, time.Time{})
 }
 
 func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf.JobId, error) {
@@ -131,9 +151,7 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 	jobPolicy := job.RunPolicy
 	jobPolicy.Retry = normalizeRetryPolicy(jobPolicy.Retry)
 	createOptions, err := taskDataToCreatOptions(job.Data, job.LastStepToKeep+1, job.JobType, s.workerId, payloadKindApp, inputHash, now, chapterMetadata{
-		Attempt:     1,
-		MaxAttempts: int(jobPolicy.Retry.MaximumAttempts),
-		RunPolicy:   &jobPolicy,
+		Attempt: 1,
 	})
 	if err != nil {
 		return "", err
@@ -149,11 +167,127 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 	if err != nil {
 		return "", err
 	}
-	return jobId, s.startJob(jobId, job.JobType, job.SingletonKey)
+	return jobId, s.startJob(jobId, job.JobType, job.SingletonKey, jobPayload{RunPolicy: jobPolicy})
 }
 
 func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error {
 	return pgwf.CancelJob(ctx, s.udb, pgwf.JobID(job.JobId), pgwf.WorkerID(s.workerId), job.Reason)
+}
+
+func (s *swfEngineImpl) resetAwaitState(jobID pgwf.JobID) {
+	s.awaitMu.Lock()
+	defer s.awaitMu.Unlock()
+	if s.awaits == nil {
+		return
+	}
+	if st, ok := s.awaits[jobID]; ok {
+		if st.timer != nil {
+			if !st.timer.Stop() {
+				select {
+				case <-st.timer.C:
+				default:
+				}
+			}
+			st.timer = nil
+		}
+		for len(st.ch) > 0 {
+			<-st.ch
+		}
+	}
+}
+
+func (s *swfEngineImpl) awaitState(jobID pgwf.JobID) *awaitState {
+	s.awaitMu.Lock()
+	defer s.awaitMu.Unlock()
+	if s.awaits == nil {
+		s.awaits = make(map[pgwf.JobID]*awaitState)
+	}
+	state, ok := s.awaits[jobID]
+	if !ok {
+		state = &awaitState{ch: make(chan awaitSignal, 1)}
+		s.awaits[jobID] = state
+	}
+	return state
+}
+
+func (s *swfEngineImpl) setAwaitTimer(jobID pgwf.JobID, t *time.Timer) {
+	s.awaitMu.Lock()
+	defer s.awaitMu.Unlock()
+	if s.awaits == nil {
+		s.awaits = make(map[pgwf.JobID]*awaitState)
+	}
+	state, ok := s.awaits[jobID]
+	if !ok {
+		state = &awaitState{ch: make(chan awaitSignal, 1)}
+		s.awaits[jobID] = state
+	}
+	if state.timer != nil {
+		if !state.timer.Stop() {
+			select {
+			case <-state.timer.C:
+			default:
+			}
+		}
+	}
+	state.timer = t
+}
+
+func (s *swfEngineImpl) sendAwait(jobID pgwf.JobID, sig awaitSignal) {
+	state := s.awaitState(jobID)
+	select {
+	case state.ch <- sig:
+	default:
+	}
+}
+
+// AwaitUntil chooses whether to block in-memory or recycle the runner until wakeAt.
+func (s *swfEngineImpl) AwaitUntil(jobID pgwf.JobID, capability pgwf.Capability, lease *pgwf.Lease, ordinal int64, attempt int, wakeAt time.Time) <-chan awaitSignal {
+	if lease == nil || capability == "" {
+		return nil
+	}
+
+	s.resetAwaitState(jobID)
+	state := s.awaitState(jobID)
+
+	now := time.Now().UTC()
+	if !wakeAt.After(now) {
+		s.sendAwait(jobID, awaitSignalWake)
+		return state.ch
+	}
+
+	waitFor := time.Until(wakeAt)
+	if waitFor <= inlineAwaitMax {
+		timer := time.NewTimer(waitFor)
+		s.setAwaitTimer(jobID, timer)
+		go func() {
+			<-timer.C
+			s.sendAwait(jobID, awaitSignalWake)
+		}()
+		return state.ch
+	}
+
+	payload := lease.Payload()
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+
+	deps := pgwf.JobDependencies{
+		NextNeed:    capability,
+		AvailableAt: wakeAt,
+	}
+	if err := lease.Reschedule(context.TODO(), s.udb, deps, payload); err != nil {
+		s.logger.Error("await reschedule failed", "jobId", jobID, "ordinal", ordinal, "attempt", attempt, "error", err)
+		timer := time.NewTimer(waitFor)
+		s.setAwaitTimer(jobID, timer)
+		go func() {
+			<-timer.C
+			s.sendAwait(jobID, awaitSignalWake)
+		}()
+		return state.ch
+	}
+
+	s.sendAwait(jobID, awaitSignalRecycle)
+	return state.ch
 }
 
 // payloadToChapter builds a chapter from raw payload JSON and artifacts, bypassing TaskData.
@@ -271,10 +405,17 @@ func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobTy
 
 	handles := make([]swf.TaskHandle, 0, len(jobs))
 	for _, j := range jobs {
-		tw := taskWait{}
-		err = json.Unmarshal(j.Payload, &tw)
-		if err != nil {
-			return nil, err
+		var payload jobPayload
+		var tw *taskWait
+		if err = json.Unmarshal(j.Payload, &payload); err == nil {
+			tw = payload.TaskWait
+		}
+		if tw == nil {
+			legacy := taskWait{}
+			if err = json.Unmarshal(j.Payload, &legacy); err != nil {
+				return nil, err
+			}
+			tw = &legacy
 		}
 		th := taskHandleImpl{
 			job:           j,
@@ -343,7 +484,7 @@ func (s *swfEngineImpl) Run(ctx context.Context) {
 			if err == nil {
 				if lease != nil {
 					b.Reset()
-					go s.runSomething(context.Background(), lease)
+					go s.runSomething(ctx, lease)
 					continue // let's try again without a backoff.
 				}
 				// no work right now; fall through to backoff
@@ -370,6 +511,15 @@ func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
 		return
 	}
 
+	payload := jobPayload{}
+	if raw := lease.Payload(); len(raw) > 0 {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			s.logger.Warn("failed to decode job payload", "jobId", lease.JobID(), "error", err)
+		}
+	}
+	payload.RunPolicy.Retry = normalizeRetryPolicy(payload.RunPolicy.Retry)
+
+	s.resetAwaitState(lease.JobID())
 	runner := runner{
 		jobId:        lease.JobID(),
 		worker:       workSet,
@@ -377,6 +527,8 @@ func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
 		engine:       s,
 		lease:        lease,
 		logger:       s.logger.With("jobId", lease.JobID(), "capability", capability),
+		jobPolicy:    payload.RunPolicy,
+		capability:   capability,
 	}
 	runner.Run(ctx, lease)
 }

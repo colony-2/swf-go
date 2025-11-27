@@ -2,6 +2,7 @@ package impl
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
@@ -65,12 +66,14 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 	if err != nil {
 		return err
 	}
+	var payload jobPayload
+	_ = json.Unmarshal(h.job.Payload, &payload)
 	return pgwf.RescheduleUnheldJob(
 		ctx,
 		h.engine.udb,
 		pgwf.JobID(h.job.JobID),
 		pgwf.WorkerID(h.engine.workerId), pgwf.JobDependencies{NextNeed: h.nextNeed},
-		nil)
+		jobPayload{RunPolicy: payload.RunPolicy})
 }
 
 var _ swf.TaskHandle = &taskHandleImpl{}

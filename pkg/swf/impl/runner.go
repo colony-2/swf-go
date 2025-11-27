@@ -23,6 +23,8 @@ type runner struct {
 	lease        *pgwf.Lease
 	logger       *slog.Logger
 	jobPolicy    swf.RunPolicy
+	capability   pgwf.Capability
+	ctx          context.Context
 }
 
 func (r *runner) GetJobId() swf.JobId {
@@ -31,6 +33,36 @@ func (r *runner) GetJobId() swf.JobId {
 
 func panicToAppError(rec interface{}) error {
 	return swf.AppError{Payload: swf.AppErrorPayload{Message: fmt.Sprintf("panic: %v", rec), Level: "error"}}
+}
+
+func (r *runner) awaitUntil(wakeAt time.Time, ordinal int64, attempt int) error {
+	if wakeAt.IsZero() || time.Now().After(wakeAt) {
+		return nil
+	}
+	ctx := r.ctx
+
+	ch := r.engine.AwaitUntil(r.jobId, r.capability, r.lease, ordinal, attempt, wakeAt)
+	if ch == nil {
+		prematureCloseOut()
+		return nil
+	}
+
+	// Clear any stale signal before waiting.
+	select {
+	case <-ch:
+	default:
+	}
+
+	select {
+	case sig := <-ch:
+		if sig == awaitSignalRecycle {
+			prematureCloseOut()
+		}
+	case <-ctx.Done():
+		prematureCloseOut()
+		return ctx.Err()
+	}
+	return nil
 }
 
 func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData) (swf.TaskData, error) {
@@ -67,32 +99,25 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		if env.Meta.InputHash != inputHash {
 			return nil, fmt.Errorf("%w: ordinal %d task %s", swf.ErrWorkflowNotDeterministic, ordinal, taskType)
 		}
-		// Use stored policy if present to ensure deterministic replays.
-		if env.Meta.RunPolicy != nil {
-			effectivePolicy = mergeRunPolicy(policy, *env.Meta.RunPolicy)
-			retryCfg = normalizeRetryPolicy(effectivePolicy.Retry)
-			maxAttempts = int(retryCfg.MaximumAttempts)
-		}
-		if env.Meta.MaxAttempts > 0 {
-			maxAttempts = env.Meta.MaxAttempts
-		}
-		if env.Meta.Attempt > 0 {
-			attempt = env.Meta.Attempt + 1
+		priorAttempt := env.Meta.Attempt
+		if priorAttempt > 0 {
+			attempt = priorAttempt + 1
 		}
 
 		td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
 		if payloadErr != nil {
 			retryable := isRetryable(payloadErr, retryCfg)
-			if env.Meta.Retryable != nil {
-				retryable = *env.Meta.Retryable
-			}
-			if !retryable || env.Meta.Attempt >= maxAttempts {
+			if !retryable || priorAttempt >= maxAttempts {
 				return nil, payloadErr
 			}
-			if env.Meta.NextAttemptAt != nil {
-				waitFor := time.Until(*env.Meta.NextAttemptAt)
-				if waitFor > 0 {
-					_ = r.AwaitDuration(swf.Duration(waitFor))
+			backoff := time.Duration(0)
+			if priorAttempt > 0 {
+				backoff = computeBackoff(retryCfg, priorAttempt)
+			}
+			if backoff > 0 {
+				wakeAt := env.Meta.CreatedAt.Add(backoff)
+				if time.Now().Before(wakeAt) {
+					_ = r.awaitUntil(wakeAt, ordinal, priorAttempt)
 				}
 			}
 		} else {
@@ -112,10 +137,13 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		err = r.lease.Reschedule(context.TODO(), r.engine.udb, pgwf.JobDependencies{
 			NextNeed: pgwf.Capability(r.worker.JobWorker.Name() + ":" + taskType),
 			WaitFor:  nil,
-		}, taskWait{
-			InputStep:  inputOrdinal,
-			OutputStep: ordinal,
-			Next:       r.worker.JobWorker.Name(),
+		}, jobPayload{
+			RunPolicy: r.jobPolicy,
+			TaskWait: &taskWait{
+				InputStep:  inputOrdinal,
+				OutputStep: ordinal,
+				Next:       r.worker.JobWorker.Name(),
+			},
 		})
 
 		if err != nil {
@@ -135,11 +163,17 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 					taskErr = panicToAppError(rec)
 				}
 			}()
-			output, taskErr = worker.Run(swf.TaskContext{
-				JobId:  r.GetJobId(),
-				Step:   ordinal,
-				Logger: r.logger.With("task", taskType, "step", ordinal, "attempt", attempt),
-			}, data)
+			output, taskErr = worker.Run(
+				swf.NewTaskContext(
+					r.GetJobId(),
+					ordinal,
+					r.logger.With("task", taskType, "step", ordinal, "attempt", attempt),
+					func(wakeAt time.Time) error {
+						return r.awaitUntil(wakeAt, ordinal, attempt)
+					},
+				),
+				data,
+			)
 		}()
 
 		payloadKind := payloadKindApp
@@ -172,22 +206,12 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		retryable := isRetryable(originalErr, retryCfg)
 		now := time.Now().UTC()
 		backoff := time.Duration(0)
-		var nextAttemptAt *time.Time
 		if originalErr != nil && retryable && attempt < maxAttempts {
 			backoff = computeBackoff(retryCfg, attempt)
-			na := now.Add(backoff)
-			nextAttemptAt = &na
 		}
 		meta := chapterMetadata{
-			Attempt:       attempt,
-			MaxAttempts:   maxAttempts,
-			BackoffMillis: backoff.Milliseconds(),
-			Retryable:     &retryable,
-			InputRef:      inputRef,
-			RunPolicy:     &effectivePolicy,
-		}
-		if nextAttemptAt != nil {
-			meta.NextAttemptAt = nextAttemptAt
+			Attempt:  attempt,
+			InputRef: inputRef,
 		}
 
 		chap, err := payloadToChapter(payload, artifacts, ordinal, taskType, r.engine.workerId, payloadKind, inputHash, now, meta)
@@ -206,7 +230,7 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		if retryable && attempt < maxAttempts {
 			attempt++
 			if backoff > 0 {
-				_ = r.AwaitDuration(swf.Duration(backoff))
+				_ = r.awaitUntil(now.Add(backoff), ordinal, attempt-1)
 			}
 			continue
 		}
@@ -234,11 +258,21 @@ func (r *runner) Logger() *slog.Logger {
 }
 
 func (r *runner) AwaitDuration(waitFor swf.Duration) error {
-	time.Sleep(waitFor.ToDuration())
-	return nil
+	wait := waitFor.ToDuration()
+	if wait <= 0 {
+		return nil
+	}
+	return r.awaitUntil(time.Now().Add(wait), r.storyCounter, 0)
 }
 
 func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	r.ctx = ctx
+	if r.engine != nil {
+		defer r.engine.resetAwaitState(r.jobId)
+	}
 	_ = lease.WithKeepAlive(r.engine.udb)
 
 	key := story.Key{AnthologyID: r.engine.tenantId, StoryID: string(r.jobId)}
@@ -298,16 +332,9 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 				r.logger.Error("job run not deterministic", "ordinal", ordinal)
 				return
 			}
-			if env.Meta.RunPolicy != nil {
-				r.jobPolicy = mergeRunPolicy(*env.Meta.RunPolicy, r.jobPolicy)
-				retryCfg = normalizeRetryPolicy(r.jobPolicy.Retry)
-				maxAttempts = int(retryCfg.MaximumAttempts)
-			}
-			if env.Meta.MaxAttempts > 0 {
-				maxAttempts = env.Meta.MaxAttempts
-			}
-			if env.Meta.Attempt > 0 {
-				attempt = env.Meta.Attempt + 1
+			priorAttempt := env.Meta.Attempt
+			if priorAttempt > 0 {
+				attempt = priorAttempt + 1
 			}
 			_, payloadErr := envelopeToTaskData(env, cached.Artifacts())
 			if payloadErr == nil {
@@ -315,17 +342,18 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 				return
 			}
 			retryable := isRetryable(payloadErr, retryCfg)
-			if env.Meta.Retryable != nil {
-				retryable = *env.Meta.Retryable
-			}
-			if !retryable || env.Meta.Attempt >= maxAttempts {
+			if !retryable || priorAttempt >= maxAttempts {
 				_ = lease.Complete(ctx, r.engine.udb)
 				return
 			}
-			if env.Meta.NextAttemptAt != nil {
-				waitFor := time.Until(*env.Meta.NextAttemptAt)
-				if waitFor > 0 {
-					_ = r.AwaitDuration(swf.Duration(waitFor))
+			backoff := time.Duration(0)
+			if priorAttempt > 0 {
+				backoff = computeBackoff(retryCfg, priorAttempt)
+			}
+			if backoff > 0 {
+				wakeAt := env.Meta.CreatedAt.Add(backoff)
+				if time.Now().Before(wakeAt) {
+					_ = r.awaitUntil(wakeAt, ordinal, priorAttempt)
 				}
 			}
 		} else if err != nil && !errors.Is(err, core.ErrNotFound) {
@@ -376,22 +404,12 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		retryable := isRetryable(originalErr, retryCfg)
 		now := time.Now().UTC()
 		backoff := time.Duration(0)
-		var nextAttemptAt *time.Time
 		if originalErr != nil && retryable && attempt < maxAttempts {
 			backoff = computeBackoff(retryCfg, attempt)
-			na := now.Add(backoff)
-			nextAttemptAt = &na
 		}
 		meta := chapterMetadata{
-			Attempt:       attempt,
-			MaxAttempts:   maxAttempts,
-			BackoffMillis: backoff.Milliseconds(),
-			Retryable:     &retryable,
-			InputRef:      inputRef,
-			RunPolicy:     &r.jobPolicy,
-		}
-		if nextAttemptAt != nil {
-			meta.NextAttemptAt = nextAttemptAt
+			Attempt:  attempt,
+			InputRef: inputRef,
 		}
 
 		chap, err := payloadToChapter(payload, artifacts, ordinal, r.worker.JobWorker.Name(), r.engine.workerId, payloadKind, inputHash, now, meta)
@@ -417,7 +435,7 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		if retryable && attempt < maxAttempts {
 			attempt++
 			if backoff > 0 {
-				_ = r.AwaitDuration(swf.Duration(backoff))
+				_ = r.awaitUntil(now.Add(backoff), ordinal, attempt-1)
 			}
 			continue
 		}
