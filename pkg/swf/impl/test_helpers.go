@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/colony-2/pgwf-go/installer"
 	"github.com/colony-2/strata/strata-go/pkg/daemon"
+	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/fergusstrange/embedded-postgres"
+	"github.com/segmentio/ksuid"
 )
 
 // InstallPGWF installs the pgwf schema into the provided Postgres instance.
@@ -104,4 +107,63 @@ func StartEmbeddedPostgres() (string, func(), error) {
 	}
 	dsn := fmt.Sprintf("postgres://postgres:postgres@localhost:%d/postgres?sslmode=disable", pgPort)
 	return dsn, stop, nil
+}
+
+func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.TaskWorker) (*EmbeddedEngine, error) {
+	dsn, stopPG, err := StartEmbeddedPostgres()
+	if err != nil {
+		return nil, err
+	}
+	defer stopPG()
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := InstallPGWF(ctx, db); err != nil {
+		return nil, err
+	}
+
+	s, err := StartEmbeddedStrata()
+	if err != nil {
+		return nil, err
+	}
+
+	b := swf.NewEngineBuilder(ksuid.New().String()).
+		WithAwaitRecycleThreshold(5 * time.Second).
+		WithPostgresDSN(dsn).
+		WithStrata(s.BaseURL).
+		WithStrataAPIKey(s.APIKey).
+		WithLogger(slog.Default()).
+		WithMaxActive(100)
+
+	if job != nil {
+		b.PlusWorkers(job)
+	}
+
+	engine, err := b.Build(Builder)
+
+	if err != nil {
+		return nil, err
+	}
+	full := &EmbeddedEngine{
+		SWFEngine:      engine,
+		stopPG:         s.Shutdown,
+		strataShutdown: nil,
+	}
+
+	return full, nil
+
+}
+
+type EmbeddedEngine struct {
+	swf.SWFEngine
+	stopPG         func()
+	strataShutdown func()
+}
+
+func (e *EmbeddedEngine) Shutdown() {
+	e.stopPG()
+	e.strataShutdown()
 }

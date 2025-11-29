@@ -123,13 +123,11 @@ func (e *EngineBuilder) WithAwaitRecycleThreshold(d time.Duration) *EngineBuilde
 	return e
 }
 
-func (e *EngineBuilder) PlusWorkers(jobWorker JobWorker, taskWorkers ...TaskWorker) *EngineBuilder {
+func AsWorkSet(jobWorker JobWorker, taskWorkers ...TaskWorker) (*WorkSet, error) {
 	namePattern := regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 	if !namePattern.MatchString(jobWorker.Name()) {
-		panic(fmt.Sprintf("invalid job worker name %s", jobWorker.Name()))
-	}
-	if _, ok := e.workers[jobWorker.Name()]; ok {
-		panic("job worker with name " + jobWorker.Name() + " already registered")
+		fmt.Println(jobWorker.Name())
+		return nil, fmt.Errorf("invalid job worker name %s", jobWorker.Name())
 	}
 
 	tasks := make(map[string]TaskWorker)
@@ -138,20 +136,34 @@ func (e *EngineBuilder) PlusWorkers(jobWorker JobWorker, taskWorkers ...TaskWork
 
 		if _, ok := tasks[tw.Name()]; ok {
 			if !namePattern.MatchString(tw.Name()) {
-				panic(fmt.Sprintf("invalid task worker name %s", tw.Name()))
+				return nil, fmt.Errorf("invalid task worker name %s", tw.Name())
 			}
-			panic("task worker with name " + tw.Name() + " already registered")
+
+			return nil, fmt.Errorf("task worker with name " + tw.Name() + " already registered")
 		}
 		tasks[tw.Name()] = tw
 		capabilities = append(capabilities, pgwf.Capability(jobWorker.Name()+":"+tw.Name()))
 	}
 
-	workerSet := WorkSet{
+	return &WorkSet{
 		JobWorker:    jobWorker,
 		TaskWorkers:  tasks,
 		Capabilities: capabilities,
+	}, nil
+
+}
+
+func (e *EngineBuilder) PlusWorkers(jobWorker JobWorker, taskWorkers ...TaskWorker) *EngineBuilder {
+
+	if _, ok := e.workers[jobWorker.Name()]; ok {
+		panic("job worker with name " + jobWorker.Name() + " already registered")
 	}
-	e.workers[jobWorker.Name()] = workerSet
+
+	ws, err := AsWorkSet(jobWorker, taskWorkers...)
+	if err != nil {
+		panic(err)
+	}
+	e.workers[jobWorker.Name()] = *ws
 	return e
 }
 
@@ -166,10 +178,6 @@ func (b *EngineBuilder) Build(builder Builder) (SWFEngine, error) {
 
 	if b.postgresDSN == "" {
 		return nil, fmt.Errorf("postgres DSN is required")
-	}
-
-	if len(b.workers) == 0 {
-		return nil, fmt.Errorf("at least one job worker must be registered")
 	}
 
 	if b.tenantId == "" {

@@ -83,6 +83,20 @@ type swfEngineImpl struct {
 	awaitRecycler   sync.Once
 }
 
+func (s *swfEngineImpl) RegisterWorkers(job swf.JobWorker, tasks ...swf.TaskWorker) error {
+	_, ok := s.workers[pgwf.Capability(job.Name())]
+	if ok {
+		return fmt.Errorf("worker %s already registered", job.Name())
+	}
+
+	set, err := swf.AsWorkSet(job, tasks...)
+	if err != nil {
+		return err
+	}
+	s.workers[pgwf.Capability(job.Name())] = set
+	return nil
+}
+
 type chapterMetadata struct {
 	Attempt       int
 	MaxAttempts   int
@@ -139,7 +153,7 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 	}
 	now := time.Now().UTC()
 	jobPolicy := job.RunPolicy
-	jobPolicy.Retry = normalizeRetryPolicy(jobPolicy.Retry)
+	jobPolicy = normalizeRunPolicy(jobPolicy)
 	co, err := taskDataToCreatOptions(taskData, 0, job.JobType, s.workerId, payloadKindApp, inputHash, now, chapterMetadata{
 		Attempt: 1,
 	})
@@ -179,7 +193,7 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 	}
 	now := time.Now().UTC()
 	jobPolicy := job.RunPolicy
-	jobPolicy.Retry = normalizeRetryPolicy(jobPolicy.Retry)
+	jobPolicy = normalizeRunPolicy(jobPolicy)
 	createOptions, err := taskDataToCreatOptions(job.Data, job.LastStepToKeep+1, job.JobType, s.workerId, payloadKindApp, inputHash, now, chapterMetadata{
 		Attempt: 1,
 	})
@@ -584,7 +598,7 @@ func (s *swfEngineImpl) ensureChildAndNotificationJobs(ctx context.Context, chil
 		return err
 	}
 
-	runPolicy.Retry = normalizeRetryPolicy(runPolicy.Retry)
+	runPolicy = normalizeRunPolicy(runPolicy)
 
 	tx, err := s.udb.BeginTx(ctx, nil)
 	if err != nil {
@@ -758,7 +772,7 @@ func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
 			s.logger.Warn("failed to decode job payload", "jobId", lease.JobID(), "error", err)
 		}
 	}
-	payload.RunPolicy.Retry = normalizeRetryPolicy(payload.RunPolicy.Retry)
+	payload.RunPolicy = normalizeRunPolicy(payload.RunPolicy)
 
 	s.resetAwaitState(lease.JobID())
 	runner := runner{

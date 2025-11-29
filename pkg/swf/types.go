@@ -46,6 +46,14 @@ func (d Data) ToBytes() ([]byte, error) {
 	return d.serialized, nil
 }
 
+func (d Data) ToMap() (map[string]interface{}, error) {
+	err := d.deserializeIfNeeded()
+	if err != nil {
+		return nil, err
+	}
+	return d.deserialized, nil
+}
+
 func (d Data) Set(key string, value any) error {
 	err := d.deserializeIfNeeded()
 	if err != nil {
@@ -84,6 +92,11 @@ func (d Duration) JSONSchema() *jsonschema.Schema {
 		Title:       "Duration",
 		Description: "Human friendly duration string",
 	}
+}
+
+func AsDuration(t time.Duration) *Duration {
+	d := Duration(t)
+	return &d
 }
 
 // MarshalYAML converts Duration to a YAML string
@@ -128,7 +141,23 @@ type RetryPolicy struct {
 // RunPolicy bundles runtime directives for jobs/tasks.
 // Future extensions may add fields like affinity or max duration.
 type RunPolicy struct {
-	Retry RetryPolicy `yaml:"retry,omitempty"`
+	Retry             RetryPolicy `yaml:"retry,omitempty"`
+	InvocationTimeout *Duration   `yaml:"invocation_timeout,omitempty"`
+	TotalTimeout      *Duration   `yaml:"total_timeout,omitempty"`
+}
+
+func DefaultRunPolicy() RunPolicy {
+	return RunPolicy{
+		InvocationTimeout: AsDuration(30 * time.Second),
+		TotalTimeout:      AsDuration(30 * time.Minute),
+		Retry: RetryPolicy{
+			InitialInterval:        Duration(100 * time.Millisecond),
+			BackoffCoefficient:     2.0,
+			MaximumInterval:        Duration(30 * time.Second),
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: []string{"SystemError"},
+		},
+	}
 }
 
 // InputReference points to an input chapter for error payloads/metadata.

@@ -25,6 +25,13 @@ type runner struct {
 	jobPolicy    swf.RunPolicy
 	capability   pgwf.Capability
 	ctx          context.Context
+	// current attempt bookkeeping for job-level Await/Spawn paths.
+	currentInvocationDeadline time.Time
+	currentTotalDeadline      time.Time
+	currentInvocationLimit    time.Duration
+	currentTotalLimit         time.Duration
+	currentInputRef           *swf.InputReference
+	currentKind               string
 }
 
 func (r *runner) GetJobId() swf.JobId {
@@ -33,6 +40,13 @@ func (r *runner) GetJobId() swf.JobId {
 
 func notificationJobID(child swf.JobId) pgwf.JobID {
 	return pgwf.JobID(fmt.Sprintf("%s-notify", child))
+}
+
+func durationPtrToDuration(d *swf.Duration) time.Duration {
+	if d == nil {
+		return 0
+	}
+	return time.Duration(*d)
 }
 
 type asyncChildSpawn struct {
@@ -46,7 +60,46 @@ func panicToAppError(rec interface{}) error {
 	return swf.AppError{Payload: swf.AppErrorPayload{Message: fmt.Sprintf("panic: %v", rec), Level: "error"}}
 }
 
-func (r *runner) awaitUntil(wakeAt time.Time, ordinal int64, attempt int) error {
+func (r *runner) taskTotalDeadline(ctx context.Context, key story.Key, ordinal int64, totalTimeout time.Duration) (time.Time, error) {
+	if totalTimeout <= 0 {
+		return time.Time{}, nil
+	}
+	startOrdinal := ordinal - 1
+	if startOrdinal < 0 {
+		startOrdinal = 0
+	}
+	chap, err := r.engine.strata.Chapter(ctx, key, startOrdinal)
+	if err != nil {
+		return time.Time{}, err
+	}
+	env, decErr := decodeChapterEnvelope(chap.Body())
+	if decErr != nil {
+		return time.Time{}, decErr
+	}
+	return env.Meta.CreatedAt.Add(totalTimeout), nil
+}
+
+func (r *runner) jobTotalDeadline(env0 chapterEnvelope, totalTimeout time.Duration) time.Time {
+	if totalTimeout <= 0 {
+		return time.Time{}
+	}
+	return env0.Meta.CreatedAt.Add(totalTimeout)
+}
+
+func (r *runner) awaitUntil(wakeAt time.Time, ordinal int64, attempt int, kind string, inputRef *swf.InputReference, invocationDeadline time.Time, totalDeadline time.Time, invocationLimit time.Duration, totalLimit time.Duration) error {
+	now := time.Now()
+	if !totalDeadline.IsZero() && now.After(totalDeadline) {
+		return swf.NewTimeoutError(kind, totalLimit, swf.TimeoutScopeTotal, inputRef, false)
+	}
+	if !invocationDeadline.IsZero() && now.After(invocationDeadline) {
+		return swf.NewTimeoutError(kind, invocationLimit, swf.TimeoutScopeInvocation, inputRef, true)
+	}
+	if !totalDeadline.IsZero() && wakeAt.After(totalDeadline) {
+		wakeAt = totalDeadline
+	}
+	if !invocationDeadline.IsZero() && wakeAt.After(invocationDeadline) {
+		wakeAt = invocationDeadline
+	}
 	if wakeAt.IsZero() || time.Now().After(wakeAt) {
 		return nil
 	}
@@ -73,10 +126,17 @@ func (r *runner) awaitUntil(wakeAt time.Time, ordinal int64, attempt int) error 
 		prematureCloseOut()
 		return ctx.Err()
 	}
+	now = time.Now()
+	if !totalDeadline.IsZero() && (now.After(totalDeadline) || now.Equal(totalDeadline)) {
+		return swf.NewTimeoutError(kind, totalLimit, swf.TimeoutScopeTotal, inputRef, false)
+	}
+	if !invocationDeadline.IsZero() && (now.After(invocationDeadline) || now.Equal(invocationDeadline)) {
+		return swf.NewTimeoutError(kind, invocationLimit, swf.TimeoutScopeInvocation, inputRef, true)
+	}
 	return nil
 }
 
-func (r *runner) awaitChild(ctx context.Context, childJobID swf.JobId, ordinal int64, notificationJobID pgwf.JobID) (swf.TaskData, error) {
+func (r *runner) awaitChild(ctx context.Context, childJobID swf.JobId, ordinal int64, notificationJobID pgwf.JobID, kind string, inputRef *swf.InputReference, invocationDeadline time.Time, totalDeadline time.Time, invocationLimit time.Duration, totalLimit time.Duration) (swf.TaskData, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,13 +171,23 @@ func (r *runner) awaitChild(ctx context.Context, childJobID swf.JobId, ordinal i
 			prematureCloseOut()
 			return nil, ctx.Err()
 		}
+		now := time.Now()
+		if !totalDeadline.IsZero() && (now.After(totalDeadline) || now.Equal(totalDeadline)) {
+			return nil, swf.NewTimeoutError(kind, totalLimit, swf.TimeoutScopeTotal, inputRef, false)
+		}
+		if !invocationDeadline.IsZero() && (now.After(invocationDeadline) || now.Equal(invocationDeadline)) {
+			return nil, swf.NewTimeoutError(kind, invocationLimit, swf.TimeoutScopeInvocation, inputRef, true)
+		}
 	}
 }
 
 func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData) (swf.TaskData, error) {
 	ordinal := r.storyCounter
 	r.storyCounter++
-	ctx := context.TODO()
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	inputHash, err := computeInputHash(ctx, data)
 	if err != nil {
@@ -130,12 +200,18 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 	inputRef.Hash = inputHash
 
 	basePolicy := r.jobPolicy
-	effectivePolicy := mergeRunPolicy(policy, basePolicy)
-	retryCfg := normalizeRetryPolicy(effectivePolicy.Retry)
+	effectivePolicy := normalizeRunPolicy(mergeRunPolicy(policy, basePolicy))
+	retryCfg := effectivePolicy.Retry
+	invocationTimeout := durationPtrToDuration(effectivePolicy.InvocationTimeout)
+	totalTimeout := durationPtrToDuration(effectivePolicy.TotalTimeout)
 	maxAttempts := int(retryCfg.MaximumAttempts)
 	attempt := 1
 
 	key := story.Key{AnthologyID: r.engine.tenantId, StoryID: string(r.jobId)}
+	totalDeadline, err := r.taskTotalDeadline(ctx, key, ordinal, totalTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("compute total deadline: %w", err)
+	}
 	chap, err := r.engine.strata.Chapter(ctx, key, ordinal)
 	if err == nil {
 		env, decErr := decodeChapterEnvelope(chap.Body())
@@ -147,6 +223,9 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		}
 		if env.Meta.InputHash != inputHash {
 			return nil, fmt.Errorf("%w: ordinal %d task %s", swf.ErrWorkflowNotDeterministic, ordinal, taskType)
+		}
+		if !totalDeadline.IsZero() && time.Now().After(totalDeadline) {
+			return nil, swf.NewTimeoutError("task", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
 		}
 		priorAttempt := env.Meta.Attempt
 		if priorAttempt > 0 {
@@ -166,7 +245,9 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			if backoff > 0 {
 				wakeAt := env.Meta.CreatedAt.Add(backoff)
 				if time.Now().Before(wakeAt) {
-					_ = r.awaitUntil(wakeAt, ordinal, priorAttempt)
+					if err := r.awaitUntil(wakeAt, ordinal, priorAttempt, "task", inputRef, time.Time{}, totalDeadline, 0, totalTimeout); err != nil {
+						return nil, err
+					}
 				}
 			}
 		} else {
@@ -204,29 +285,85 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 	}
 
 	for {
+		now := time.Now()
+		if !totalDeadline.IsZero() && now.After(totalDeadline) {
+			return nil, swf.NewTimeoutError("task", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+		}
+		attemptInvocationDeadline := time.Time{}
+		if invocationTimeout > 0 {
+			attemptInvocationDeadline = now.Add(invocationTimeout)
+		}
+
+		type taskResult struct {
+			output swf.TaskData
+			err    error
+		}
+		resultCh := make(chan taskResult, 1)
+		go func(attemptNum int) {
+			var output swf.TaskData
+			var taskErr error
+			func() {
+				defer func() {
+					if rec := recover(); rec != nil {
+						taskErr = panicToAppError(rec)
+					}
+				}()
+				output, taskErr = worker.Run(
+					swf.NewTaskContext(
+						r.GetJobId(),
+						ordinal,
+						r.logger.With("task", taskType, "step", ordinal, "attempt", attemptNum),
+						func(wakeAt time.Time) error {
+							return r.awaitUntil(wakeAt, ordinal, attemptNum, "task", inputRef, attemptInvocationDeadline, totalDeadline, invocationTimeout, totalTimeout)
+						},
+						func(jobType string, td swf.TaskData) (*swf.Future, error) {
+							return r.spawnAsyncWithDeadlines(jobType, td, attemptInvocationDeadline, totalDeadline, invocationTimeout, totalTimeout, inputRef)
+						},
+					),
+					data,
+				)
+			}()
+			resultCh <- taskResult{output: output, err: taskErr}
+		}(attempt)
+
+		deadline := attemptInvocationDeadline
+		if deadline.IsZero() || (!totalDeadline.IsZero() && totalDeadline.Before(deadline)) {
+			deadline = totalDeadline
+		}
+
 		var output swf.TaskData
 		var taskErr error
-		func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					taskErr = panicToAppError(rec)
+		if deadline.IsZero() {
+			res := <-resultCh
+			output, taskErr = res.output, res.err
+		} else {
+			timer := time.NewTimer(time.Until(deadline))
+			select {
+			case res := <-resultCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
 				}
-			}()
-			output, taskErr = worker.Run(
-				swf.NewTaskContext(
-					r.GetJobId(),
-					ordinal,
-					r.logger.With("task", taskType, "step", ordinal, "attempt", attempt),
-					func(wakeAt time.Time) error {
-						return r.awaitUntil(wakeAt, ordinal, attempt)
-					},
-					func(jobType string, td swf.TaskData) (*swf.Future, error) {
-						return r.SpawnAsync(jobType, td)
-					},
-				),
-				data,
-			)
-		}()
+				output, taskErr = res.output, res.err
+			case <-timer.C:
+				if !totalDeadline.IsZero() && deadline.Equal(totalDeadline) {
+					taskErr = swf.NewTimeoutError("task", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+				} else {
+					taskErr = swf.NewTimeoutError("task", invocationTimeout, swf.TimeoutScopeInvocation, inputRef, true)
+				}
+			}
+		}
+
+		now = time.Now()
+		if taskErr == nil {
+			if !totalDeadline.IsZero() && now.After(totalDeadline) {
+				taskErr = swf.NewTimeoutError("task", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+			} else if !attemptInvocationDeadline.IsZero() && now.After(attemptInvocationDeadline) {
+				taskErr = swf.NewTimeoutError("task", invocationTimeout, swf.TimeoutScopeInvocation, inputRef, true)
+			}
+		}
 
 		payloadKind := payloadKindApp
 		originalErr := taskErr
@@ -256,7 +393,7 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		}
 
 		retryable := isRetryable(originalErr, retryCfg)
-		now := time.Now().UTC()
+		now = time.Now().UTC()
 		backoff := time.Duration(0)
 		if originalErr != nil && retryable && attempt < maxAttempts {
 			backoff = computeBackoff(retryCfg, attempt)
@@ -282,7 +419,9 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		if retryable && attempt < maxAttempts {
 			attempt++
 			if backoff > 0 {
-				_ = r.awaitUntil(now.Add(backoff), ordinal, attempt-1)
+				if err := r.awaitUntil(now.Add(backoff), ordinal, attempt-1, "task", inputRef, time.Time{}, totalDeadline, 0, totalTimeout); err != nil {
+					return nil, err
+				}
 			}
 			continue
 		}
@@ -314,10 +453,18 @@ func (r *runner) AwaitDuration(waitFor swf.Duration) error {
 	if wait <= 0 {
 		return nil
 	}
-	return r.awaitUntil(time.Now().Add(wait), r.storyCounter, 0)
+	kind := r.currentKind
+	if kind == "" {
+		kind = "task"
+	}
+	return r.awaitUntil(time.Now().Add(wait), r.storyCounter, 0, kind, r.currentInputRef, r.currentInvocationDeadline, r.currentTotalDeadline, r.currentInvocationLimit, r.currentTotalLimit)
 }
 
 func (r *runner) SpawnAsync(jobType string, data swf.TaskData) (*swf.Future, error) {
+	return r.spawnAsyncWithDeadlines(jobType, data, r.currentInvocationDeadline, r.currentTotalDeadline, r.currentInvocationLimit, r.currentTotalLimit, r.currentInputRef)
+}
+
+func (r *runner) spawnAsyncWithDeadlines(jobType string, data swf.TaskData, invocationDeadline time.Time, totalDeadline time.Time, invocationLimit time.Duration, totalLimit time.Duration, inputRef *swf.InputReference) (*swf.Future, error) {
 	if jobType == "" {
 		return nil, fmt.Errorf("job type is required")
 	}
@@ -395,14 +542,13 @@ func (r *runner) SpawnAsync(jobType string, data swf.TaskData) (*swf.Future, err
 		}
 	}
 
-	runPolicy := r.jobPolicy
-	runPolicy.Retry = normalizeRetryPolicy(runPolicy.Retry)
+	runPolicy := normalizeRunPolicy(r.jobPolicy)
 	if err := r.engine.ensureChildAndNotificationJobs(ctx, pgwf.JobID(childJobID), notifyJobID, jobType, runPolicy, swf.JobId(r.jobId), ordinal); err != nil {
 		return nil, err
 	}
 
 	return swf.NewFuture(childJobID, func(waitCtx context.Context) (swf.TaskData, error) {
-		return r.awaitChild(waitCtx, childJobID, ordinal, notifyJobID)
+		return r.awaitChild(waitCtx, childJobID, ordinal, notifyJobID, "task", inputRef, invocationDeadline, totalDeadline, invocationLimit, totalLimit)
 	}), nil
 }
 
@@ -430,14 +576,16 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 	if env0.Meta.RunPolicy != nil {
 		r.jobPolicy = mergeRunPolicy(*env0.Meta.RunPolicy, r.jobPolicy)
 	}
+	r.jobPolicy = normalizeRunPolicy(r.jobPolicy)
 	inputData, err := envelopeToTaskData(env0, chap0.Artifacts())
 	if err != nil {
 		r.logger.Error("failed to decode initial chapter payload", "error", err)
 		return
 	}
 
-	retryCfg := normalizeRetryPolicy(r.jobPolicy.Retry)
-	r.jobPolicy.Retry = retryCfg
+	retryCfg := r.jobPolicy.Retry
+	invocationTimeout := durationPtrToDuration(r.jobPolicy.InvocationTimeout)
+	totalTimeout := durationPtrToDuration(r.jobPolicy.TotalTimeout)
 
 	inputHash, err := computeInputHash(ctx, inputData)
 	if err != nil {
@@ -445,18 +593,78 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		return
 	}
 	inputRef := &swf.InputReference{Ordinal: 0, Hash: inputHash}
+	totalDeadline := r.jobTotalDeadline(env0, totalTimeout)
 
 	for {
+		now := time.Now()
+		if !totalDeadline.IsZero() && now.After(totalDeadline) {
+			jobErr := swf.NewTimeoutError("job", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+			r.logger.Error("job total timeout", "error", jobErr)
+			return
+		}
+		attemptInvocationDeadline := time.Time{}
+		if invocationTimeout > 0 {
+			attemptInvocationDeadline = now.Add(invocationTimeout)
+		}
+		r.currentInvocationDeadline = attemptInvocationDeadline
+		r.currentTotalDeadline = totalDeadline
+		r.currentInvocationLimit = invocationTimeout
+		r.currentTotalLimit = totalTimeout
+		r.currentInputRef = inputRef
+		r.currentKind = "job"
+
 		var output swf.JobData
 		var jobErr error
-		func() {
+		type jobResult struct {
+			output swf.JobData
+			err    error
+		}
+		resultCh := make(chan jobResult, 1)
+		go func() {
 			defer func() {
 				if rec := recover(); rec != nil {
 					jobErr = panicToAppError(rec)
 				}
 			}()
 			output, jobErr = r.worker.JobWorker.Run(r, inputData)
+			resultCh <- jobResult{output: output, err: jobErr}
 		}()
+
+		deadline := attemptInvocationDeadline
+		if deadline.IsZero() || (!totalDeadline.IsZero() && totalDeadline.Before(deadline)) {
+			deadline = totalDeadline
+		}
+		if deadline.IsZero() {
+			res := <-resultCh
+			output, jobErr = res.output, res.err
+		} else {
+			timer := time.NewTimer(time.Until(deadline))
+			select {
+			case res := <-resultCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				output, jobErr = res.output, res.err
+			case <-timer.C:
+				if !totalDeadline.IsZero() && deadline.Equal(totalDeadline) {
+					jobErr = swf.NewTimeoutError("job", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+				} else {
+					jobErr = swf.NewTimeoutError("job", invocationTimeout, swf.TimeoutScopeInvocation, inputRef, true)
+				}
+			}
+		}
+
+		now = time.Now()
+		if jobErr == nil {
+			if !totalDeadline.IsZero() && now.After(totalDeadline) {
+				jobErr = swf.NewTimeoutError("job", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+			} else if !attemptInvocationDeadline.IsZero() && now.After(attemptInvocationDeadline) {
+				jobErr = swf.NewTimeoutError("job", invocationTimeout, swf.TimeoutScopeInvocation, inputRef, true)
+			}
+		}
 
 		ordinal := r.storyCounter
 		r.storyCounter++
@@ -494,7 +702,10 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 			if backoff > 0 {
 				wakeAt := env.Meta.CreatedAt.Add(backoff)
 				if time.Now().Before(wakeAt) {
-					_ = r.awaitUntil(wakeAt, ordinal, priorAttempt)
+					if err := r.awaitUntil(wakeAt, ordinal, priorAttempt, "job", inputRef, time.Time{}, totalDeadline, 0, totalTimeout); err != nil {
+						r.logger.Error("job await failed", "error", err)
+						return
+					}
 				}
 			}
 		} else if err != nil && !errors.Is(err, core.ErrNotFound) {
@@ -543,7 +754,7 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		}
 
 		retryable := isRetryable(originalErr, retryCfg)
-		now := time.Now().UTC()
+		now = time.Now().UTC()
 		backoff := time.Duration(0)
 		if originalErr != nil && retryable && attempt < maxAttempts {
 			backoff = computeBackoff(retryCfg, attempt)
@@ -576,7 +787,10 @@ func (r *runner) Run(ctx context.Context, lease *pgwf.Lease) {
 		if retryable && attempt < maxAttempts {
 			attempt++
 			if backoff > 0 {
-				_ = r.awaitUntil(now.Add(backoff), ordinal, attempt-1)
+				if err := r.awaitUntil(now.Add(backoff), ordinal, attempt-1, "job", inputRef, time.Time{}, totalDeadline, 0, totalTimeout); err != nil {
+					r.logger.Error("job await failed", "error", err)
+					return
+				}
 			}
 			continue
 		}

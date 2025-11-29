@@ -18,6 +18,7 @@ const (
 	payloadKindAppError    = "AppError"
 	payloadKindSystemError = "SystemError"
 	payloadKindAppChildJob = "AppChildJob"
+	payloadKindTimeout     = "Timeout"
 )
 
 type chapterMeta struct {
@@ -110,6 +111,14 @@ func computeInputHash(ctx context.Context, taskData swf.TaskData) (string, error
 }
 
 func errorPayloadFromError(err error, inputRef *swf.InputReference) (json.RawMessage, string, error) {
+	var timeoutErr swf.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		payload := timeoutErr.Payload
+		payload.InputRef = inputRef
+		raw, tdErr := json.Marshal(payload)
+		return json.RawMessage(raw), payloadKindTimeout, tdErr
+	}
+
 	var sysErr swf.SystemError
 	if errors.As(err, &sysErr) {
 		payload := sysErr.Payload
@@ -160,6 +169,12 @@ func envelopeToTaskData(env chapterEnvelope, artifacts []swf.Artifact) (swf.Task
 	case payloadKindAppChildJob:
 		// Spawn metadata; treat as successful payload.
 		return td, nil
+	case payloadKindTimeout:
+		var p swf.TimeoutPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return td, err
+		}
+		return td, swf.TimeoutError{Payload: p}
 	case payloadKindAppError:
 		// Rehydrate a cached application-level error.
 		var p swf.AppErrorPayload

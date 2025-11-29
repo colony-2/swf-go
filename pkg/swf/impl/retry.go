@@ -12,7 +12,13 @@ import (
 func mergeRunPolicy(override, base swf.RunPolicy) swf.RunPolicy {
 	merged := base
 	merged.Retry = mergeRetryPolicy(override.Retry, base.Retry)
-	return merged
+	if override.InvocationTimeout != nil {
+		merged.InvocationTimeout = normalizeTimeout(override.InvocationTimeout)
+	}
+	if override.TotalTimeout != nil {
+		merged.TotalTimeout = normalizeTimeout(override.TotalTimeout)
+	}
+	return normalizeRunPolicy(merged)
 }
 
 func mergeRetryPolicy(override, base swf.RetryPolicy) swf.RetryPolicy {
@@ -46,6 +52,26 @@ func normalizeRetryPolicy(policy swf.RetryPolicy) swf.RetryPolicy {
 	return rp
 }
 
+func normalizeRunPolicy(policy swf.RunPolicy) swf.RunPolicy {
+	p := policy
+	p.Retry = normalizeRetryPolicy(p.Retry)
+	p.InvocationTimeout = normalizeTimeout(p.InvocationTimeout)
+	p.TotalTimeout = normalizeTimeout(p.TotalTimeout)
+	return p
+}
+
+func normalizeTimeout(d *swf.Duration) *swf.Duration {
+	if d == nil {
+		return nil
+	}
+	if time.Duration(*d) < 0 {
+		return nil
+	}
+	// preserve zero to allow explicit disable.
+	val := *d
+	return &val
+}
+
 func computeBackoff(rp swf.RetryPolicy, attempt int) time.Duration {
 	base := time.Duration(rp.InitialInterval)
 	backoff := float64(base)
@@ -66,6 +92,10 @@ func computeBackoff(rp swf.RetryPolicy, attempt int) time.Duration {
 func isRetryable(err error, policy swf.RetryPolicy) bool {
 	if err == nil {
 		return false
+	}
+	var to swf.TimeoutError
+	if errors.As(err, &to) {
+		return to.Payload.Retryable
 	}
 	var nr swf.NonRetryableError
 	if errors.As(err, &nr) && nr.NonRetryable() {
