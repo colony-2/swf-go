@@ -6,6 +6,7 @@ var (
 	ErrWorkflowNotDeterministic = errors.New("workflow was not deterministic")
 	ErrMissingInputHash         = errors.New("workflow deterministic metadata missing input hash")
 	ErrJobNotComplete           = errors.New("job not complete")
+	ErrJobNotFound              = errors.New("job not found")
 )
 
 // NonRetryableError marks an error as not eligible for retries.

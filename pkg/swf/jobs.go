@@ -31,10 +31,18 @@ type CancelJob struct {
 	Reason string
 }
 
-type JobStatus struct {
-	JobId JobId
-	Step  int64
-}
+type JobStatus string
+
+const (
+	JobStatusReady          JobStatus = "READY"
+	JobStatusExpired        JobStatus = "EXPIRED"
+	JobStatusPendingJobs    JobStatus = "PENDING_JOBS"
+	JobStatusAwaitingFuture JobStatus = "AWAITING_FUTURE"
+	JobStatusActive         JobStatus = "ACTIVE"
+	JobStatusCrashConcern   JobStatus = "CRASH_CONCERN"
+	JobStatusCancelled      JobStatus = "CANCELLED"
+	JobStatusCompleted      JobStatus = "COMPLETED"
+)
 
 type JobData TaskData
 
@@ -139,7 +147,7 @@ func AsWorkSet(jobWorker JobWorker, taskWorkers ...TaskWorker) (*WorkSet, error)
 				return nil, fmt.Errorf("invalid task worker name %s", tw.Name())
 			}
 
-			return nil, fmt.Errorf("task worker with name " + tw.Name() + " already registered")
+			return nil, fmt.Errorf("task worker with name %s already registered", tw.Name())
 		}
 		tasks[tw.Name()] = tw
 		capabilities = append(capabilities, pgwf.Capability(jobWorker.Name()+":"+tw.Name()))

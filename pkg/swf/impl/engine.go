@@ -493,23 +493,23 @@ func payloadToChapter(payload json.RawMessage, artifacts []swf.Artifact, ordinal
 
 func (s *swfEngineImpl) CheckJobStatus(ctx context.Context, jobId swf.JobId) (swf.JobStatus, error) {
 	var job Job
-	if err := s.db.WithContext(ctx).First(&job, "job_id = ?", string(jobId)).Error; err != nil {
-		return swf.JobStatus{}, err
+	err := s.db.WithContext(ctx).First(&job, "job_id = ?", string(jobId)).Error
+	if err == nil {
+		return swf.JobStatus(job.Status), nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", err
 	}
 
-	// Attempt to derive the last ordinal from Strata; fallback to 0 on error.
-	key := story.Key{AnthologyID: s.tenantId, StoryID: string(jobId)}
-	step := int64(0)
-	if st, err := s.strata.Story(ctx, key); err == nil {
-		if chap, err := st.GetLastChapter(ctx); err == nil && chap != nil {
-			step = chap.Ordinal()
-		}
+	var archived archivedJob
+	err = s.db.WithContext(ctx).First(&archived, "job_id = ?", string(jobId)).Error
+	if err == nil {
+		return swf.JobStatusCompleted, nil
 	}
-
-	return swf.JobStatus{
-		JobId: swf.JobId(job.JobID),
-		Step:  step,
-	}, nil
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", swf.ErrJobNotFound
+	}
+	return "", err
 }
 
 func (s *swfEngineImpl) GetJobResult(ctx context.Context, jobId swf.JobId) (swf.TaskData, error) {

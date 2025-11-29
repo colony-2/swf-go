@@ -30,3 +30,11 @@ type Job struct {
 func (Job) TableName() string {
 	return "pgwf.jobs_with_status"
 }
+
+type archivedJob struct {
+	JobID string `gorm:"column:job_id;primaryKey"`
+}
+
+func (archivedJob) TableName() string {
+	return "pgwf.jobs_archive"
+}
