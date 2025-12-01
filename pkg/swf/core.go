@@ -12,7 +12,7 @@ type SWFEngine interface {
 	taskRunApi
 	loopWorkerApi
 
-	RegisterWorkers(job JobWorker, tasks ...TaskWorker) error
+	RegisterWorkers(workset *WorkSet) error
 }
 
 func WaitForJobToComplete(ctx context.Context, timeout time.Duration, jobId JobId, engine SWFEngine) error {

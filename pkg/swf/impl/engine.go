@@ -83,17 +83,13 @@ type swfEngineImpl struct {
 	awaitRecycler   sync.Once
 }
 
-func (s *swfEngineImpl) RegisterWorkers(job swf.JobWorker, tasks ...swf.TaskWorker) error {
-	_, ok := s.workers[pgwf.Capability(job.Name())]
+func (s *swfEngineImpl) RegisterWorkers(workset *swf.WorkSet) error {
+	_, ok := s.workers[pgwf.Capability(workset.JobWorker.Name())]
 	if ok {
-		return fmt.Errorf("worker %s already registered", job.Name())
+		return fmt.Errorf("worker %s already registered", workset.JobWorker.Name())
 	}
 
-	set, err := swf.AsWorkSet(job, tasks...)
-	if err != nil {
-		return err
-	}
-	s.workers[pgwf.Capability(job.Name())] = set
+	s.workers[pgwf.Capability(workset.JobWorker.Name())] = workset
 	return nil
 }
 
