@@ -55,15 +55,15 @@ func StartEmbeddedStrata() (*EmbeddedStrataHandle, error) {
 
 	d, err := daemon.StartEmbedded(context.Background(), cfg)
 	if err != nil {
-		os.RemoveAll(rowDir)
-		os.RemoveAll(blobDir)
+		_ = os.RemoveAll(rowDir)
+		_ = os.RemoveAll(blobDir)
 		return nil, err
 	}
 	addr, err := d.Addr()
 	if err != nil {
-		d.Shutdown(context.Background())
-		os.RemoveAll(rowDir)
-		os.RemoveAll(blobDir)
+		_ = d.Shutdown(context.Background())
+		_ = os.RemoveAll(rowDir)
+		_ = os.RemoveAll(blobDir)
 		return nil, err
 	}
 
@@ -71,9 +71,9 @@ func StartEmbeddedStrata() (*EmbeddedStrataHandle, error) {
 		BaseURL: "http://" + addr,
 		APIKey:  "test-token",
 		Shutdown: func() {
-			d.Shutdown(context.Background())
-			os.RemoveAll(rowDir)
-			os.RemoveAll(blobDir)
+			_ = d.Shutdown(context.Background())
+			_ = os.RemoveAll(rowDir)
+			_ = os.RemoveAll(blobDir)
 		},
 	}, nil
 }
