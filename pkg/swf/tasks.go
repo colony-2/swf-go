@@ -9,6 +9,8 @@ import (
 
 type taskRunApi interface {
 	FindTasksWaitingForCapability(ctx context.Context, jobType string, taskType string) ([]TaskHandle, error)
+	// GetWaitingTask returns a task handle if the job is currently ready/pending that capability.
+	GetWaitingTask(ctx context.Context, id JobId) (TaskHandle, error)
 }
 
 type TaskContext struct {
@@ -63,6 +65,7 @@ type TaskHandle interface {
 	JobId() JobId
 	Data() (TaskData, error)
 	Finish(ctx context.Context, taskData TaskData) error
+	TaskOrdinalToComplete() int64
 }
 
 type TaskCompletion struct {

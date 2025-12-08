@@ -49,19 +49,21 @@ type ToyEngine struct {
 }
 
 type jobRecord struct {
-	mu        sync.Mutex
-	status    swf.JobStatus
-	result    swf.TaskData
-	err       error
-	cancelled bool
-	cancel    context.CancelFunc
-	started   time.Time
-	finished  time.Time
-	jobType   string
-	singleton *string
-	createdAt time.Time
-	archived  *time.Time
-	payload   []byte
+	mu         sync.Mutex
+	status     swf.JobStatus
+	result     swf.TaskData
+	err        error
+	cancelled  bool
+	cancel     context.CancelFunc
+	started    time.Time
+	finished   time.Time
+	jobType    string
+	singleton  *string
+	createdAt  time.Time
+	archived   *time.Time
+	payload    []byte
+	capability string
+	step       int64
 }
 
 type pendingTask struct {
@@ -222,6 +224,25 @@ func (e *ToyEngine) FindTasksWaitingForCapability(ctx context.Context, jobType s
 	return handles, nil
 }
 
+// GetWaitingTask returns a pending handle for the given job ID if present.
+func (e *ToyEngine) GetWaitingTask(ctx context.Context, id swf.JobId) (swf.TaskHandle, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, queue := range e.pending {
+		for _, p := range queue {
+			if p.jobID == id {
+				return &pendingHandle{engine: e, task: p}, nil
+			}
+		}
+	}
+	return nil, swf.ErrJobNotFound
+}
+
 func containsStore(stores []swf.JobStore, store swf.JobStore) bool {
 	for _, s := range stores {
 		if s == store {
@@ -359,6 +380,38 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 		return false
 	}
 
+	jobTaskAllowed := func(jobID swf.JobId, rec *jobRecord) bool {
+		if len(req.JobTasks) == 0 {
+			return true
+		}
+		// Build capability set for this job from pending queues.
+		caps := make(map[string]struct{})
+		for capName, queue := range e.pending {
+			for _, p := range queue {
+				if p.jobID == jobID {
+					caps[capName] = struct{}{}
+				}
+			}
+		}
+		// If no current pending capabilities, fall back to the last seen capability on the record (e.g., after completion).
+		if len(caps) == 0 {
+			if rec.capability != "" {
+				caps[rec.capability] = struct{}{}
+			} else {
+				return false
+			}
+		}
+		for _, pair := range req.JobTasks {
+			if pair.JobType == "" || pair.TaskType == "" {
+				continue
+			}
+			if _, ok := caps[pair.JobType+":"+pair.TaskType]; ok {
+				return true
+			}
+		}
+		return false
+	}
+
 	statusAllowed := func(st swf.JobStatus) bool {
 		if len(req.Statuses) == 0 {
 			return true
@@ -409,6 +462,10 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			rec.mu.Unlock()
 			continue
 		}
+		if !jobTaskAllowed(id, rec) {
+			rec.mu.Unlock()
+			continue
+		}
 		if req.CreatedAfter != nil && rec.createdAt.Before(*req.CreatedAfter) {
 			rec.mu.Unlock()
 			continue
@@ -436,6 +493,16 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			CreatedAt:       rec.createdAt,
 			ArchivedAt:      rec.archived,
 			Payload:         payloadCopy,
+			TaskWaitInput:   nil,
+			TaskWaitOutput:  nil,
+			TaskWaitNext:    nil,
+		}
+		if rec.capability != "" {
+			summary.TaskWaitNext = &rec.capability
+			step := rec.step
+			summary.TaskWaitInput = &step
+			output := step + 1
+			summary.TaskWaitOutput = &output
 		}
 		rec.mu.Unlock()
 		records = append(records, summary)
@@ -615,10 +682,21 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 
 	c.engine.mu.Lock()
 	c.engine.pending[capability] = append(c.engine.pending[capability], pending)
+	c.record.mu.Lock()
+	if c.record.status != swf.JobStatusCancelled {
+		c.record.status = swf.JobStatusPendingJobs
+	}
+	c.record.capability = capability
+	c.record.mu.Unlock()
 	c.engine.mu.Unlock()
 
 	select {
 	case res := <-pending.done:
+		c.record.mu.Lock()
+		if !c.record.cancelled {
+			c.record.status = swf.JobStatusActive
+		}
+		c.record.mu.Unlock()
 		if res.err != nil {
 			return nil, res.err
 		}

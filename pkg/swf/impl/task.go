@@ -20,6 +20,10 @@ type taskHandleImpl struct {
 	taskType      string
 }
 
+func (h *taskHandleImpl) TaskOrdinalToComplete() int64 {
+	return h.outputOrdinal
+}
+
 func (h *taskHandleImpl) chapter() (story.Chapter, error) {
 	if h.inputChapter == nil {
 		chapter, err := h.engine.strata.Chapter(context.TODO(), story.Key{AnthologyID: h.engine.tenantId, StoryID: string(h.JobId())}, h.inputOrdinal)

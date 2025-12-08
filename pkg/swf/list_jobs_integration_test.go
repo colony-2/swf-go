@@ -103,6 +103,18 @@ VALUES ($1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', false, $5)
 		}
 	})
 
+	t.Run("filters by job/task tuple", func(t *testing.T) {
+		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
+			JobTasks: []swf.JobTaskFilter{{JobType: "beta", TaskType: "task"}},
+		})
+		if err != nil {
+			t.Fatalf("ListJobs: %v", err)
+		}
+		if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != "job-active-B" {
+			t.Fatalf("expected job-active-B from job/task filter, got %+v", resp.Jobs)
+		}
+	})
+
 	t.Run("paginates newest first across union", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
 			PageSize: 2,

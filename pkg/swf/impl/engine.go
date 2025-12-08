@@ -733,14 +733,24 @@ func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (
 		}
 	}
 
-	buildJobTypeClause := func(jobTypes []string, args *[]any) string {
-		if len(jobTypes) == 0 {
+	buildJobTypeClause := func(jobTypes []string, jobTasks []swf.JobTaskFilter, args *[]any) string {
+		if len(jobTypes) == 0 && len(jobTasks) == 0 {
 			return ""
 		}
-		ors := make([]string, 0, len(jobTypes))
+		ors := make([]string, 0, len(jobTypes)+len(jobTasks))
 		for _, jt := range jobTypes {
 			ors = append(ors, "(next_need = ? OR next_need LIKE ?)")
 			*args = append(*args, jt, jt+":%")
+		}
+		for _, cap := range jobTasks {
+			if cap.JobType == "" || cap.TaskType == "" {
+				continue
+			}
+			ors = append(ors, "next_need = ?")
+			*args = append(*args, cap.JobType+":"+cap.TaskType)
+		}
+		if len(ors) == 0 {
+			return ""
 		}
 		return "(" + strings.Join(ors, " OR ") + ")"
 	}
@@ -755,7 +765,7 @@ func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (
 				activeArgs = append(activeArgs, st)
 			}
 		}
-		if clause := buildJobTypeClause(req.JobTypes, &activeArgs); clause != "" {
+		if clause := buildJobTypeClause(req.JobTypes, req.JobTasks, &activeArgs); clause != "" {
 			activeConds = append(activeConds, clause)
 		}
 		if len(req.SingletonKeys) > 0 {
@@ -785,8 +795,8 @@ func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (
 	if includeArchive {
 		archiveConds := make([]string, 0)
 		archiveArgs := make([]any, 0)
-		if len(req.JobTypes) > 0 {
-			archiveConds = append(archiveConds, buildJobTypeClause(req.JobTypes, &archiveArgs))
+		if clause := buildJobTypeClause(req.JobTypes, req.JobTasks, &archiveArgs); clause != "" {
+			archiveConds = append(archiveConds, clause)
 		}
 		if len(req.SingletonKeys) > 0 {
 			archiveConds = append(archiveConds, fmt.Sprintf("singleton_key IN (%s)", strings.Join(makePlaceholders(len(req.SingletonKeys)), ",")))
@@ -841,22 +851,36 @@ func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (
 		for _, wf := range r.WaitFor {
 			waitFor = append(waitFor, swf.JobId(wf))
 		}
-		res := swf.JobSummary{
-			JobID:           swf.JobId(r.JobID),
-			Status:          swf.JobStatus(r.Status),
-			JobType:         swf.JobTypeFromNextNeed(r.NextNeed),
-			SingletonKey:    r.SingletonKey,
-			WaitFor:         waitFor,
-			AvailableAt:     r.AvailableAt,
-			ExpiresAt:       timePtr(r.ExpiresAt),
-			LeaseExpiresAt:  timePtr(r.LeaseExpiresAt),
-			CancelRequested: r.CancelRequested,
-			CreatedAt:       r.CreatedAt,
-			ArchivedAt:      timePtr(r.ArchivedAt),
-			Payload:         json.RawMessage(r.Payload),
+			var (
+				taskWaitInput  *int64
+				taskWaitOutput *int64
+				taskWaitNext   *string
+			)
+			if tw, err := extractTaskWait(r.Payload); err == nil && tw != nil {
+				taskWaitInput = &tw.InputStep
+				taskWaitOutput = &tw.OutputStep
+				next := tw.Next
+				taskWaitNext = &next
+			}
+			res := swf.JobSummary{
+				JobID:           swf.JobId(r.JobID),
+				Status:          swf.JobStatus(r.Status),
+				JobType:         swf.JobTypeFromNextNeed(r.NextNeed),
+				SingletonKey:    r.SingletonKey,
+				WaitFor:         waitFor,
+				AvailableAt:     r.AvailableAt,
+				ExpiresAt:       timePtr(r.ExpiresAt),
+				LeaseExpiresAt:  timePtr(r.LeaseExpiresAt),
+				CancelRequested: r.CancelRequested,
+				CreatedAt:       r.CreatedAt,
+				ArchivedAt:      timePtr(r.ArchivedAt),
+				Payload:         json.RawMessage(r.Payload),
+				TaskWaitInput:   taskWaitInput,
+				TaskWaitOutput:  taskWaitOutput,
+				TaskWaitNext:    taskWaitNext,
+			}
+			result = append(result, res)
 		}
-		result = append(result, res)
-	}
 
 	return swf.ListJobsResponse{
 		Jobs:          result,
@@ -938,17 +962,9 @@ func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobTy
 
 	handles := make([]swf.TaskHandle, 0, len(jobs))
 	for _, j := range jobs {
-		var payload jobPayload
-		var tw *taskWait
-		if err = json.Unmarshal(j.Payload, &payload); err == nil {
-			tw = payload.TaskWait
-		}
-		if tw == nil {
-			legacy := taskWait{}
-			if err = json.Unmarshal(j.Payload, &legacy); err != nil {
-				return nil, err
-			}
-			tw = &legacy
+		tw, err := extractTaskWait(j.Payload)
+		if err != nil {
+			return nil, err
 		}
 		th := taskHandleImpl{
 			job:           j,
@@ -962,6 +978,53 @@ func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobTy
 	}
 
 	return handles, nil
+}
+
+func extractTaskWait(payloadJSON datatypes.JSON) (*taskWait, error) {
+	var payload jobPayload
+	if err := json.Unmarshal(payloadJSON, &payload); err == nil {
+		if payload.TaskWait != nil {
+			return payload.TaskWait, nil
+		}
+	}
+
+	var legacy taskWait
+	if err := json.Unmarshal(payloadJSON, &legacy); err != nil {
+		return nil, err
+	}
+	return &legacy, nil
+}
+
+func taskTypeFromCapability(cap string) string {
+	parts := strings.SplitN(cap, ":", 2)
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return cap
+}
+
+func (s *swfEngineImpl) GetWaitingTask(ctx context.Context, id swf.JobId) (swf.TaskHandle, error) {
+	var job Job
+	if err := s.db.WithContext(ctx).Where("job_id = ? AND status = ?", string(id), "READY").First(&job).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, swf.ErrJobNotFound
+		}
+		return nil, err
+	}
+
+	tw, err := extractTaskWait(job.Payload)
+	if err != nil {
+		return nil, err
+	}
+	th := &taskHandleImpl{
+		job:           job,
+		inputOrdinal:  tw.InputStep,
+		outputOrdinal: tw.OutputStep,
+		engine:        s,
+		nextNeed:      pgwf.Capability(tw.Next),
+		taskType:      taskTypeFromCapability(tw.Next),
+	}
+	return th, nil
 }
 
 var _ swf.SWFEngine = &swfEngineImpl{}

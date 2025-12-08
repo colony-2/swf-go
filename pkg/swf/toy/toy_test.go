@@ -271,7 +271,12 @@ func TestPendingTaskCompletion(t *testing.T) {
 		t.Fatalf("expected 1 pending handle, got %d", len(handles))
 	}
 
-	err := handles[0].Finish(context.Background(), swf.NewTaskDataOrPanic(map[string]int{"n": 5}))
+	handleByID, err := engine.GetWaitingTask(context.Background(), handles[0].JobId())
+	if err != nil {
+		t.Fatalf("GetWaitingTask: %v", err)
+	}
+
+	err = handleByID.Finish(context.Background(), swf.NewTaskDataOrPanic(map[string]int{"n": 5}))
 	if err != nil {
 		t.Fatalf("Finish failed: %v", err)
 	}
@@ -283,6 +288,16 @@ func TestPendingTaskCompletion(t *testing.T) {
 	}
 	if status != swf.JobStatusCompleted {
 		t.Fatalf("expected completed status, got %s", status)
+	}
+
+	resp, err := engine.ListJobs(context.Background(), swf.ListJobsRequest{
+		JobTasks: []swf.JobTaskFilter{{JobType: jobWorker.name, TaskType: jobWorker.task}},
+	})
+	if err != nil {
+		t.Fatalf("ListJobs with job/task filter: %v", err)
+	}
+	if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != handles[0].JobId() {
+		t.Fatalf("expected job from job/task filter, got %+v", resp.Jobs)
 	}
 }
 

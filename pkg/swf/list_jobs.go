@@ -23,6 +23,9 @@ type JobSummary struct {
 	CreatedAt       time.Time
 	ArchivedAt      *time.Time
 	Payload         json.RawMessage
+	TaskWaitInput   *int64
+	TaskWaitOutput  *int64
+	TaskWaitNext    *string
 }
 
 type JobStore string
@@ -34,11 +37,18 @@ const (
 	MaxListJobsPageSize              = 200
 )
 
+// JobTaskFilter narrows listings to jobs currently waiting on a specific job/task capability.
+type JobTaskFilter struct {
+	JobType  string
+	TaskType string
+}
+
 // ListJobsRequest filters and paginates the union of active + archived jobs.
 type ListJobsRequest struct {
 	Statuses      []JobStatus
 	Stores        []JobStore
 	JobTypes      []string
+	JobTasks      []JobTaskFilter
 	SingletonKeys []string
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
