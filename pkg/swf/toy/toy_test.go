@@ -11,6 +11,41 @@ import (
 	"github.com/colony-2/swf-go/pkg/swf"
 )
 
+func TestToyEngineCustomJobID(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
+	engine := NewToyEngine([]swf.WorkSet{ws})
+
+	customID := swf.JobId("my-custom-job-id")
+	input := swf.NewTaskDataOrPanic(map[string]int{"n": 1})
+	jobID, err := engine.StartJob(context.Background(), swf.StartJob{
+		JobType: ws.JobWorker.Name(),
+		JobID:   customID,
+		Data:    input,
+	})
+	if err != nil {
+		t.Fatalf("StartJob failed: %v", err)
+	}
+	if jobID != customID {
+		t.Fatalf("expected job ID %s, got %s", customID, jobID)
+	}
+
+	status, err := engine.CheckJobStatus(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("CheckJobStatus failed: %v", err)
+	}
+	if status != swf.JobStatusCompleted {
+		t.Fatalf("expected status %s, got %s", swf.JobStatusCompleted, status)
+	}
+
+	result, err := engine.GetJobResult(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("GetJobResult failed: %v", err)
+	}
+	if got := extractNumber(result); got != 4 {
+		t.Fatalf("unexpected result value, want 4 got %d", got)
+	}
+}
+
 func TestToyEngineRunsJobInline(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
 	engine := NewToyEngine([]swf.WorkSet{ws})

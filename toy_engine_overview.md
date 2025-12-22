@@ -4,7 +4,7 @@ ToyEngine is a synchronous, in-memory implementation of the `SWFEngine` interfac
 
 ## How It Works
 - **Construction**: `NewToyEngine(worksets, opts...)` accepts `WorkSet`s plus options for logger and job ID generator.
-- **Job start**: `StartJob`/`RestartJob` run inline. A job record is created in memory, marked active, and the job worker is invoked directly.
+- **Job start**: `StartJob`/`RestartJob` run inline. A job record is created in memory, marked active, and the job worker is invoked directly. The `StartJob` struct accepts an optional `JobID` field; if provided, it is used as the job identifier, otherwise a new unique ID is generated using ksuid (or the configured ID generator for ToyEngine).
 - **Tasks**: `DoTask` looks up the task worker by name in the job’s `WorkSet` and runs it on the same goroutine. `AwaitDuration` sleeps locally; there is no recycle/reschedule. Missing task workers return an error (no pending-handles in v1). `SpawnAsync` is unsupported.
 - **Status/results**: `CheckJobStatus` and `GetJobResult` read the in-memory record. A job that errors or panics is still marked `COMPLETED` with the error stored and returned by `GetJobResult`.
 - **Cancellation**: `CancelJob` is best-effort. It flips status to `CANCELLED`, calls the job’s cancel func, and records `context.Canceled`. It only has effect while `StartJob` is still running.

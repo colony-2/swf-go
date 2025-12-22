@@ -28,8 +28,8 @@ Goal: prove the simplest end-to-end flow works with two engines sharing a job wo
    - `t2.Run`: read integer `n`; return `n*2`.
    - `pipe.Run`: sequence through `DoTask("t1")`, `DoTask("t2")`, `DoTask("t1")`, `DoTask("t2")`; each `DoTask` passes along the prior output; final output returned to persist as the job’s last chapter.
 4) **Run workflow**
-   - Start both engines’ `Run(ctx)` loops (background contexts with cancel).
-   - Kick off a job via `e1.StartJob` with `JobType` = `pipe.Name()`, `SingletonKey` empty, and initial `JobData` containing integer `1`.
+   - Start both engines' `Run(ctx)` loops (background contexts with cancel).
+   - Kick off a job via `e1.StartJob` with `JobType` = `pipe.Name()`, `SingletonKey` empty, initial `JobData` containing integer `1`, and optionally a `JobID` (if not provided, one is automatically generated).
    - Poll for completion by:
      - Checking pgwf job status for the job ID reaching “done”/no outstanding leases, and
    - Fetching the Strata story chapters to ensure four task chapters exist (ordinals 1–4) plus the final job output (ordinal 5). With `t1` = add 1 and `t2` = double, starting from 1 should yield 2, 4, 5, 10, and a final 10 at ordinal 5.

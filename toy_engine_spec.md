@@ -44,7 +44,7 @@ Lightweight, dependency-free `SWFEngine` implementation meant for unit tests and
 ## Method Behaviors
 - `RegisterWorkers`: populates the engine’s worker map; duplicate job names error.
 - `StartJob`:
-  - Generate job ID and create a job record in `READY`, then mark `ACTIVE` immediately.
+  - Use provided `JobID` if present in the `StartJob` struct; otherwise generate a new job ID (using the configured generator or ksuid by default). Create a job record in `READY`, then mark `ACTIVE` immediately.
   - Clone the provided `RunPolicy` but ignore retries/reschedule knobs and timeouts in v1.
   - Run the job worker synchronously on the caller goroutine; when it returns, mark `COMPLETED` and store `result` or `err`.
 - `RestartJob`: treated as `StartJob` that seeds the job worker input with `restart.Data`; `LastStepToKeep` is ignored (no history to trim).

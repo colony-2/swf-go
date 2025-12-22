@@ -121,9 +121,14 @@ func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobId
 	if !ok {
 		return "", fmt.Errorf("job worker %s not registered", start.JobType)
 	}
-	jobID, err := e.idGenerator()
-	if err != nil {
-		return "", err
+	// Use provided JobID if present, otherwise generate a new one
+	jobID := start.JobID
+	if jobID == "" {
+		var err error
+		jobID, err = e.idGenerator()
+		if err != nil {
+			return "", err
+		}
 	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {

@@ -250,7 +250,11 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	jobId := swf.JobId(ksuid.New().String())
+	// Use provided JobID if present, otherwise generate a new one
+	jobId := job.JobID
+	if jobId == "" {
+		jobId = swf.JobId(ksuid.New().String())
+	}
 	key := story.Key{
 		AnthologyID: s.tenantId,
 		StoryID:     string(jobId),
