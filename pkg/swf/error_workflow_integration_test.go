@@ -43,7 +43,7 @@ func TestTaskErrorsAreEnvelopedAndReturned(t *testing.T) {
 			jobWorker := singleTaskJob{taskType: "err_task"}
 			taskWorker := errorTaskWorker{err: tt.taskErr}
 
-			engine, err := swf.NewEngineBuilder("tenant-task-"+tt.name).
+			engine, err := swf.NewEngineBuilder().
 				WithPostgresDSN(postgresDSN).
 				WithStrata(baseURL).
 				WithStrataAPIKey(strata.APIKey).
@@ -55,16 +55,18 @@ func TestTaskErrorsAreEnvelopedAndReturned(t *testing.T) {
 
 			go engine.Run(ctx)
 
-			jobID, err := engine.StartJob(ctx, swf.StartJob{
-				JobType: jobWorker.Name(),
-				Data:    swf.NewTaskDataOrPanic(map[string]interface{}{"n": 1}),
+			tenantID := "tenant-task-" + tt.name
+			jobKey, err := engine.StartJob(ctx, swf.StartJob{
+				TenantId: tenantID,
+				JobType:  jobWorker.Name(),
+				Data:     swf.NewTaskDataOrPanic(map[string]interface{}{"n": 1}),
 			})
 			if err != nil {
 				t.Fatalf("failed to start job: %v", err)
 			}
 
 			client := mustStrataClient(t, baseURL, strata.APIKey)
-			key := story.Key{AnthologyID: "tenant-task-" + tt.name, StoryID: string(jobID)}
+			key := story.Key{AnthologyID: tenantID, StoryID: jobKey.JobId}
 			chap := waitForChapter(t, client, key, 1, 10*time.Second)
 			var env struct {
 				PayloadKind string `json:"payload_kind"`
@@ -76,7 +78,7 @@ func TestTaskErrorsAreEnvelopedAndReturned(t *testing.T) {
 				t.Fatalf("expected chapter payload kind %s, got %s body=%s", tt.expectedKind, env.PayloadKind, string(chap.Body()))
 			}
 
-			td, gotErr := waitForJobResult(t, engine, postgresDSN, jobID, tt.expectAppError, tt.expectSysError)
+			td, gotErr := waitForJobResult(t, engine, postgresDSN, jobKey, tt.expectAppError, tt.expectSysError)
 			if gotErr == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -116,7 +118,7 @@ func TestJobErrorsAreEnvelopedAndReturned(t *testing.T) {
 
 			jobWorker := errorJobWorker{err: tt.jobErr}
 
-			engine, err := swf.NewEngineBuilder("tenant-job-" + tt.name).
+			engine, err := swf.NewEngineBuilder().
 				WithPostgresDSN(postgresDSN).
 				WithStrata(baseURL).
 				WithStrataAPIKey(strata.APIKey).
@@ -128,16 +130,18 @@ func TestJobErrorsAreEnvelopedAndReturned(t *testing.T) {
 
 			go engine.Run(ctx)
 
-			jobID, err := engine.StartJob(ctx, swf.StartJob{
-				JobType: jobWorker.Name(),
-				Data:    swf.NewTaskDataOrPanic(map[string]interface{}{"n": 1}),
+			tenantID := "tenant-job-" + tt.name
+			jobKey, err := engine.StartJob(ctx, swf.StartJob{
+				TenantId: tenantID,
+				JobType:  jobWorker.Name(),
+				Data:     swf.NewTaskDataOrPanic(map[string]interface{}{"n": 1}),
 			})
 			if err != nil {
 				t.Fatalf("failed to start job: %v", err)
 			}
 
 			client := mustStrataClient(t, baseURL, strata.APIKey)
-			key := story.Key{AnthologyID: "tenant-job-" + tt.name, StoryID: string(jobID)}
+			key := story.Key{AnthologyID: tenantID, StoryID: jobKey.JobId}
 			chap := waitForChapter(t, client, key, 1, 10*time.Second)
 			var env struct {
 				PayloadKind string `json:"payload_kind"`
@@ -149,7 +153,7 @@ func TestJobErrorsAreEnvelopedAndReturned(t *testing.T) {
 				t.Fatalf("expected chapter payload kind %s, got %s", tt.expectedKind, env.PayloadKind)
 			}
 
-			td, gotErr := waitForJobResult(t, engine, postgresDSN, jobID, tt.expectAppError, tt.expectSysError)
+			td, gotErr := waitForJobResult(t, engine, postgresDSN, jobKey, tt.expectAppError, tt.expectSysError)
 			if gotErr == nil {
 				t.Fatalf("expected error, got nil")
 			}
@@ -210,11 +214,11 @@ func waitForChapter(t *testing.T, client *strataclient.Client, key story.Key, or
 	return nil
 }
 
-func waitForJobResult(t *testing.T, engine swf.SWFEngine, dsn string, jobId swf.JobId, expectAppError, expectSysError bool) (swf.TaskData, error) {
+func waitForJobResult(t *testing.T, engine swf.SWFEngine, dsn string, jobKey swf.JobKey, expectAppError, expectSysError bool) (swf.TaskData, error) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		td, err := engine.GetJobResult(context.Background(), jobId)
+		td, err := engine.GetJobResult(context.Background(), jobKey)
 		if err == nil {
 			t.Logf("job result succeeded unexpectedly: %+v", td)
 			return td, nil
@@ -228,7 +232,7 @@ func waitForJobResult(t *testing.T, engine swf.SWFEngine, dsn string, jobId swf.
 			}
 			t.Logf("job result not ready: %v", err)
 			// Log active/archive state to help diagnose stuck jobs.
-			logJobState(t, dsn, jobId)
+			logJobState(t, dsn, jobKey)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -236,7 +240,7 @@ func waitForJobResult(t *testing.T, engine swf.SWFEngine, dsn string, jobId swf.
 	return nil, nil
 }
 
-func logJobState(t *testing.T, dsn string, jobId swf.JobId) {
+func logJobState(t *testing.T, dsn string, jobKey swf.JobKey) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Logf("logJobState: failed to open db: %v", err)
@@ -245,8 +249,8 @@ func logJobState(t *testing.T, dsn string, jobId swf.JobId) {
 	defer db.Close()
 
 	var active int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM pgwf.jobs WHERE job_id = $1`, jobId).Scan(&active)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pgwf.jobs WHERE job_id = $1`, jobKey.JobId).Scan(&active)
 	var archived int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM pgwf.jobs_archive WHERE job_id = $1`, jobId).Scan(&archived)
-	t.Logf("job state job_id=%s active=%d archived=%d", jobId, active, archived)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM pgwf.jobs_archive WHERE job_id = $1`, jobKey.JobId).Scan(&archived)
+	t.Logf("job state job_id=%s active=%d archived=%d", jobKey.JobId, active, archived)
 }

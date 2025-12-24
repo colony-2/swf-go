@@ -16,21 +16,22 @@ import (
 // StartJob defines the parameters for starting a new workflow job.
 // If JobID is provided, it will be used as the job identifier; otherwise, a new unique ID will be generated.
 type StartJob struct {
+	TenantId     string   // REQUIRED: Tenant for this job
 	JobType      string   // The type of job to start (must match a registered JobWorker name)
-	JobID        JobId    // Optional job identifier. If empty, a new unique ID will be generated using ksuid
+	JobID        string   // Optional job identifier. If empty, a new unique ID will be generated using ksuid
 	SingletonKey string   // Optional key to ensure only one job with this key runs at a time
 	Data         JobData  // Input data for the job
 	RunPolicy    RunPolicy // Runtime policy for retries, timeouts, etc.
 }
 
 type RestartJob struct {
-	PriorJobId     JobId
+	PriorJobKey    JobKey
 	LastStepToKeep int64
 	StartJob
 }
 
 type CancelJob struct {
-	JobId  JobId
+	JobKey JobKey
 	Reason string
 }
 
@@ -51,9 +52,9 @@ type JobData TaskData
 
 type JobContext interface {
 	//jobRunApi
-	GetJobId() JobId
+	GetJobKey() JobKey
 	Logger() *slog.Logger
-	//RunChildJobSync(ctx context.Context, childJob StartJob) (JobId, error)
+	//RunChildJobSync(ctx context.Context, childJob StartJob) (JobKey, error)
 	DoTask(policy RunPolicy, taskType string, data TaskData) (TaskData, error)
 	AwaitDuration(waitFor Duration) error
 	SpawnAsync(jobType string, data TaskData) (*Future, error)
@@ -65,16 +66,15 @@ type JobWorker interface {
 }
 
 type jobRunApi interface {
-	StartJob(ctx context.Context, start StartJob) (JobId, error)
-	RestartJob(ctx context.Context, restart RestartJob) (JobId, error)
+	StartJob(ctx context.Context, start StartJob) (JobKey, error)
+	RestartJob(ctx context.Context, restart RestartJob) (JobKey, error)
 	CancelJob(ctx context.Context, cancel CancelJob) error
-	CheckJobStatus(ctx context.Context, jobId JobId) (JobStatus, error)
-	GetJobResult(ctx context.Context, jobId JobId) (TaskData, error)
+	CheckJobStatus(ctx context.Context, jobKey JobKey) (JobStatus, error)
+	GetJobResult(ctx context.Context, jobKey JobKey) (TaskData, error)
 }
 
 type EngineBuilder struct {
 	workers      map[string]WorkSet
-	tenantId     string
 	maxActive    int
 	strataURI    string
 	strataAPIKey string
@@ -89,10 +89,9 @@ type WorkSet struct {
 	Capabilities []pgwf.Capability
 }
 
-func NewEngineBuilder(tenantId string) *EngineBuilder {
+func NewEngineBuilder() *EngineBuilder {
 	return &EngineBuilder{
 		workers:      make(map[string]WorkSet),
-		tenantId:     tenantId,
 		maxActive:    4,
 		logger:       slog.Default(),
 		awaitRecycle: 5 * time.Minute,
@@ -191,10 +190,6 @@ func (b *EngineBuilder) Build(builder Builder) (SWFEngine, error) {
 		return nil, fmt.Errorf("postgres DSN is required")
 	}
 
-	if b.tenantId == "" {
-		return nil, fmt.Errorf("tenant ID is required")
-	}
-
 	b.logger.Info("building engine", "workers", b.workers)
 	sclient, err := strataclient.New(strataclient.Config{
 		BaseURL: b.strataURI,
@@ -215,7 +210,7 @@ func (b *EngineBuilder) Build(builder Builder) (SWFEngine, error) {
 		ws[i] = v
 		i++
 	}
-	engine, err := builder(b.tenantId, db, sclient, ws, b.logger)
+	engine, err := builder(db, sclient, ws, b.logger)
 	if err != nil {
 		return nil, err
 	}
@@ -228,4 +223,4 @@ func (b *EngineBuilder) Build(builder Builder) (SWFEngine, error) {
 	return engine, nil
 }
 
-type Builder func(tenantId string, db *gorm.DB, strataClient *strataclient.Client, workers []WorkSet, logger *slog.Logger) (SWFEngine, error)
+type Builder func(db *gorm.DB, strataClient *strataclient.Client, workers []WorkSet, logger *slog.Logger) (SWFEngine, error)

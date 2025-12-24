@@ -28,7 +28,7 @@ func TestJobsEventuallyComplete(t *testing.T) {
 	defer strata.Shutdown()
 	waitForStrataReady(t, baseURL)
 
-	engine, err := swf.NewEngineBuilder("job-status-tenant").
+	engine, err := swf.NewEngineBuilder().
 		WithPostgresDSN(postgresDSN).
 		WithStrata(baseURL).
 		WithStrataAPIKey(strata.APIKey).
@@ -40,21 +40,23 @@ func TestJobsEventuallyComplete(t *testing.T) {
 
 	go engine.Run(ctx)
 
+	tenantID := "job-status-tenant"
 	jobInputs := []int{1, 2, 3}
-	jobIDs := make([]swf.JobId, 0, len(jobInputs))
+	jobKeys := make([]swf.JobKey, 0, len(jobInputs))
 	for _, n := range jobInputs {
-		id, err := engine.StartJob(ctx, swf.StartJob{
-			JobType: statusJobName,
-			Data:    swf.NewTaskDataOrPanic(map[string]interface{}{"n": n}),
+		key, err := engine.StartJob(ctx, swf.StartJob{
+			TenantId: tenantID,
+			JobType:  statusJobName,
+			Data:     swf.NewTaskDataOrPanic(map[string]interface{}{"n": n}),
 		})
 		if err != nil {
 			t.Fatalf("failed to start job: %v", err)
 		}
-		jobIDs = append(jobIDs, id)
+		jobKeys = append(jobKeys, key)
 	}
 
-	for _, id := range jobIDs {
-		waitForCompletedStatus(t, ctx, engine, id)
+	for _, key := range jobKeys {
+		waitForCompletedStatus(t, ctx, engine, key)
 	}
 
 	db, err := sql.Open("postgres", postgresDSN)
@@ -63,33 +65,33 @@ func TestJobsEventuallyComplete(t *testing.T) {
 	}
 	defer db.Close()
 
-	jobIDStrings := make([]string, 0, len(jobIDs))
-	for _, id := range jobIDs {
-		jobIDStrings = append(jobIDStrings, string(id))
+	jobIDStrings := make([]string, 0, len(jobKeys))
+	for _, key := range jobKeys {
+		jobIDStrings = append(jobIDStrings, key.JobId)
 	}
 	var archived int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM pgwf.jobs_archive WHERE job_id = ANY($1)`, pq.Array(jobIDStrings)).Scan(&archived); err != nil {
 		t.Fatalf("count archived jobs: %v", err)
 	}
-	if archived != len(jobIDs) {
-		t.Fatalf("expected %d archived jobs, got %d", len(jobIDs), archived)
+	if archived != len(jobKeys) {
+		t.Fatalf("expected %d archived jobs, got %d", len(jobKeys), archived)
 	}
 }
 
-func waitForCompletedStatus(t *testing.T, ctx context.Context, engine swf.SWFEngine, jobID swf.JobId) {
+func waitForCompletedStatus(t *testing.T, ctx context.Context, engine swf.SWFEngine, jobKey swf.JobKey) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		status, err := engine.CheckJobStatus(ctx, jobID)
+		status, err := engine.CheckJobStatus(ctx, jobKey)
 		if err == nil && status == swf.JobStatusCompleted {
 			return
 		}
 		if err != nil && !errors.Is(err, swf.ErrJobNotFound) {
-			t.Fatalf("check status for job %s: %v", jobID, err)
+			t.Fatalf("check status for job %s: %v", jobKey.String(), err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("job %s did not reach completed status", jobID)
+	t.Fatalf("job %s did not reach completed status", jobKey.String())
 }
 
 const (

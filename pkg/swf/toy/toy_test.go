@@ -15,21 +15,24 @@ func TestToyEngineCustomJobID(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
 	engine := NewToyEngine([]swf.WorkSet{ws})
 
-	customID := swf.JobId("my-custom-job-id")
+	customID := "my-custom-job-id"
+	tenantID := "test-tenant"
 	input := swf.NewTaskDataOrPanic(map[string]int{"n": 1})
-	jobID, err := engine.StartJob(context.Background(), swf.StartJob{
-		JobType: ws.JobWorker.Name(),
-		JobID:   customID,
-		Data:    input,
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: tenantID,
+		JobType:  ws.JobWorker.Name(),
+		JobID:    customID,
+		Data:     input,
 	})
 	if err != nil {
 		t.Fatalf("StartJob failed: %v", err)
 	}
-	if jobID != customID {
-		t.Fatalf("expected job ID %s, got %s", customID, jobID)
+	expectedKey := swf.JobKey{TenantId: tenantID, JobId: customID}
+	if jobKey != expectedKey {
+		t.Fatalf("expected job key %v, got %v", expectedKey, jobKey)
 	}
 
-	status, err := engine.CheckJobStatus(context.Background(), jobID)
+	status, err := engine.CheckJobStatus(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("CheckJobStatus failed: %v", err)
 	}
@@ -37,7 +40,7 @@ func TestToyEngineCustomJobID(t *testing.T) {
 		t.Fatalf("expected status %s, got %s", swf.JobStatusCompleted, status)
 	}
 
-	result, err := engine.GetJobResult(context.Background(), jobID)
+	result, err := engine.GetJobResult(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("GetJobResult failed: %v", err)
 	}
@@ -51,15 +54,16 @@ func TestToyEngineRunsJobInline(t *testing.T) {
 	engine := NewToyEngine([]swf.WorkSet{ws})
 
 	input := swf.NewTaskDataOrPanic(map[string]int{"n": 1})
-	jobID, err := engine.StartJob(context.Background(), swf.StartJob{
-		JobType: ws.JobWorker.Name(),
-		Data:    input,
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  ws.JobWorker.Name(),
+		Data:     input,
 	})
 	if err != nil {
 		t.Fatalf("StartJob failed: %v", err)
 	}
 
-	status, err := engine.CheckJobStatus(context.Background(), jobID)
+	status, err := engine.CheckJobStatus(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("CheckJobStatus failed: %v", err)
 	}
@@ -67,7 +71,7 @@ func TestToyEngineRunsJobInline(t *testing.T) {
 		t.Fatalf("expected status %s, got %s", swf.JobStatusCompleted, status)
 	}
 
-	result, err := engine.GetJobResult(context.Background(), jobID)
+	result, err := engine.GetJobResult(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("GetJobResult failed: %v", err)
 	}
@@ -78,9 +82,9 @@ func TestToyEngineRunsJobInline(t *testing.T) {
 
 func TestToyEnginePendingOnMissingTaskWorker(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"missing"}}, addOneTask{})
-	jobID := swf.JobId("pending-missing")
-	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func() (swf.JobId, error) {
-		return jobID, nil
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "pending-missing"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) {
+		return jobKey, nil
 	}))
 
 	var wg sync.WaitGroup
@@ -88,8 +92,9 @@ func TestToyEnginePendingOnMissingTaskWorker(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_, _ = engine.StartJob(context.Background(), swf.StartJob{
-			JobType: ws.JobWorker.Name(),
-			Data:    swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
 			// keep deterministic ID to query status later
 		})
 	}()
@@ -119,7 +124,7 @@ func TestToyEnginePendingOnMissingTaskWorker(t *testing.T) {
 	}
 	wg.Wait()
 
-	status, err := engine.CheckJobStatus(context.Background(), jobID)
+	status, err := engine.CheckJobStatus(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("CheckJobStatus failed: %v", err)
 	}
@@ -127,7 +132,7 @@ func TestToyEnginePendingOnMissingTaskWorker(t *testing.T) {
 		t.Fatalf("expected status %s, got %s", swf.JobStatusCompleted, status)
 	}
 
-	result, err := engine.GetJobResult(context.Background(), jobID)
+	result, err := engine.GetJobResult(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("GetJobResult failed: %v", err)
 	}
@@ -138,9 +143,9 @@ func TestToyEnginePendingOnMissingTaskWorker(t *testing.T) {
 
 func TestToyEngineCancelJob(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"slow"}}, slowTask{sleep: 500 * time.Millisecond})
-	jobID := swf.JobId("cancel-me")
-	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func() (swf.JobId, error) {
-		return jobID, nil
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "cancel-me"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) {
+		return jobKey, nil
 	}))
 
 	var wg sync.WaitGroup
@@ -148,8 +153,9 @@ func TestToyEngineCancelJob(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_, err := engine.StartJob(context.Background(), swf.StartJob{
-			JobType: ws.JobWorker.Name(),
-			Data:    swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
 		})
 		if err != nil {
 			t.Errorf("StartJob failed: %v", err)
@@ -157,13 +163,13 @@ func TestToyEngineCancelJob(t *testing.T) {
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	if err := engine.CancelJob(context.Background(), swf.CancelJob{JobId: jobID}); err != nil {
+	if err := engine.CancelJob(context.Background(), swf.CancelJob{JobKey: jobKey}); err != nil {
 		t.Fatalf("CancelJob failed: %v", err)
 	}
 
 	wg.Wait()
 
-	status, err := engine.CheckJobStatus(context.Background(), jobID)
+	status, err := engine.CheckJobStatus(context.Background(), jobKey)
 	if err != nil {
 		t.Fatalf("CheckJobStatus failed: %v", err)
 	}
@@ -171,7 +177,7 @@ func TestToyEngineCancelJob(t *testing.T) {
 		t.Fatalf("expected status %s, got %s", swf.JobStatusCancelled, status)
 	}
 
-	if _, err := engine.GetJobResult(context.Background(), jobID); err == nil {
+	if _, err := engine.GetJobResult(context.Background(), jobKey); err == nil {
 		t.Fatalf("expected GetJobResult to fail for cancelled job")
 	}
 }
@@ -191,16 +197,20 @@ func TestListJobsToyEngine(t *testing.T) {
 	now := time.Now().UTC()
 	engine := &ToyEngine{
 		workers:    make(map[string]swf.WorkSet),
-		jobRecords: make(map[swf.JobId]*jobRecord),
+		jobRecords: make(map[swf.JobKey]*jobRecord),
 	}
 
-	engine.jobRecords["job-ready"] = &jobRecord{
+	jobReadyKey := swf.JobKey{TenantId: "test-tenant", JobId: "job-ready"}
+	jobCancelledKey := swf.JobKey{TenantId: "test-tenant", JobId: "job-cancelled"}
+	jobCompletedKey := swf.JobKey{TenantId: "test-tenant", JobId: "job-completed"}
+
+	engine.jobRecords[jobReadyKey] = &jobRecord{
 		status:    swf.JobStatusReady,
 		jobType:   "alpha",
 		createdAt: now.Add(-1 * time.Minute),
 		payload:   []byte(`{"p":1}`),
 	}
-	engine.jobRecords["job-cancelled"] = &jobRecord{
+	engine.jobRecords[jobCancelledKey] = &jobRecord{
 		status:    swf.JobStatusCancelled,
 		jobType:   "alpha",
 		createdAt: now.Add(-30 * time.Second),
@@ -209,7 +219,7 @@ func TestListJobsToyEngine(t *testing.T) {
 		payload:   []byte(`{"p":2}`),
 	}
 	archivedAt := now.Add(-2 * time.Minute)
-	engine.jobRecords["job-completed"] = &jobRecord{
+	engine.jobRecords[jobCompletedKey] = &jobRecord{
 		status:    swf.JobStatusCompleted,
 		jobType:   "beta",
 		createdAt: now.Add(-2 * time.Minute),
@@ -223,7 +233,7 @@ func TestListJobsToyEngine(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
 		}
-		if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != "job-completed" {
+		if len(resp.Jobs) != 1 || resp.Jobs[0].JobKey != jobCompletedKey {
 			t.Fatalf("expected archived job-completed, got %+v", resp.Jobs)
 		}
 	})
@@ -236,7 +246,7 @@ func TestListJobsToyEngine(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
 		}
-		if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != "job-cancelled" {
+		if len(resp.Jobs) != 1 || resp.Jobs[0].JobKey != jobCancelledKey {
 			t.Fatalf("expected job-cancelled, got %+v", resp.Jobs)
 		}
 		if !resp.Jobs[0].CancelRequested {
@@ -255,8 +265,8 @@ func TestListJobsToyEngine(t *testing.T) {
 		if resp.NextPageToken == "" {
 			t.Fatalf("expected next page token")
 		}
-		if resp.Jobs[0].JobID != "job-cancelled" {
-			t.Fatalf("expected newest job-cancelled first, got %s", resp.Jobs[0].JobID)
+		if resp.Jobs[0].JobKey != jobCancelledKey {
+			t.Fatalf("expected newest job-cancelled first, got %v", resp.Jobs[0].JobKey)
 		}
 
 		resp2, err := engine.ListJobs(context.Background(), swf.ListJobsRequest{
@@ -266,7 +276,7 @@ func TestListJobsToyEngine(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListJobs page 2: %v", err)
 		}
-		if len(resp2.Jobs) != 1 || resp2.Jobs[0].JobID != "job-completed" {
+		if len(resp2.Jobs) != 1 || resp2.Jobs[0].JobKey != jobCompletedKey {
 			t.Fatalf("expected final archived job, got %+v", resp2.Jobs)
 		}
 	})
@@ -283,8 +293,9 @@ func TestPendingTaskCompletion(t *testing.T) {
 	go func() {
 		defer close(done)
 		_, _ = engine.StartJob(context.Background(), swf.StartJob{
-			JobType: ws.JobWorker.Name(),
-			Data:    input,
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     input,
 		})
 	}()
 
@@ -306,7 +317,7 @@ func TestPendingTaskCompletion(t *testing.T) {
 		t.Fatalf("expected 1 pending handle, got %d", len(handles))
 	}
 
-	handleByID, err := engine.GetWaitingTask(context.Background(), handles[0].JobId())
+	handleByID, err := engine.GetWaitingTask(context.Background(), handles[0].JobKey())
 	if err != nil {
 		t.Fatalf("GetWaitingTask: %v", err)
 	}
@@ -317,7 +328,7 @@ func TestPendingTaskCompletion(t *testing.T) {
 	}
 	<-done
 
-	status, err := engine.CheckJobStatus(context.Background(), handles[0].JobId())
+	status, err := engine.CheckJobStatus(context.Background(), handles[0].JobKey())
 	if err != nil {
 		t.Fatalf("CheckJobStatus: %v", err)
 	}
@@ -331,32 +342,33 @@ func TestPendingTaskCompletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListJobs with job/task filter: %v", err)
 	}
-	if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != handles[0].JobId() {
+	if len(resp.Jobs) != 1 || resp.Jobs[0].JobKey != handles[0].JobKey() {
 		t.Fatalf("expected job from job/task filter, got %+v", resp.Jobs)
 	}
 
 	respIDs, err := engine.ListJobs(context.Background(), swf.ListJobsRequest{
-		JobIDs: []swf.JobId{handles[0].JobId()},
+		JobKeys: []swf.JobKey{handles[0].JobKey()},
 	})
 	if err != nil {
 		t.Fatalf("ListJobs with job ids: %v", err)
 	}
-	if len(respIDs.Jobs) != 1 || respIDs.Jobs[0].JobID != handles[0].JobId() {
+	if len(respIDs.Jobs) != 1 || respIDs.Jobs[0].JobKey != handles[0].JobKey() {
 		t.Fatalf("expected job via id filter, got %+v", respIDs.Jobs)
 	}
 }
 
 func TestJobSummaryPendingStepMatchesHandle(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"add", "missing"}}, addOneTask{})
-	jobID := swf.JobId("multi-step-pending")
-	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func() (swf.JobId, error) { return jobID, nil }))
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "multi-step-pending"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) { return jobKey, nil }))
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_, _ = engine.StartJob(context.Background(), swf.StartJob{
-			JobType: ws.JobWorker.Name(),
-			Data:    swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
 		})
 	}()
 
@@ -385,7 +397,7 @@ func TestJobSummaryPendingStepMatchesHandle(t *testing.T) {
 	expectedInputOrdinal := expectedOutputOrdinal - 1
 
 	resp, err := engine.ListJobs(context.Background(), swf.ListJobsRequest{
-		JobIDs: []swf.JobId{jobID},
+		JobKeys: []swf.JobKey{jobKey},
 	})
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)

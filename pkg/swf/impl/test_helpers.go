@@ -14,7 +14,6 @@ import (
 	"github.com/colony-2/strata-go/pkg/daemon"
 	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/fergusstrange/embedded-postgres"
-	"github.com/segmentio/ksuid"
 )
 
 // InstallPGWF installs the pgwf schema into the provided Postgres instance.
@@ -129,7 +128,7 @@ func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.Ta
 		return nil, err
 	}
 
-	b := swf.NewEngineBuilder(ksuid.New().String()).
+	b := swf.NewEngineBuilder().
 		WithAwaitRecycleThreshold(5 * time.Second).
 		WithPostgresDSN(dsn).
 		WithStrata(s.BaseURL).

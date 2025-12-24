@@ -40,7 +40,6 @@ func TestCheckJobStatusUsesContextTransaction(t *testing.T) {
 	}
 
 	engine := swfEngineImpl{
-		tenantId: "tenant-tx",
 		db:       gdb,
 		udb:      sqlDB,
 		workerId: "worker-tx",
@@ -58,14 +57,14 @@ func TestCheckJobStatusUsesContextTransaction(t *testing.T) {
 		t.Fatalf("expected sql.Tx from gorm transaction")
 	}
 
-	jobID := swf.JobId("job-" + ksuid.New().String())
+	jobKey := swf.JobKey{TenantId: "tenant-tx", JobId: "job-" + ksuid.New().String()}
 	deps := pgwf.JobDependencies{NextNeed: pgwf.Capability("demo")}
-	if err := pgwf.SubmitJob(ctx, sqlTx, pgwf.JobID(jobID), deps, jobPayload{}, pgwf.WorkerID(engine.workerId), "", time.Time{}); err != nil {
+	if err := pgwf.SubmitJob(ctx, sqlTx, pgwf.JobID(jobKey.JobId), deps, jobPayload{TenantId: jobKey.TenantId}, pgwf.WorkerID(engine.workerId), "", time.Time{}); err != nil {
 		t.Fatalf("submit job in tx: %v", err)
 	}
 
 	ctxWithTx := swf.WithTx(ctx, gormTx)
-	status, err := engine.CheckJobStatus(ctxWithTx, jobID)
+	status, err := engine.CheckJobStatus(ctxWithTx, jobKey)
 	if err != nil {
 		t.Fatalf("status with tx: %v", err)
 	}
@@ -73,7 +72,7 @@ func TestCheckJobStatusUsesContextTransaction(t *testing.T) {
 		t.Fatalf("expected status when using context transaction")
 	}
 
-	_, err = engine.CheckJobStatus(ctx, jobID)
+	_, err = engine.CheckJobStatus(ctx, jobKey)
 	if !errors.Is(err, swf.ErrJobNotFound) {
 		t.Fatalf("expected ErrJobNotFound outside tx, got %v", err)
 	}

@@ -21,7 +21,7 @@ func TestListJobsRoutesByStatusAndOrdersWithUnion(t *testing.T) {
 	baseURL, strata := startStrata(t)
 	defer strata.Shutdown()
 
-	engine, err := swf.NewEngineBuilder("list-jobs-tenant").
+	engine, err := swf.NewEngineBuilder().
 		WithPostgresDSN(postgresDSN).
 		WithStrata(baseURL).
 		WithStrataAPIKey(strata.APIKey).
@@ -76,9 +76,9 @@ VALUES ($1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', false, $5)
 		if len(resp.Jobs) != 2 {
 			t.Fatalf("expected 2 archived jobs, got %d", len(resp.Jobs))
 		}
-		seen := map[swf.JobId]bool{}
+		seen := map[string]bool{}
 		for _, j := range resp.Jobs {
-			seen[j.JobID] = true
+			seen[j.JobKey.JobId] = true
 			if j.Payload != nil {
 				t.Fatalf("expected nil payload for archive")
 			}
@@ -100,7 +100,7 @@ VALUES ($1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', false, $5)
 			t.Fatalf("expected 1 active job, got %d", len(resp.Jobs))
 		}
 		got := resp.Jobs[0]
-		if got.JobID != "job-active-A" || got.JobType != "alpha" {
+		if got.JobKey.JobId != "job-active-A" || got.JobType != "alpha" {
 			t.Fatalf("unexpected job %+v", got)
 		}
 		if got.Payload == nil {
@@ -115,14 +115,17 @@ VALUES ($1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', false, $5)
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
 		}
-		if len(resp.Jobs) != 1 || resp.Jobs[0].JobID != "job-active-B" {
+		if len(resp.Jobs) != 1 || resp.Jobs[0].JobKey.JobId != "job-active-B" {
 			t.Fatalf("expected job-active-B from job/task filter, got %+v", resp.Jobs)
 		}
 	})
 
 	t.Run("filters by job ids list", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
-			JobIDs: []swf.JobId{"job-active-A", "job-archived-D"},
+			JobKeys: []swf.JobKey{
+				{TenantId: "list-jobs-tenant", JobId: "job-active-A"},
+				{TenantId: "list-jobs-tenant", JobId: "job-archived-D"},
+			},
 		})
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
@@ -130,10 +133,10 @@ VALUES ($1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', false, $5)
 		if len(resp.Jobs) != 2 {
 			t.Fatalf("expected 2 jobs, got %+v", resp.Jobs)
 		}
-		want := map[swf.JobId]bool{"job-active-A": true, "job-archived-D": true}
+		want := map[string]bool{"job-active-A": true, "job-archived-D": true}
 		for _, j := range resp.Jobs {
-			if !want[j.JobID] {
-				t.Fatalf("unexpected job %s", j.JobID)
+			if !want[j.JobKey.JobId] {
+				t.Fatalf("unexpected job %s", j.JobKey.JobId)
 			}
 		}
 	})

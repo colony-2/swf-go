@@ -18,6 +18,7 @@ type taskHandleImpl struct {
 	engine        *swfEngineImpl
 	nextNeed      pgwf.Capability
 	taskType      string
+	tenantId      string
 }
 
 func (h *taskHandleImpl) TaskOrdinalToComplete() int64 {
@@ -26,7 +27,8 @@ func (h *taskHandleImpl) TaskOrdinalToComplete() int64 {
 
 func (h *taskHandleImpl) chapter() (story.Chapter, error) {
 	if h.inputChapter == nil {
-		chapter, err := h.engine.strata.Chapter(context.TODO(), story.Key{AnthologyID: h.engine.tenantId, StoryID: string(h.JobId())}, h.inputOrdinal)
+		jobKey := h.JobKey()
+		chapter, err := h.engine.strata.Chapter(context.TODO(), jobKey.ToStoryKey(), h.inputOrdinal)
 		if err != nil {
 			return nil, err
 		}
@@ -44,8 +46,11 @@ func (h *taskHandleImpl) Data() (swf.TaskData, error) {
 	return chapterToTaskData(c)
 }
 
-func (h *taskHandleImpl) JobId() swf.JobId {
-	return swf.JobId(h.job.JobID)
+func (h *taskHandleImpl) JobKey() swf.JobKey {
+	return swf.JobKey{
+		TenantId: h.tenantId,
+		JobId:    h.job.JobID,
+	}
 }
 
 func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) error {
@@ -66,10 +71,8 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 	if err != nil {
 		return err
 	}
-	err = h.engine.strata.SaveChapter(context.TODO(), story.Key{
-		AnthologyID: h.engine.tenantId,
-		StoryID:     h.job.JobID,
-	}, chap)
+	jobKey := h.JobKey()
+	err = h.engine.strata.SaveChapter(context.TODO(), jobKey.ToStoryKey(), chap)
 	if err != nil {
 		return err
 	}

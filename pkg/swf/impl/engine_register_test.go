@@ -39,16 +39,16 @@ func TestRegisterWorkersUpdatesCapabilities(t *testing.T) {
 	}
 
 	input := swf.NewTaskDataOrPanic(map[string]string{"hello": "world"})
-	jobID, err := engine.StartJob(ctx, swf.StartJob{JobType: ws.JobWorker.Name(), Data: input})
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{TenantId: "test-tenant", JobType: ws.JobWorker.Name(), Data: input})
 	if err != nil {
 		t.Fatalf("start job: %v", err)
 	}
 
-	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobID, engine); err != nil {
+	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobKey, engine); err != nil {
 		t.Fatalf("job did not complete: %v", err)
 	}
 
-	result, err := engine.GetJobResult(ctx, jobID)
+	result, err := engine.GetJobResult(ctx, jobKey)
 	if err != nil {
 		t.Fatalf("get job result: %v", err)
 	}

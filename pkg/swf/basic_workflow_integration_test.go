@@ -36,7 +36,7 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 	logCapture := newCaptureHandler()
 	logger := slog.New(logCapture)
 
-	engine1, err := swf.NewEngineBuilder(tenantID).
+	engine1, err := swf.NewEngineBuilder().
 		WithPostgresDSN(postgresDSN).
 		WithStrata(baseURL).
 		WithStrataAPIKey(strata.APIKey).
@@ -47,7 +47,7 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 		t.Fatalf("failed to build engine1: %v", err)
 	}
 
-	engine2, err := swf.NewEngineBuilder(tenantID).
+	engine2, err := swf.NewEngineBuilder().
 		WithPostgresDSN(postgresDSN).
 		WithStrata(baseURL).
 		WithStrataAPIKey(strata.APIKey).
@@ -63,9 +63,10 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 	go userInputWatcher(ctx, t, engine1)
 
 	initial := swf.NewTaskDataOrPanic(map[string]interface{}{"n": 1})
-	jobID, err := engine1.StartJob(ctx, swf.StartJob{
-		JobType: pipeJobName,
-		Data:    initial,
+	jobKey, err := engine1.StartJob(ctx, swf.StartJob{
+		TenantId: tenantID,
+		JobType:  pipeJobName,
+		Data:     initial,
 	})
 	if err != nil {
 		t.Fatalf("failed to start job: %v", err)
@@ -75,7 +76,7 @@ func TestBasicWorkflowIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create strata client: %v", err)
 	}
-	key := story.Key{AnthologyID: tenantID, StoryID: string(jobID)}
+	key := story.Key{AnthologyID: jobKey.TenantId, StoryID: jobKey.JobId}
 
 	// Expect five task chapters (ordinals 1-5) plus the final job output at ordinal 5.
 	// Steps: t1(+1), t2(*2), userInput(+3), t1(+1), t2(*2) starting from 1 -> 2,4,7,8,16.

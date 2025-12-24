@@ -10,11 +10,11 @@ import (
 type taskRunApi interface {
 	FindTasksWaitingForCapability(ctx context.Context, jobType string, taskType string) ([]TaskHandle, error)
 	// GetWaitingTask returns a task handle if the job is currently ready/pending that capability.
-	GetWaitingTask(ctx context.Context, id JobId) (TaskHandle, error)
+	GetWaitingTask(ctx context.Context, key JobKey) (TaskHandle, error)
 }
 
 type TaskContext struct {
-	JobId  JobId
+	JobKey JobKey
 	Step   int64
 	Logger *slog.Logger
 	// await is set by the runner so AwaitDuration can be engine-directed.
@@ -47,9 +47,9 @@ func (tc TaskContext) SpawnAsync(jobType string, data TaskData) (*Future, error)
 }
 
 // NewTaskContext builds a task context with an optional await handler.
-func NewTaskContext(jobId JobId, step int64, logger *slog.Logger, await func(time.Time) error, spawn func(string, TaskData) (*Future, error)) TaskContext {
+func NewTaskContext(jobKey JobKey, step int64, logger *slog.Logger, await func(time.Time) error, spawn func(string, TaskData) (*Future, error)) TaskContext {
 	return TaskContext{
-		JobId:      jobId,
+		JobKey:     jobKey,
 		Step:       step,
 		Logger:     logger,
 		await:      await,
@@ -62,14 +62,14 @@ type Worker interface {
 }
 
 type TaskHandle interface {
-	JobId() JobId
+	JobKey() JobKey
 	Data() (TaskData, error)
 	Finish(ctx context.Context, taskData TaskData) error
 	TaskOrdinalToComplete() int64
 }
 
 type TaskCompletion struct {
-	JobId JobId
-	Step  int64
-	Error error
+	JobKey JobKey
+	Step   int64
+	Error  error
 }

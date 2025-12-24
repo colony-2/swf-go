@@ -32,7 +32,7 @@ func TestAsyncChildWorkflow(t *testing.T) {
 	parentWorker := asyncParentJob{}
 	childWorker := asyncChildJob{}
 
-	builder := swf.NewEngineBuilder("tenant-async-child").
+	builder := swf.NewEngineBuilder().
 		WithPostgresDSN(postgresDSN).
 		WithStrata(baseURL).
 		WithStrataAPIKey(strata.APIKey).
@@ -45,11 +45,13 @@ func TestAsyncChildWorkflow(t *testing.T) {
 
 	go engine.Run(ctx)
 
+	tenantID := "tenant-async-child"
 	inputVal := 7
 	input := swf.NewTaskDataOrPanic(map[string]interface{}{"n": inputVal})
-	parentJobID, err := engine.StartJob(ctx, swf.StartJob{
-		JobType: parentWorker.Name(),
-		Data:    input,
+	parentJobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: tenantID,
+		JobType:  parentWorker.Name(),
+		Data:     input,
 	})
 	if err != nil {
 		t.Fatalf("failed to start parent job: %v", err)
@@ -60,14 +62,14 @@ func TestAsyncChildWorkflow(t *testing.T) {
 		t.Fatalf("failed to create strata client: %v", err)
 	}
 
-	parentKey := story.Key{AnthologyID: "tenant-async-child", StoryID: string(parentJobID)}
+	parentKey := story.Key{AnthologyID: tenantID, StoryID: parentJobKey.JobId}
 	got := waitForChapterValue(t, client, parentKey, 2, 20*time.Second)
 	if got != inputVal {
 		t.Fatalf("parent output mismatch: want %d, got %d", inputVal, got)
 	}
 
-	childJobID := swf.JobId(fmt.Sprintf("%s-%d", parentJobID, 1))
-	childKey := story.Key{AnthologyID: "tenant-async-child", StoryID: string(childJobID)}
+	childJobID := fmt.Sprintf("%s-%d", parentJobKey.JobId, 1)
+	childKey := story.Key{AnthologyID: tenantID, StoryID: childJobID}
 	childVal := waitForChapterValue(t, client, childKey, 1, 20*time.Second)
 	if childVal != inputVal {
 		t.Fatalf("child output mismatch: want %d, got %d", inputVal, childVal)

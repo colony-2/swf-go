@@ -3,10 +3,12 @@ package swf
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	strata "github.com/colony-2/strata-go/pkg/client/artifact"
+	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/invopop/jsonschema"
 )
 
@@ -105,7 +107,63 @@ type Lease = pgwf.Lease
 type Artifact = strata.Artifact
 type Dependencies = pgwf.JobDependencies
 
-type JobId string
+// JobKey uniquely identifies a job across all tenants.
+// It combines tenant identity with job identity.
+type JobKey struct {
+	TenantId string `json:"tenantId"`
+	JobId    string `json:"jobId"`
+}
+
+// String returns a string representation of the JobKey.
+// Format: "tenantId/jobId"
+func (jk JobKey) String() string {
+	return fmt.Sprintf("%s/%s", jk.TenantId, jk.JobId)
+}
+
+// ParseJobKey parses a string representation back into a JobKey.
+// Expected format: "tenantId/jobId"
+func ParseJobKey(s string) (JobKey, error) {
+	parts := strings.Split(s, "/")
+	if len(parts) != 2 {
+		return JobKey{}, fmt.Errorf("invalid JobKey format: %s", s)
+	}
+	return JobKey{
+		TenantId: parts[0],
+		JobId:    parts[1],
+	}, nil
+}
+
+// ToStoryKey converts a JobKey to a Strata story.Key.
+func (jk JobKey) ToStoryKey() story.Key {
+	return story.Key{
+		AnthologyID: jk.TenantId,
+		StoryID:     jk.JobId,
+	}
+}
+
+// JobKeyFromStoryKey creates a JobKey from a Strata story.Key.
+func JobKeyFromStoryKey(sk story.Key) JobKey {
+	return JobKey{
+		TenantId: sk.AnthologyID,
+		JobId:    sk.StoryID,
+	}
+}
+
+// IsZero returns true if the JobKey is the zero value.
+func (jk JobKey) IsZero() bool {
+	return jk.TenantId == "" && jk.JobId == ""
+}
+
+// Validate checks if the JobKey is valid.
+func (jk JobKey) Validate() error {
+	if jk.TenantId == "" {
+		return fmt.Errorf("TenantId cannot be empty")
+	}
+	if jk.JobId == "" {
+		return fmt.Errorf("JobId cannot be empty")
+	}
+	return nil
+}
 
 type SimpleTaskData struct {
 	Data      Data

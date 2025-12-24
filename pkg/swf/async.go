@@ -8,8 +8,8 @@ import (
 // Future represents an async child job handle.
 // The await function is injected by the runner to integrate with engine-directed waits.
 type Future struct {
-	JobID JobId
-	await func(context.Context) (TaskData, error)
+	JobKey JobKey
+	await  func(context.Context) (TaskData, error)
 }
 
 // Await waits for the async child job to complete and returns its output.
@@ -27,9 +27,9 @@ func (f *Future) Await(ctx context.Context) (TaskData, error) {
 }
 
 // NewFuture builds a Future with the provided await hook.
-func NewFuture(jobID JobId, await func(context.Context) (TaskData, error)) *Future {
+func NewFuture(jobKey JobKey, await func(context.Context) (TaskData, error)) *Future {
 	return &Future{
-		JobID: jobID,
-		await: await,
+		JobKey: jobKey,
+		await:  await,
 	}
 }

@@ -11,11 +11,11 @@ import (
 
 // JobSummary is a lightweight view of a job sourced purely from pgwf tables.
 type JobSummary struct {
-	JobID           JobId
+	JobKey          JobKey
 	Status          JobStatus
 	JobType         string
 	SingletonKey    *string
-	WaitFor         []JobId
+	WaitFor         []JobKey
 	AvailableAt     time.Time
 	ExpiresAt       *time.Time
 	LeaseExpiresAt  *time.Time
@@ -45,11 +45,12 @@ type JobTaskFilter struct {
 
 // ListJobsRequest filters and paginates the union of active + archived jobs.
 type ListJobsRequest struct {
+	TenantIds     []string
 	Statuses      []JobStatus
 	Stores        []JobStore
 	JobTypes      []string
 	JobTasks      []JobTaskFilter
-	JobIDs        []JobId
+	JobKeys       []JobKey
 	SingletonKeys []string
 	CreatedAfter  *time.Time
 	CreatedBefore *time.Time
@@ -84,6 +85,7 @@ func JobTypeFromNextNeed(nextNeed string) string {
 
 type pageCursor struct {
 	CreatedAt time.Time `json:"created_at"`
+	TenantId  string    `json:"tenant_id"`
 	JobID     string    `json:"job_id"`
 }
 
@@ -108,12 +110,12 @@ func decodePageToken(tok string) (pageCursor, error) {
 }
 
 // EncodeListJobsPageToken renders a cursor for clients consuming ListJobs.
-func EncodeListJobsPageToken(createdAt time.Time, jobID JobId) (string, error) {
-	return encodePageToken(pageCursor{CreatedAt: createdAt, JobID: string(jobID)})
+func EncodeListJobsPageToken(createdAt time.Time, jobKey JobKey) (string, error) {
+	return encodePageToken(pageCursor{CreatedAt: createdAt, TenantId: jobKey.TenantId, JobID: jobKey.JobId})
 }
 
 // DecodeListJobsPageToken parses a ListJobs page token into its cursor components.
-func DecodeListJobsPageToken(tok string) (time.Time, JobId, error) {
+func DecodeListJobsPageToken(tok string) (time.Time, JobKey, error) {
 	cur, err := decodePageToken(tok)
-	return cur.CreatedAt, JobId(cur.JobID), err
+	return cur.CreatedAt, JobKey{TenantId: cur.TenantId, JobId: cur.JobID}, err
 }

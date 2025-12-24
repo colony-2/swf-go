@@ -14,7 +14,7 @@ import (
 )
 
 // JobIDGenerator allows overriding how job IDs are created.
-type JobIDGenerator func() (swf.JobId, error)
+type JobIDGenerator func(tenantId string) (swf.JobKey, error)
 
 // Option configures the ToyEngine.
 type Option func(*ToyEngine)
@@ -42,7 +42,7 @@ func WithJobIDGenerator(gen JobIDGenerator) Option {
 type ToyEngine struct {
 	mu          sync.Mutex
 	workers     map[string]swf.WorkSet
-	jobRecords  map[swf.JobId]*jobRecord
+	jobRecords  map[swf.JobKey]*jobRecord
 	pending     map[string][]*pendingTask
 	idGenerator JobIDGenerator
 	logger      *slog.Logger
@@ -67,7 +67,7 @@ type jobRecord struct {
 }
 
 type pendingTask struct {
-	jobID      swf.JobId
+	jobKey     swf.JobKey
 	data       swf.TaskData
 	capability string
 	step       int64
@@ -82,11 +82,13 @@ type pendingResult struct {
 // NewToyEngine constructs a ToyEngine with the provided worksets.
 func NewToyEngine(workers []swf.WorkSet, opts ...Option) *ToyEngine {
 	engine := &ToyEngine{
-		workers:     make(map[string]swf.WorkSet),
-		jobRecords:  make(map[swf.JobId]*jobRecord),
-		pending:     make(map[string][]*pendingTask),
-		idGenerator: func() (swf.JobId, error) { return swf.JobId(ksuid.New().String()), nil },
-		logger:      slog.Default(),
+		workers:    make(map[string]swf.WorkSet),
+		jobRecords: make(map[swf.JobKey]*jobRecord),
+		pending:    make(map[string][]*pendingTask),
+		idGenerator: func(tenantId string) (swf.JobKey, error) {
+			return swf.JobKey{TenantId: tenantId, JobId: ksuid.New().String()}, nil
+		},
+		logger: slog.Default(),
 	}
 	for _, ws := range workers {
 		engine.workers[ws.JobWorker.Name()] = ws
@@ -116,23 +118,25 @@ func (e *ToyEngine) Run(context.Context) {
 }
 
 // StartJob executes the job synchronously on the caller goroutine.
-func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobId, error) {
+func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobKey, error) {
 	ws, ok := e.getWorkSet(start.JobType)
 	if !ok {
-		return "", fmt.Errorf("job worker %s not registered", start.JobType)
+		return swf.JobKey{}, fmt.Errorf("job worker %s not registered", start.JobType)
 	}
 	// Use provided JobID if present, otherwise generate a new one
-	jobID := start.JobID
-	if jobID == "" {
+	var jobKey swf.JobKey
+	if start.JobID != "" {
+		jobKey = swf.JobKey{TenantId: start.TenantId, JobId: start.JobID}
+	} else {
 		var err error
-		jobID, err = e.idGenerator()
+		jobKey, err = e.idGenerator(start.TenantId)
 		if err != nil {
-			return "", err
+			return swf.JobKey{}, err
 		}
 	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return swf.JobKey{}, err
 		}
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -149,14 +153,15 @@ func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobId
 		createdAt: time.Now(),
 		payload:   payloadBytes,
 	}
-	e.setJobRecord(jobID, record)
-	e.runJob(runCtx, jobID, ws, swf.JobData(start.Data))
-	return jobID, nil
+	e.setJobRecord(jobKey, record)
+	e.runJob(runCtx, jobKey, ws, swf.JobData(start.Data))
+	return jobKey, nil
 }
 
 // RestartJob executes like StartJob but with the provided restart data.
-func (e *ToyEngine) RestartJob(ctx context.Context, restart swf.RestartJob) (swf.JobId, error) {
+func (e *ToyEngine) RestartJob(ctx context.Context, restart swf.RestartJob) (swf.JobKey, error) {
 	return e.StartJob(ctx, swf.StartJob{
+		TenantId:     restart.TenantId,
 		JobType:      restart.JobType,
 		SingletonKey: restart.SingletonKey,
 		Data:         restart.Data,
@@ -168,9 +173,9 @@ func (e *ToyEngine) RestartJob(ctx context.Context, restart swf.RestartJob) (swf
 func (e *ToyEngine) CancelJob(ctx context.Context, cancel swf.CancelJob) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	record, ok := e.jobRecords[cancel.JobId]
+	record, ok := e.jobRecords[cancel.JobKey]
 	if !ok {
-		return fmt.Errorf("job %s not found", cancel.JobId)
+		return fmt.Errorf("job %s not found", cancel.JobKey)
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
@@ -188,12 +193,12 @@ func (e *ToyEngine) CancelJob(ctx context.Context, cancel swf.CancelJob) error {
 }
 
 // CheckJobStatus returns the current status of the job.
-func (e *ToyEngine) CheckJobStatus(ctx context.Context, jobId swf.JobId) (swf.JobStatus, error) {
+func (e *ToyEngine) CheckJobStatus(ctx context.Context, jobKey swf.JobKey) (swf.JobStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	record, ok := e.jobRecords[jobId]
+	record, ok := e.jobRecords[jobKey]
 	if !ok {
-		return "", fmt.Errorf("job %s not found", jobId)
+		return "", fmt.Errorf("job %s not found", jobKey)
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
@@ -201,17 +206,17 @@ func (e *ToyEngine) CheckJobStatus(ctx context.Context, jobId swf.JobId) (swf.Jo
 }
 
 // GetJobResult returns the final result or error for a completed job.
-func (e *ToyEngine) GetJobResult(ctx context.Context, jobId swf.JobId) (swf.TaskData, error) {
+func (e *ToyEngine) GetJobResult(ctx context.Context, jobKey swf.JobKey) (swf.TaskData, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	record, ok := e.jobRecords[jobId]
+	record, ok := e.jobRecords[jobKey]
 	if !ok {
-		return nil, fmt.Errorf("job %s not found", jobId)
+		return nil, fmt.Errorf("job %s not found", jobKey)
 	}
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	if record.status != swf.JobStatusCompleted {
-		return nil, fmt.Errorf("job %s not completed", jobId)
+		return nil, fmt.Errorf("job %s not completed", jobKey)
 	}
 	return record.result, record.err
 }
@@ -229,8 +234,8 @@ func (e *ToyEngine) FindTasksWaitingForCapability(ctx context.Context, jobType s
 	return handles, nil
 }
 
-// GetWaitingTask returns a pending handle for the given job ID if present.
-func (e *ToyEngine) GetWaitingTask(ctx context.Context, id swf.JobId) (swf.TaskHandle, error) {
+// GetWaitingTask returns a pending handle for the given job key if present.
+func (e *ToyEngine) GetWaitingTask(ctx context.Context, key swf.JobKey) (swf.TaskHandle, error) {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -240,7 +245,7 @@ func (e *ToyEngine) GetWaitingTask(ctx context.Context, id swf.JobId) (swf.TaskH
 	defer e.mu.Unlock()
 	for _, queue := range e.pending {
 		for _, p := range queue {
-			if p.jobID == id {
+			if p.jobKey == key {
 				return &pendingHandle{engine: e, task: p}, nil
 			}
 		}
@@ -272,8 +277,8 @@ type pendingHandle struct {
 	task   *pendingTask
 }
 
-func (h *pendingHandle) JobId() swf.JobId {
-	return h.task.jobID
+func (h *pendingHandle) JobKey() swf.JobKey {
+	return h.task.jobKey
 }
 
 func (h *pendingHandle) Data() (swf.TaskData, error) {
@@ -368,12 +373,12 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 		hasCursor  bool
 	)
 	if req.PageToken != "" {
-		createdAt, jobID, err := swf.DecodeListJobsPageToken(req.PageToken)
+		createdAt, jobKey, err := swf.DecodeListJobsPageToken(req.PageToken)
 		if err != nil {
 			return swf.ListJobsResponse{}, err
 		}
 		cursorTime = createdAt
-		cursorJob = string(jobID)
+		cursorJob = jobKey.String()
 		hasCursor = true
 	}
 
@@ -389,19 +394,19 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 		return false
 	}
 
-	jobIDAllowed := func(id swf.JobId) bool {
-		if len(req.JobIDs) == 0 {
+	jobKeyAllowed := func(key swf.JobKey) bool {
+		if len(req.JobKeys) == 0 {
 			return true
 		}
-		for _, expect := range req.JobIDs {
-			if expect == id {
+		for _, expect := range req.JobKeys {
+			if expect == key {
 				return true
 			}
 		}
 		return false
 	}
 
-	jobTaskAllowed := func(jobID swf.JobId, rec *jobRecord) bool {
+	jobTaskAllowed := func(jobKey swf.JobKey, rec *jobRecord) bool {
 		if len(req.JobTasks) == 0 {
 			return true
 		}
@@ -409,7 +414,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 		caps := make(map[string]struct{})
 		for capName, queue := range e.pending {
 			for _, p := range queue {
-				if p.jobID == jobID {
+				if p.jobKey == jobKey {
 					caps[capName] = struct{}{}
 				}
 			}
@@ -447,7 +452,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 
 	records := make([]swf.JobSummary, 0)
 	e.mu.Lock()
-	for id, rec := range e.jobRecords {
+	for key, rec := range e.jobRecords {
 		rec.mu.Lock()
 		status := rec.status
 		store := swf.JobStoreActive
@@ -471,7 +476,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			rec.mu.Unlock()
 			continue
 		}
-		if !jobIDAllowed(id) {
+		if !jobKeyAllowed(key) {
 			rec.mu.Unlock()
 			continue
 		}
@@ -487,7 +492,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			rec.mu.Unlock()
 			continue
 		}
-		if !jobTaskAllowed(id, rec) {
+		if !jobTaskAllowed(key, rec) {
 			rec.mu.Unlock()
 			continue
 		}
@@ -506,11 +511,11 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			copy(payloadCopy, rec.payload)
 		}
 		summary := swf.JobSummary{
-			JobID:           id,
+			JobKey:          key,
 			Status:          status,
 			JobType:         rec.jobType,
 			SingletonKey:    rec.singleton,
-			WaitFor:         []swf.JobId{},
+			WaitFor:         []swf.JobKey{},
 			AvailableAt:     rec.createdAt,
 			ExpiresAt:       nil,
 			LeaseExpiresAt:  nil,
@@ -538,7 +543,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 
 	sort.Slice(records, func(i, j int) bool {
 		if records[i].CreatedAt.Equal(records[j].CreatedAt) {
-			return records[i].JobID > records[j].JobID
+			return records[i].JobKey.String() > records[j].JobKey.String()
 		}
 		return records[i].CreatedAt.After(records[j].CreatedAt)
 	})
@@ -549,7 +554,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			if r.CreatedAt.After(cursorTime) {
 				continue
 			}
-			if r.CreatedAt.Equal(cursorTime) && string(r.JobID) >= cursorJob {
+			if r.CreatedAt.Equal(cursorTime) && r.JobKey.String() >= cursorJob {
 				continue
 			}
 		}
@@ -559,7 +564,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 	nextToken := ""
 	if len(filtered) > pageSize {
 		last := filtered[pageSize-1]
-		if tok, err := swf.EncodeListJobsPageToken(last.CreatedAt, last.JobID); err == nil {
+		if tok, err := swf.EncodeListJobsPageToken(last.CreatedAt, last.JobKey); err == nil {
 			nextToken = tok
 		}
 		filtered = filtered[:pageSize]
@@ -575,14 +580,14 @@ func (e *ToyEngine) getWorkSet(jobType string) (swf.WorkSet, bool) {
 	return ws, ok
 }
 
-func (e *ToyEngine) setJobRecord(id swf.JobId, record *jobRecord) {
+func (e *ToyEngine) setJobRecord(key swf.JobKey, record *jobRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.jobRecords[id] = record
+	e.jobRecords[key] = record
 }
 
-func (e *ToyEngine) runJob(ctx context.Context, jobID swf.JobId, ws swf.WorkSet, data swf.JobData) {
-	record := e.getJobRecord(jobID)
+func (e *ToyEngine) runJob(ctx context.Context, jobKey swf.JobKey, ws swf.WorkSet, data swf.JobData) {
+	record := e.getJobRecord(jobKey)
 	if record == nil {
 		return
 	}
@@ -622,7 +627,7 @@ func (e *ToyEngine) runJob(ctx context.Context, jobID swf.JobId, ws swf.WorkSet,
 
 	jc := &toyJobContext{
 		engine:   e,
-		jobID:    jobID,
+		jobKey:   jobKey,
 		logger:   e.logger,
 		workSet:  ws,
 		step:     1,
@@ -632,15 +637,15 @@ func (e *ToyEngine) runJob(ctx context.Context, jobID swf.JobId, ws swf.WorkSet,
 	result, err = ws.JobWorker.Run(jc, data)
 }
 
-func (e *ToyEngine) getJobRecord(id swf.JobId) *jobRecord {
+func (e *ToyEngine) getJobRecord(key swf.JobKey) *jobRecord {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.jobRecords[id]
+	return e.jobRecords[key]
 }
 
 type toyJobContext struct {
 	engine   *ToyEngine
-	jobID    swf.JobId
+	jobKey   swf.JobKey
 	logger   *slog.Logger
 	workSet  swf.WorkSet
 	step     int64
@@ -648,8 +653,8 @@ type toyJobContext struct {
 	record   *jobRecord
 }
 
-func (c *toyJobContext) GetJobId() swf.JobId {
-	return c.jobID
+func (c *toyJobContext) GetJobKey() swf.JobKey {
+	return c.jobKey
 }
 
 func (c *toyJobContext) Logger() *slog.Logger {
@@ -688,7 +693,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 		}
 	}
 
-	tc := swf.NewTaskContext(c.jobID, c.step, c.Logger(), await, nil)
+	tc := swf.NewTaskContext(c.jobKey, c.step, c.Logger(), await, nil)
 	output, err := taskWorker.Run(tc, data)
 	if err != nil {
 		return nil, err
@@ -700,7 +705,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskData) (swf.TaskData, error) {
 	capability := c.workSet.JobWorker.Name() + ":" + taskType
 	pending := &pendingTask{
-		jobID:      c.jobID,
+		jobKey:     c.jobKey,
 		data:       data,
 		capability: capability,
 		step:       c.step,

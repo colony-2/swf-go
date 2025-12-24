@@ -31,7 +31,6 @@ func TestAwaitUntilRecycle(t *testing.T) {
 	}
 
 	engine := swfEngineImpl{
-		tenantId:       "test-tenant",
 		udb:            db,
 		logger:         slog.Default(),
 		awaitThreshold: 50 * time.Millisecond,
