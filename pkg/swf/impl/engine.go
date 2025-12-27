@@ -1257,7 +1257,7 @@ func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
 		jobPolicy:    payload.RunPolicy,
 		capability:   capability,
 	}
-	runner.Run(ctx, lease)
+	runner.DoJob(ctx, lease)
 }
 
 func (s *swfEngineImpl) handleNotification(ctx context.Context, lease *swf.Lease) {
