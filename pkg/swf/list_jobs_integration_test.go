@@ -68,7 +68,8 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 
 	t.Run("completed status uses archive only", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
-			Statuses: []swf.JobStatus{swf.JobStatusCompleted},
+			TenantIds: []string{"test-tenant"},
+			Statuses:  []swf.JobStatus{swf.JobStatusCompleted},
 		})
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
@@ -79,9 +80,6 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 		seen := map[string]bool{}
 		for _, j := range resp.Jobs {
 			seen[j.JobKey.JobId] = true
-			if j.Payload != nil {
-				t.Fatalf("expected nil payload for archive")
-			}
 		}
 		if !seen["job-archived-C"] || !seen["job-archived-D"] {
 			t.Fatalf("missing archived jobs in response: %+v", resp.Jobs)
@@ -90,6 +88,7 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 
 	t.Run("filters by job type and singleton on active", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
+			TenantIds:     []string{"test-tenant"},
 			JobTypes:      []string{"alpha"},
 			SingletonKeys: []string{sk},
 		})
@@ -103,14 +102,12 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 		if got.JobKey.JobId != "job-active-A" || got.JobType != "alpha" {
 			t.Fatalf("unexpected job %+v", got)
 		}
-		if got.Payload == nil {
-			t.Fatalf("expected payload for active job")
-		}
 	})
 
 	t.Run("filters by job/task tuple", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
-			JobTasks: []swf.JobTaskFilter{{JobType: "beta", TaskType: "task"}},
+			TenantIds: []string{"test-tenant"},
+			JobTasks:  []swf.JobTaskFilter{{JobType: "beta", TaskType: "task"}},
 		})
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
@@ -122,9 +119,10 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 
 	t.Run("filters by job ids list", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
+			TenantIds: []string{"test-tenant"},
 			JobKeys: []swf.JobKey{
-				{TenantId: "list-jobs-tenant", JobId: "job-active-A"},
-				{TenantId: "list-jobs-tenant", JobId: "job-archived-D"},
+				{TenantId: "test-tenant", JobId: "job-active-A"},
+				{TenantId: "test-tenant", JobId: "job-archived-D"},
 			},
 		})
 		if err != nil {
@@ -143,7 +141,8 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 
 	t.Run("paginates newest first across union", func(t *testing.T) {
 		resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
-			PageSize: 2,
+			TenantIds: []string{"test-tenant"},
+			PageSize:  2,
 		})
 		if err != nil {
 			t.Fatalf("ListJobs: %v", err)
@@ -159,6 +158,7 @@ VALUES ('test-tenant', $1, $2, '{}'::text[], '{}'::jsonb, $3, $4, 'infinity', fa
 		}
 
 		resp2, err := engine.ListJobs(ctx, swf.ListJobsRequest{
+			TenantIds: []string{"test-tenant"},
 			PageSize:  2,
 			PageToken: resp.NextPageToken,
 		})

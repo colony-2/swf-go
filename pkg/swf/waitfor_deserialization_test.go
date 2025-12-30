@@ -71,7 +71,9 @@ VALUES ('tenant-1', $1, $2, $3, '{}'::jsonb, NULL, $4, 'infinity', '-infinity', 
 	}
 
 	// Test: List jobs and verify WaitFor is deserialized correctly
-	resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{})
+	resp, err := engine.ListJobs(ctx, swf.ListJobsRequest{
+		TenantIds: []string{"tenant-1"},
+	})
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)
 	}

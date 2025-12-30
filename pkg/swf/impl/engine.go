@@ -18,9 +18,7 @@ import (
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 	"github.com/segmentio/ksuid"
-	"gorm.io/datatypes"
 	"gorm.io/gorm"
 )
 
@@ -611,39 +609,111 @@ func payloadToChapter(payload json.RawMessage, artifacts []swf.Artifact, ordinal
 	return chapBuilder, nil
 }
 
-func (s *swfEngineImpl) CheckJobStatus(ctx context.Context, jobKey swf.JobKey) (swf.JobStatus, error) {
-	db := s.dbFromCtx(ctx)
-	var job Job
-	err := db.First(&job, "job_id = ?", jobKey.JobId).Error
-	if err == nil {
-		return swf.JobStatus(job.Status), nil
-	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", err
+func convertPgwfStatusToSwf(status pgwf.JobStatus, cancelRequested bool, archivedAt *time.Time) swf.JobStatus {
+	if archivedAt != nil {
+		if cancelRequested {
+			return swf.JobStatusCancelled
+		}
+		return swf.JobStatusCompleted
 	}
 
-	var archived archivedJob
-	err = db.First(&archived, "job_id = ?", jobKey.JobId).Error
-	if err == nil {
-		return swf.JobStatusCompleted, nil
+	switch status {
+	case pgwf.JobStatusReady:
+		return swf.JobStatusReady
+	case pgwf.JobStatusActive:
+		return swf.JobStatusActive
+	case pgwf.JobStatusCancelled:
+		return swf.JobStatusCancelled
+	case pgwf.JobStatusAwaitingFuture:
+		return swf.JobStatusAwaitingFuture
+	case pgwf.JobStatusPendingJobs:
+		return swf.JobStatusPendingJobs
+	case pgwf.JobStatusCrashConcern:
+		return swf.JobStatusCrashConcern
+	case pgwf.JobStatusExpired:
+		return swf.JobStatusExpired
+	default:
+		return swf.JobStatusReady
 	}
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+}
+
+func convertSwfStatusesToPgwf(statuses []swf.JobStatus) []pgwf.JobStatus {
+	result := make([]pgwf.JobStatus, 0, len(statuses))
+	for _, st := range statuses {
+		switch st {
+		case swf.JobStatusCompleted, swf.JobStatusCancelled:
+			continue
+		default:
+			result = append(result, pgwf.JobStatus(st))
+		}
+	}
+	return result
+}
+
+func shouldIncludeArchived(stores []swf.JobStore, statuses []swf.JobStatus) bool {
+	if len(stores) > 0 {
+		for _, store := range stores {
+			if store == swf.JobStoreArchived {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, st := range statuses {
+		if st == swf.JobStatusCompleted || st == swf.JobStatusCancelled {
+			return true
+		}
+	}
+
+	return len(statuses) == 0
+}
+
+func buildJobTypePatterns(jobTypes []string, jobTasks []swf.JobTaskFilter) []string {
+	patterns := make([]string, 0, len(jobTypes)*2+len(jobTasks))
+	for _, jt := range jobTypes {
+		patterns = append(patterns, jt, jt+":%")
+	}
+	for _, task := range jobTasks {
+		if task.JobType != "" && task.TaskType != "" {
+			patterns = append(patterns, task.JobType+":"+task.TaskType)
+		}
+	}
+	return patterns
+}
+
+func normalizePageSize(pageSize int) int {
+	if pageSize <= 0 {
+		return swf.DefaultListJobsPageSize
+	}
+	if pageSize > swf.MaxListJobsPageSize {
+		return swf.MaxListJobsPageSize
+	}
+	return pageSize
+}
+
+func (s *swfEngineImpl) CheckJobStatus(ctx context.Context, jobKey swf.JobKey) (swf.JobStatus, error) {
+	status, err := pgwf.GetJobStatus(ctx, s.pgwfDB(ctx),
+		pgwf.TenantID(jobKey.TenantId),
+		pgwf.JobID(jobKey.JobId))
+	if errors.Is(err, pgwf.ErrJobNotFound) {
 		return "", swf.ErrJobNotFound
 	}
-	return "", err
+	if err != nil {
+		return "", fmt.Errorf("failed to get job status: %w", err)
+	}
+
+	return convertPgwfStatusToSwf(status.Status, status.CancelRequested, status.ArchivedAt), nil
 }
 
 func (s *swfEngineImpl) GetJobResult(ctx context.Context, jobKey swf.JobKey) (swf.TaskData, error) {
-	db := s.dbFromCtx(ctx)
-	// Ensure job is complete (archived) before returning a result.
-	var archived int64
-	if err := db.
-		Table("pgwf.jobs_archive").
-		Where("job_id = ?", jobKey.JobId).
-		Count(&archived).Error; err != nil {
-		return nil, err
+	isArchived, err := pgwf.IsJobArchived(ctx, s.pgwfDB(ctx),
+		pgwf.TenantID(jobKey.TenantId),
+		pgwf.JobID(jobKey.JobId))
+	if err != nil {
+		return nil, fmt.Errorf("failed to check if job is archived: %w", err)
 	}
-	if archived == 0 {
+	if !isArchived {
 		return nil, swf.ErrJobNotComplete
 	}
 
@@ -664,15 +734,13 @@ func (s *swfEngineImpl) GetJobResult(ctx context.Context, jobKey swf.JobKey) (sw
 }
 
 func (s *swfEngineImpl) jobResultIfComplete(ctx context.Context, jobKey swf.JobKey) (swf.TaskData, bool, error) {
-	db := s.dbFromCtx(ctx)
-	var archived int64
-	if err := db.
-		Table("pgwf.jobs_archive").
-		Where("job_id = ?", jobKey.JobId).
-		Count(&archived).Error; err != nil {
-		return nil, false, err
+	isArchived, err := pgwf.IsJobArchived(ctx, s.pgwfDB(ctx),
+		pgwf.TenantID(jobKey.TenantId),
+		pgwf.JobID(jobKey.JobId))
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to check if job is archived: %w", err)
 	}
-	if archived == 0 {
+	if !isArchived {
 		return nil, false, nil
 	}
 	td, err := s.GetJobResult(ctx, jobKey)
@@ -704,304 +772,115 @@ func (s *swfEngineImpl) ensureNotificationJob(ctx context.Context, notificationJ
 	return nil
 }
 
-type jobListRow struct {
-	TenantID        string         `gorm:"column:tenant_id"`
-	JobID           string         `gorm:"column:job_id"`
-	Status          string         `gorm:"column:status"`
-	NextNeed        string         `gorm:"column:next_need"`
-	SingletonKey    *string        `gorm:"column:singleton_key"`
-	WaitFor         pq.StringArray `gorm:"column:wait_for;type:text[]"`
-	AvailableAt     time.Time      `gorm:"column:available_at"`
-	ExpiresAt       pq.NullTime    `gorm:"column:expires_at"`
-	LeaseExpiresAt  pq.NullTime    `gorm:"column:lease_expires_at"`
-	CancelRequested bool           `gorm:"column:cancel_requested"`
-	CreatedAt       time.Time      `gorm:"column:created_at"`
-	ArchivedAt      pq.NullTime    `gorm:"column:archived_at"`
-	Payload         datatypes.JSON `gorm:"column:payload"`
-}
-
-func makePlaceholders(n int) []string {
-	parts := make([]string, n)
-	for i := range parts {
-		parts[i] = "?"
-	}
-	return parts
-}
-
-func timePtr(nt pq.NullTime) *time.Time {
-	if nt.Valid {
-		return &nt.Time
-	}
-	return nil
-}
-
 func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.ListJobsResponse, error) {
-	db := s.dbFromCtx(ctx)
-	pageSize := req.PageSize
-	if pageSize <= 0 {
-		pageSize = swf.DefaultListJobsPageSize
-	} else if pageSize > swf.MaxListJobsPageSize {
-		pageSize = swf.MaxListJobsPageSize
+	patterns := buildJobTypePatterns(req.JobTypes, req.JobTasks)
+
+	tenantIDs := make([]string, len(req.TenantIds))
+	copy(tenantIDs, req.TenantIds)
+
+	pgwfStatuses := convertSwfStatusesToPgwf(req.Statuses)
+	includeArchived := shouldIncludeArchived(req.Stores, req.Statuses)
+
+	opts := pgwf.ListJobsOptions{
+		TenantIDs:       tenantIDs,
+		Statuses:        pgwfStatuses,
+		JobTypePatterns: patterns,
+		IncludeArchived: includeArchived,
+		CreatedAfter:    req.CreatedAfter,
+		CreatedBefore:   req.CreatedBefore,
+		Limit:           normalizePageSize(req.PageSize),
+		Cursor:          req.PageToken,
+		SortBy:          pgwf.SortByCreatedAt,
+		SortOrder:       pgwf.SortDesc,
 	}
 
-	var (
-		activeStatuses []swf.JobStatus
-		includeActive  bool
-		includeArchive bool
-	)
-	if len(req.Statuses) > 0 {
-		for _, st := range req.Statuses {
-			switch st {
-			case swf.JobStatusCompleted:
-				includeArchive = true
-			case swf.JobStatusReady, swf.JobStatusExpired, swf.JobStatusPendingJobs, swf.JobStatusAwaitingFuture, swf.JobStatusActive, swf.JobStatusCrashConcern, swf.JobStatusCancelled:
-				includeActive = true
-				activeStatuses = append(activeStatuses, st)
-			default:
-				return swf.ListJobsResponse{}, fmt.Errorf("unknown status %q", st)
-			}
-		}
-	} else {
-		if len(req.Stores) == 0 {
-			includeActive, includeArchive = true, true
-		} else {
-			for _, store := range req.Stores {
-				switch store {
-				case swf.JobStoreActive:
-					includeActive = true
-				case swf.JobStoreArchived:
-					includeArchive = true
-				default:
-					return swf.ListJobsResponse{}, fmt.Errorf("unknown store %q", store)
-				}
-			}
-		}
+	if len(req.SingletonKeys) > 0 {
+		opts.SingletonKey = req.SingletonKeys[0]
 	}
 
-	if !includeActive && !includeArchive {
-		return swf.ListJobsResponse{}, nil
+	result, err := pgwf.ListJobs(ctx, s.pgwfDB(ctx), opts)
+	if err != nil {
+		return swf.ListJobsResponse{}, fmt.Errorf("failed to list jobs: %w", err)
 	}
 
-	var (
-		unionParts []string
-		allArgs    []any
-		cursor     swf.JobKey
-		cursorTime time.Time
-		err        error
-	)
-	if req.PageToken != "" {
-		cursorTime, cursor, err = swf.DecodeListJobsPageToken(req.PageToken)
-		if err != nil {
-			return swf.ListJobsResponse{}, err
-		}
+	// Build filter maps for client-side filtering
+	// pgwf.ListJobs doesn't support job ID filtering, so we do it client-side.
+	// Also, when user requests only archive statuses, pgwf returns both active and archived
+	// because we set IncludeArchived=true with Statuses=[], so we filter by status too.
+	requestedStatuses := make(map[swf.JobStatus]bool)
+	for _, st := range req.Statuses {
+		requestedStatuses[st] = true
 	}
+	hasRequestedStatuses := len(requestedStatuses) > 0
 
-	buildJobTypeClause := func(jobTypes []string, jobTasks []swf.JobTaskFilter, args *[]any) string {
-		if len(jobTypes) == 0 && len(jobTasks) == 0 {
-			return ""
-		}
-		ors := make([]string, 0, len(jobTypes)+len(jobTasks))
-		for _, jt := range jobTypes {
-			ors = append(ors, "(next_need = ? OR next_need LIKE ?)")
-			*args = append(*args, jt, jt+":%")
-		}
-		for _, cap := range jobTasks {
-			if cap.JobType == "" || cap.TaskType == "" {
-				continue
-			}
-			ors = append(ors, "next_need = ?")
-			*args = append(*args, cap.JobType+":"+cap.TaskType)
-		}
-		if len(ors) == 0 {
-			return ""
-		}
-		return "(" + strings.Join(ors, " OR ") + ")"
+	requestedJobIDs := make(map[string]bool)
+	for _, jk := range req.JobKeys {
+		requestedJobIDs[jk.JobId] = true
 	}
+	hasRequestedJobIDs := len(requestedJobIDs) > 0
 
-	// Active branch
-	if includeActive {
-		activeConds := make([]string, 0)
-		activeArgs := make([]any, 0)
-		if len(req.TenantIds) > 0 {
-			activeConds = append(activeConds, fmt.Sprintf("tenant_id IN (%s)", strings.Join(makePlaceholders(len(req.TenantIds)), ",")))
-			for _, tid := range req.TenantIds {
-				activeArgs = append(activeArgs, tid)
-			}
-		}
-		if len(req.JobKeys) > 0 {
-			activeConds = append(activeConds, fmt.Sprintf("job_id IN (%s)", strings.Join(makePlaceholders(len(req.JobKeys)), ",")))
-			for _, key := range req.JobKeys {
-				activeArgs = append(activeArgs, key.JobId)
-			}
-		}
-		if len(activeStatuses) > 0 {
-			activeConds = append(activeConds, fmt.Sprintf("status IN (%s)", strings.Join(makePlaceholders(len(activeStatuses)), ",")))
-			for _, st := range activeStatuses {
-				activeArgs = append(activeArgs, st)
-			}
-		}
-		if clause := buildJobTypeClause(req.JobTypes, req.JobTasks, &activeArgs); clause != "" {
-			activeConds = append(activeConds, clause)
-		}
-		if len(req.SingletonKeys) > 0 {
-			activeConds = append(activeConds, fmt.Sprintf("singleton_key IN (%s)", strings.Join(makePlaceholders(len(req.SingletonKeys)), ",")))
-			for _, sk := range req.SingletonKeys {
-				activeArgs = append(activeArgs, sk)
-			}
-		}
-		if req.CreatedAfter != nil {
-			activeConds = append(activeConds, "created_at >= ?")
-			activeArgs = append(activeArgs, *req.CreatedAfter)
-		}
-		if req.CreatedBefore != nil {
-			activeConds = append(activeConds, "created_at <= ?")
-			activeArgs = append(activeArgs, *req.CreatedBefore)
+	jobs := make([]swf.JobSummary, 0, len(result.Jobs))
+	for _, job := range result.Jobs {
+		// Filter by job ID if requested
+		if hasRequestedJobIDs && !requestedJobIDs[job.JobID] {
+			continue
 		}
 
-		activeSQL := "SELECT tenant_id, job_id, status, next_need, singleton_key, wait_for, available_at, expires_at, lease_expires_at, cancel_requested, created_at, NULL::timestamptz AS archived_at, payload FROM pgwf.jobs_with_status"
-		if len(activeConds) > 0 {
-			activeSQL += " WHERE " + strings.Join(activeConds, " AND ")
-		}
-		unionParts = append(unionParts, activeSQL)
-		allArgs = append(allArgs, activeArgs...)
-	}
+		swfStatus := convertPgwfStatusToSwf(job.Status, job.CancelRequested, job.ArchivedAt)
 
-	// Archive branch
-	if includeArchive {
-		archiveConds := make([]string, 0)
-		archiveArgs := make([]any, 0)
-		if len(req.TenantIds) > 0 {
-			archiveConds = append(archiveConds, fmt.Sprintf("tenant_id IN (%s)", strings.Join(makePlaceholders(len(req.TenantIds)), ",")))
-			for _, tid := range req.TenantIds {
-				archiveArgs = append(archiveArgs, tid)
-			}
+		// Filter by status if requested
+		if hasRequestedStatuses && !requestedStatuses[swfStatus] {
+			continue
 		}
-		if len(req.JobKeys) > 0 {
-			archiveConds = append(archiveConds, fmt.Sprintf("job_id IN (%s)", strings.Join(makePlaceholders(len(req.JobKeys)), ",")))
-			for _, key := range req.JobKeys {
-				archiveArgs = append(archiveArgs, key.JobId)
-			}
-		}
-		if clause := buildJobTypeClause(req.JobTypes, req.JobTasks, &archiveArgs); clause != "" {
-			archiveConds = append(archiveConds, clause)
-		}
-		if len(req.SingletonKeys) > 0 {
-			archiveConds = append(archiveConds, fmt.Sprintf("singleton_key IN (%s)", strings.Join(makePlaceholders(len(req.SingletonKeys)), ",")))
-			for _, sk := range req.SingletonKeys {
-				archiveArgs = append(archiveArgs, sk)
-			}
-		}
-		if req.CreatedAfter != nil {
-			archiveConds = append(archiveConds, "created_at >= ?")
-			archiveArgs = append(archiveArgs, *req.CreatedAfter)
-		}
-		if req.CreatedBefore != nil {
-			archiveConds = append(archiveConds, "created_at <= ?")
-			archiveArgs = append(archiveArgs, *req.CreatedBefore)
-		}
-		archiveSQL := "SELECT tenant_id, job_id, 'COMPLETED' AS status, next_need, singleton_key, wait_for, created_at AS available_at, expires_at, NULL::timestamptz AS lease_expires_at, cancel_requested, created_at, archived_at, NULL::jsonb AS payload FROM pgwf.jobs_archive"
-		if len(archiveConds) > 0 {
-			archiveSQL += " WHERE " + strings.Join(archiveConds, " AND ")
-		}
-		unionParts = append(unionParts, archiveSQL)
-		allArgs = append(allArgs, archiveArgs...)
-	}
 
-	unionSQL := strings.Join(unionParts, " UNION ALL ")
-	whereClause := "1=1"
-	if req.PageToken != "" {
-		whereClause = "(created_at < ? OR (created_at = ? AND job_id < ?))"
-		allArgs = append(allArgs, cursorTime, cursorTime, cursor.JobId)
-	}
-
-	limit := pageSize + 1
-	allArgs = append(allArgs, limit)
-	sql := fmt.Sprintf("SELECT * FROM (%s) AS combined WHERE %s ORDER BY created_at DESC, job_id DESC LIMIT ?", unionSQL, whereClause)
-
-	rows := make([]jobListRow, 0)
-	if err := db.Raw(sql, allArgs...).Scan(&rows).Error; err != nil {
-		return swf.ListJobsResponse{}, err
-	}
-
-	nextToken := ""
-	if len(rows) > pageSize {
-		last := rows[pageSize-1]
-		rows = rows[:pageSize]
-		lastJobKey := swf.JobKey{TenantId: last.TenantID, JobId: last.JobID}
-		if tok, err := swf.EncodeListJobsPageToken(last.CreatedAt, lastJobKey); err == nil {
-			nextToken = tok
-		}
-	}
-
-	result := make([]swf.JobSummary, 0, len(rows))
-	for _, r := range rows {
-		tenantId := r.TenantID
-
-		// WaitFor jobs are always in the same tenant, so we only store JobIds
-		waitFor := []string(r.WaitFor)
-		var (
-			taskWaitInput  *int64
-			taskWaitOutput *int64
-			taskWaitNext   *string
-		)
-		if tw, err := extractTaskWait(r.Payload); err == nil && tw != nil {
-			taskWaitInput = &tw.InputStep
-			taskWaitOutput = &tw.OutputStep
-			next := tw.Next
-			taskWaitNext = &next
-		}
-		res := swf.JobSummary{
-			JobKey:          swf.JobKey{TenantId: tenantId, JobId: r.JobID},
-			Status:          swf.JobStatus(r.Status),
-			JobType:         swf.JobTypeFromNextNeed(r.NextNeed),
-			SingletonKey:    r.SingletonKey,
-			WaitFor:         waitFor,
-			AvailableAt:     r.AvailableAt,
-			ExpiresAt:       timePtr(r.ExpiresAt),
-			LeaseExpiresAt:  timePtr(r.LeaseExpiresAt),
-			CancelRequested: r.CancelRequested,
-			CreatedAt:       r.CreatedAt,
-			ArchivedAt:      timePtr(r.ArchivedAt),
-			Payload:         json.RawMessage(r.Payload),
-			TaskWaitInput:   taskWaitInput,
-			TaskWaitOutput:  taskWaitOutput,
-			TaskWaitNext:    taskWaitNext,
-		}
-		result = append(result, res)
+		jobs = append(jobs, swf.JobSummary{
+			JobKey:          swf.JobKey{TenantId: job.TenantID, JobId: job.JobID},
+			Status:          swfStatus,
+			JobType:         swf.JobTypeFromNextNeed(job.NextNeed),
+			SingletonKey:    job.SingletonKey,
+			WaitFor:         job.WaitFor,
+			AvailableAt:     job.AvailableAt,
+			ExpiresAt:       job.ExpiresAt,
+			LeaseExpiresAt:  job.LeaseExpiresAt,
+			CancelRequested: job.CancelRequested,
+			CreatedAt:       job.CreatedAt,
+			ArchivedAt:      job.ArchivedAt,
+			Payload:         nil,
+		})
 	}
 
 	return swf.ListJobsResponse{
-		Jobs:          result,
-		NextPageToken: nextToken,
+		Jobs:          jobs,
+		NextPageToken: result.NextCursor,
 	}, nil
 }
 
 func (s *swfEngineImpl) ensureChildAndNotificationJobs(ctx context.Context, childJobID pgwf.JobID, notificationJobID pgwf.JobID, jobType string, runPolicy swf.RunPolicy, parentJobKey swf.JobKey, awaitOrdinal int64) error {
-	db := s.dbFromCtx(ctx)
 	sqlTx := s.sqlTxFromCtx(ctx)
 	if sqlTx == nil {
 		sqlTx = s.sqlTxFromCtx(ctx)
 	}
-	var archived int64
-	if err := db.
-		Table("pgwf.jobs_archive").
-		Where("job_id = ?", string(childJobID)).
-		Count(&archived).Error; err != nil {
-		return err
+
+	isArchived, err := pgwf.IsJobArchived(ctx, s.pgwfDB(ctx),
+		pgwf.TenantID(parentJobKey.TenantId),
+		childJobID)
+	if err != nil {
+		return fmt.Errorf("failed to check if child job is archived: %w", err)
 	}
-	if archived > 0 {
+	if isArchived {
 		return nil
 	}
 
-	var existing Job
-	if err := db.Where("job_id = ?", string(childJobID)).First(&existing).Error; err == nil {
-		// Validate that the existing child job belongs to the same tenant
-		if existing.TenantID != parentJobKey.TenantId {
-			return fmt.Errorf("child job %s belongs to tenant %s, cannot be awaited by job from tenant %s", childJobID, existing.TenantID, parentJobKey.TenantId)
-		}
+	jobExistence, err := pgwf.CheckJobExistsWithTenant(ctx, s.pgwfDB(ctx), childJobID, pgwf.TenantID(parentJobKey.TenantId))
+	if errors.Is(err, pgwf.ErrTenantMismatch) {
+		return fmt.Errorf("child job %s belongs to different tenant, cannot be awaited by job from tenant %s", childJobID, parentJobKey.TenantId)
+	}
+	if err != nil && !errors.Is(err, pgwf.ErrJobNotFound) {
+		return fmt.Errorf("failed to check if child job exists: %w", err)
+	}
+
+	if jobExistence != nil && jobExistence.Exists {
 		return s.ensureNotificationJob(ctx, notificationJobID, childJobID, parentJobKey, awaitOrdinal)
-	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
 	}
 
 	runPolicy = normalizeRunPolicy(runPolicy)
@@ -1060,32 +939,41 @@ type taskWait struct {
 }
 
 func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobType string, taskType string, tenantIds []string) ([]swf.TaskHandle, error) {
-	db := s.dbFromCtx(ctx)
-	var jobs []Job
-	query := db.Where("next_need = ? AND status = ?", jobType+":"+taskType, "READY")
-	if len(tenantIds) > 0 {
-		query = query.Where("tenant_id IN ?", tenantIds)
+	capability := jobType + ":" + taskType
+
+	opts := pgwf.FindJobsOptions{
+		TenantIDs: tenantIds,
+		Status:    pgwf.JobStatusReady,
+		NextNeed:  capability,
+		Limit:     1000,
 	}
-	err := query.Find(&jobs).Error
+
+	jobs, err := pgwf.FindJobs(ctx, s.pgwfDB(ctx), opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to find jobs: %w", err)
 	}
 
 	handles := make([]swf.TaskHandle, 0, len(jobs))
 	for _, j := range jobs {
-		tw, err := extractTaskWait(j.Payload)
+		details, err := pgwf.GetJob(ctx, s.pgwfDB(ctx), pgwf.TenantID(j.TenantID), pgwf.JobID(j.JobID), pgwf.GetJobOptions{IncludePayload: true})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get job details: %w", err)
+		}
+
+		tw, err := extractTaskWaitFromRaw(details.Payload)
 		if err != nil {
 			return nil, err
 		}
 
 		th := taskHandleImpl{
-			job:           j,
+			jobID:         j.JobID,
+			tenantId:      j.TenantID,
+			payload:       details.Payload,
 			inputOrdinal:  tw.InputStep,
 			outputOrdinal: tw.OutputStep,
 			engine:        s,
 			nextNeed:      pgwf.Capability(tw.Next),
 			taskType:      taskType,
-			tenantId:      j.TenantID,
 		}
 		handles = append(handles, &th)
 	}
@@ -1093,7 +981,7 @@ func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobTy
 	return handles, nil
 }
 
-func extractTaskWait(payloadJSON datatypes.JSON) (*taskWait, error) {
+func extractTaskWaitFromRaw(payloadJSON json.RawMessage) (*taskWait, error) {
 	var payload jobPayload
 	if err := json.Unmarshal(payloadJSON, &payload); err == nil {
 		if payload.TaskWait != nil {
@@ -1117,27 +1005,34 @@ func taskTypeFromCapability(cap string) string {
 }
 
 func (s *swfEngineImpl) GetWaitingTask(ctx context.Context, key swf.JobKey) (swf.TaskHandle, error) {
-	db := s.dbFromCtx(ctx)
-	var job Job
-	if err := db.Where("job_id = ? AND status = ?", key.JobId, "READY").First(&job).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, swf.ErrJobNotFound
-		}
-		return nil, err
+	job, err := pgwf.GetJob(ctx, s.pgwfDB(ctx),
+		pgwf.TenantID(key.TenantId),
+		pgwf.JobID(key.JobId),
+		pgwf.GetJobOptions{IncludePayload: true})
+	if errors.Is(err, pgwf.ErrJobNotFound) {
+		return nil, swf.ErrJobNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get job: %w", err)
 	}
 
-	tw, err := extractTaskWait(job.Payload)
+	if job.Status != pgwf.JobStatusReady {
+		return nil, swf.ErrJobNotFound
+	}
+
+	tw, err := extractTaskWaitFromRaw(job.Payload)
 	if err != nil {
 		return nil, err
 	}
 	th := &taskHandleImpl{
-		job:           job,
+		jobID:         job.JobID,
+		tenantId:      key.TenantId,
+		payload:       job.Payload,
 		inputOrdinal:  tw.InputStep,
 		outputOrdinal: tw.OutputStep,
 		engine:        s,
 		nextNeed:      pgwf.Capability(tw.Next),
 		taskType:      taskTypeFromCapability(tw.Next),
-		tenantId:      key.TenantId,
 	}
 	return th, nil
 }

@@ -11,14 +11,15 @@ import (
 )
 
 type taskHandleImpl struct {
-	job           Job
+	jobID         string
+	tenantId      string
+	payload       json.RawMessage
 	inputOrdinal  int64
 	outputOrdinal int64
 	inputChapter  story.Chapter
 	engine        *swfEngineImpl
 	nextNeed      pgwf.Capability
 	taskType      string
-	tenantId      string
 }
 
 func (h *taskHandleImpl) TaskOrdinalToComplete() int64 {
@@ -49,7 +50,7 @@ func (h *taskHandleImpl) Data() (swf.TaskData, error) {
 func (h *taskHandleImpl) JobKey() swf.JobKey {
 	return swf.JobKey{
 		TenantId: h.tenantId,
-		JobId:    h.job.JobID,
+		JobId:    h.jobID,
 	}
 }
 
@@ -77,13 +78,13 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 		return err
 	}
 	var payload jobPayload
-	_ = json.Unmarshal(h.job.Payload, &payload)
-	tenantID := pgwf.TenantID(h.job.TenantID)
+	_ = json.Unmarshal(h.payload, &payload)
+	tenantID := pgwf.TenantID(h.tenantId)
 	return pgwf.RescheduleUnheldJob(
 		ctx,
 		h.engine.pgwfDB(ctx),
 		tenantID,
-		pgwf.JobID(h.job.JobID),
+		pgwf.JobID(h.jobID),
 		pgwf.WorkerID(h.engine.workerId), pgwf.JobDependencies{NextNeed: h.nextNeed},
 		jobPayload{RunPolicy: payload.RunPolicy})
 }

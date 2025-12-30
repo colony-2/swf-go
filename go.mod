@@ -11,13 +11,11 @@ require (
 	github.com/invopop/jsonschema v0.13.0
 	github.com/lib/pq v1.10.9
 	github.com/segmentio/ksuid v1.0.4
-	gorm.io/datatypes v1.2.7
 	gorm.io/driver/postgres v1.5.11
 	gorm.io/gorm v1.30.0
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/DataDog/zstd v1.4.5 // indirect
 	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
@@ -31,7 +29,6 @@ require (
 	github.com/cockroachdb/sentry-go v0.6.1-cockroachdb.2 // indirect
 	github.com/colony-2/pgwf v0.0.0-20251228001410-9e4b3d6883e7 // indirect
 	github.com/go-chi/chi/v5 v5.0.10 // indirect
-	github.com/go-sql-driver/mysql v1.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
@@ -63,5 +60,6 @@ require (
 	golang.org/x/text v0.22.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	gorm.io/driver/mysql v1.5.6 // indirect
 )
+
+replace github.com/colony-2/pgwf-go => ../pgwf/pgwf-go
