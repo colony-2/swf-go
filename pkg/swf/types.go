@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
-	strata "github.com/colony-2/strata-go/pkg/client/artifact"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/invopop/jsonschema"
 )
@@ -104,7 +103,6 @@ type InputReference struct {
 }
 
 type Lease = pgwf.Lease
-type Artifact = strata.Artifact
 type Dependencies = pgwf.JobDependencies
 
 // JobKey uniquely identifies a job across all tenants.

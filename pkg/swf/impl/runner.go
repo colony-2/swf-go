@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
+	strata "github.com/colony-2/strata-go/pkg/client/artifact"
 	"github.com/colony-2/strata-go/pkg/client/core"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
@@ -242,7 +243,8 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			}
 
 			// Try to decode result
-			td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
+			artifacts := convertStrataArtifacts(chap.Artifacts())
+			td, payloadErr := envelopeToTaskData(env, artifacts)
 			if payloadErr == nil {
 				// Cached success - return immediately
 				return td, nil
@@ -432,8 +434,13 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			return nil, err
 		}
 
+		// Cleanup output artifacts after successful save
+		cleanupArtifacts(context.TODO(), artifacts, r.logger)
+
 		if originalErr == nil {
-			// Success - return
+			// Success - cleanup input artifacts and return
+			inputArtifacts, _ := data.GetArtifacts()
+			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			return output, nil
 		}
 
@@ -450,9 +457,32 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			continue
 		}
 
-		// Max attempts or non-retryable - return error
+		// Max attempts or non-retryable - cleanup input artifacts and return error
+		inputArtifacts, _ := data.GetArtifacts()
+		cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 		return nil, originalErr
 	}
+}
+
+// cleanupArtifacts calls Cleanup() on each artifact and logs any errors.
+// Cleanup errors do not fail the workflow.
+func cleanupArtifacts(ctx context.Context, artifacts []swf.Artifact, logger *slog.Logger) {
+	for _, art := range artifacts {
+		if err := art.Cleanup(); err != nil {
+			logger.Warn("artifact cleanup failed", "name", art.Name(), "error", err)
+		} else {
+			logger.Debug("artifact cleaned up", "name", art.Name())
+		}
+	}
+}
+
+// convertStrataArtifacts converts strata artifacts to swf artifacts
+func convertStrataArtifacts(strataArts []strata.Artifact) []swf.Artifact {
+	artifacts := make([]swf.Artifact, 0, len(strataArts))
+	for _, a := range strataArts {
+		artifacts = append(artifacts, swf.FromStrataArtifact(a))
+	}
+	return artifacts
 }
 
 func prematureCloseOut() {
@@ -604,7 +634,8 @@ func (r *runner) loadInitialChapterAndPolicy() (swf.TaskData, chapterEnvelope, e
 		r.jobPolicy = mergeRunPolicy(*env0.Meta.RunPolicy, r.jobPolicy)
 	}
 	r.jobPolicy = normalizeRunPolicy(r.jobPolicy)
-	inputData, err := envelopeToTaskData(env0, chap0.Artifacts())
+	artifacts := convertStrataArtifacts(chap0.Artifacts())
+	inputData, err := envelopeToTaskData(env0, artifacts)
 	if err != nil {
 		return nil, chapterEnvelope{}, fmt.Errorf("failed to decode initial chapter payload: %w", err)
 	}
@@ -766,7 +797,8 @@ func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordina
 	}
 
 	// Try to decode the result
-	output, payloadErr := envelopeToTaskData(env, cached.Artifacts())
+	artifacts := convertStrataArtifacts(cached.Artifacts())
+	output, payloadErr := envelopeToTaskData(env, artifacts)
 	if payloadErr == nil {
 		// Cached success - terminal
 		return output, nextAttempt, true, true, nil

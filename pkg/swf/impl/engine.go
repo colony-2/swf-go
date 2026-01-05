@@ -604,7 +604,7 @@ func payloadToChapter(payload json.RawMessage, artifacts []swf.Artifact, ordinal
 
 	chapBuilder := story.NewChapter().WithOrdinal(ordinal).WithBytes(envBytes)
 	for _, v := range artifacts {
-		chapBuilder.AddArtifact(v)
+		chapBuilder.AddArtifact(swf.ToStrataArtifact(v))
 	}
 	return chapBuilder, nil
 }

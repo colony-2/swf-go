@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	strata "github.com/colony-2/strata-go/pkg/client/artifact"
 	"github.com/colony-2/swf-go/pkg/swf"
 )
 
@@ -50,7 +51,8 @@ func TestTaskAppErrorEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("payload message mismatch: %s", payloadBody.Message)
 	}
 
-	td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
+	artifacts := convertStrataArtifactsToSwf(chap.Artifacts())
+	td, payloadErr := envelopeToTaskData(env, artifacts)
 	if td == nil {
 		t.Fatalf("expected task data envelope on error payload")
 	}
@@ -106,7 +108,8 @@ func TestTaskSystemErrorEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("payload message mismatch: %s", payloadBody.Message)
 	}
 
-	td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
+	artifacts := convertStrataArtifactsToSwf(chap.Artifacts())
+	td, payloadErr := envelopeToTaskData(env, artifacts)
 	if td == nil {
 		t.Fatalf("expected task data envelope on system error payload")
 	}
@@ -155,7 +158,8 @@ func TestJobAppErrorEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("expected task type %s, got %s", taskType, env.Meta.TaskType)
 	}
 
-	td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
+	artifacts := convertStrataArtifactsToSwf(chap.Artifacts())
+	td, payloadErr := envelopeToTaskData(env, artifacts)
 	if td == nil {
 		t.Fatalf("expected task data envelope on job app error payload")
 	}
@@ -201,7 +205,8 @@ func TestJobSystemErrorEnvelopeRoundTrip(t *testing.T) {
 		t.Fatalf("expected task type %s, got %s", taskType, env.Meta.TaskType)
 	}
 
-	td, payloadErr := envelopeToTaskData(env, chap.Artifacts())
+	artifacts := convertStrataArtifactsToSwf(chap.Artifacts())
+	td, payloadErr := envelopeToTaskData(env, artifacts)
 	if td == nil {
 		t.Fatalf("expected task data envelope on job system error payload")
 	}
@@ -212,4 +217,13 @@ func TestJobSystemErrorEnvelopeRoundTrip(t *testing.T) {
 	if !errors.As(payloadErr, &gotSysErr) {
 		t.Fatalf("expected systemError, got %v", payloadErr)
 	}
+}
+
+// convertStrataArtifactsToSwf converts strata artifacts to swf artifacts
+func convertStrataArtifactsToSwf(strataArts []strata.Artifact) []swf.Artifact {
+	artifacts := make([]swf.Artifact, 0, len(strataArts))
+	for _, a := range strataArts {
+		artifacts = append(artifacts, swf.FromStrataArtifact(a))
+	}
+	return artifacts
 }

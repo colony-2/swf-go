@@ -94,7 +94,7 @@ var _ swf.TaskHandle = &taskHandleImpl{}
 func chapterToTaskData(chapter story.Chapter) (swf.TaskData, error) {
 	artifacts := make([]swf.Artifact, 0, len(chapter.Artifacts()))
 	for _, a := range chapter.Artifacts() {
-		artifacts = append(artifacts, a)
+		artifacts = append(artifacts, swf.FromStrataArtifact(a))
 	}
 
 	env, err := decodeChapterEnvelope(chapter.Body())
