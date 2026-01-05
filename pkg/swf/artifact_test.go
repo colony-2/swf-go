@@ -477,3 +477,81 @@ func TestArtifactSize_Unknown(t *testing.T) {
 	art := swf.NewArtifactFromReader("test.txt", strings.NewReader("data"), -1)
 	assert.Equal(t, int64(-1), art.Size())
 }
+
+func TestArtifact_Bytes(t *testing.T) {
+	ctx := context.Background()
+	testData := []byte("test artifact bytes")
+
+	t.Run("bytes artifact", func(t *testing.T) {
+		art := swf.NewArtifactFromBytes("test.txt", testData)
+		data, err := art.Bytes(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, testData, data)
+
+		// Verify returned bytes are a copy (mutation doesn't affect original)
+		data[0] = 'X'
+		data2, _ := art.Bytes(ctx)
+		assert.Equal(t, testData, data2)
+	})
+
+	t.Run("file artifact", func(t *testing.T) {
+		tmpFile, err := os.CreateTemp("", "bytes-test-*.txt")
+		require.NoError(t, err)
+		path := tmpFile.Name()
+		tmpFile.Write(testData)
+		tmpFile.Close()
+		defer os.Remove(path)
+
+		art, err := swf.NewArtifactFromFileNoCleanup("test.txt", path)
+		require.NoError(t, err)
+
+		data, err := art.Bytes(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, testData, data)
+	})
+
+	t.Run("reader artifact", func(t *testing.T) {
+		art := swf.NewArtifactFromReader("test.txt", bytes.NewReader(testData), int64(len(testData)))
+		data, err := art.Bytes(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, testData, data)
+
+		// Second call should fail (reader consumed)
+		_, err = art.Bytes(ctx)
+		assert.Error(t, err)
+	})
+
+	t.Run("custom artifact", func(t *testing.T) {
+		art := swf.NewArtifact(
+			"custom.txt",
+			func() (io.ReadCloser, int64, error) {
+				return io.NopCloser(bytes.NewReader(testData)), int64(len(testData)), nil
+			},
+			nil,
+		)
+
+		data, err := art.Bytes(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, testData, data)
+	})
+}
+
+func TestArtifact_BytesAndOpen(t *testing.T) {
+	ctx := context.Background()
+	testData := []byte("test data for both")
+
+	art := swf.NewArtifactFromBytes("test.txt", testData)
+
+	// Call Bytes first
+	data1, err := art.Bytes(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, testData, data1)
+
+	// Then Open should still work
+	rc, err := art.Open()
+	require.NoError(t, err)
+	defer rc.Close()
+	data2, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, testData, data2)
+}

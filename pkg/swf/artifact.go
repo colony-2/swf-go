@@ -32,6 +32,10 @@ type Artifact interface {
 	// Sha256 returns the SHA256 hash of the artifact contents.
 	Sha256(ctx context.Context) (string, error)
 
+	// Bytes reads and returns the entire artifact contents as a byte slice.
+	// For large artifacts, prefer using Open() to stream the data.
+	Bytes(ctx context.Context) ([]byte, error)
+
 	// Cleanup is called by SWF after the artifact has been fully consumed
 	// and is no longer needed. Implementations should clean up any temporary
 	// resources (files, directories, connections, etc.).
@@ -181,6 +185,12 @@ func (a *bytesArtifact) Sha256(ctx context.Context) (string, error) {
 	a.hash.Store(&h)
 	return h, nil
 }
+func (a *bytesArtifact) Bytes(ctx context.Context) ([]byte, error) {
+	// Return a copy to prevent mutation
+	result := make([]byte, len(a.data))
+	copy(result, a.data)
+	return result, nil
+}
 func (a *bytesArtifact) Cleanup() error { return nil }
 
 // readerArtifact - one-time reader artifact
@@ -213,6 +223,14 @@ func (a *readerArtifact) Sha256(ctx context.Context) (string, error) {
 	// For reader artifacts, we can't compute hash without consuming
 	// Return empty hash
 	return "", nil
+}
+func (a *readerArtifact) Bytes(ctx context.Context) ([]byte, error) {
+	rc, err := a.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
 }
 func (a *readerArtifact) Cleanup() error { return nil }
 
@@ -247,6 +265,9 @@ func (a *fileArtifact) Sha256(ctx context.Context) (string, error) {
 	}
 	a.hash.Store(&h)
 	return h, nil
+}
+func (a *fileArtifact) Bytes(ctx context.Context) ([]byte, error) {
+	return os.ReadFile(a.path)
 }
 func (a *fileArtifact) Cleanup() error {
 	if !a.autoClean {
@@ -295,6 +316,14 @@ func (a *customArtifact) Sha256(ctx context.Context) (string, error) {
 	a.hash.Store(&h)
 	return h, nil
 }
+func (a *customArtifact) Bytes(ctx context.Context) ([]byte, error) {
+	rc, _, err := a.opener()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
 func (a *customArtifact) Cleanup() error {
 	if a.cleanup == nil {
 		return nil
@@ -329,6 +358,10 @@ func (a *strataArtifactAdapter) Size() int64 {
 
 func (a *strataArtifactAdapter) Sha256(ctx context.Context) (string, error) {
 	return a.art.Sha256(ctx)
+}
+
+func (a *strataArtifactAdapter) Bytes(ctx context.Context) ([]byte, error) {
+	return a.art.Bytes(ctx)
 }
 
 func (a *strataArtifactAdapter) Cleanup() error {
