@@ -828,6 +828,27 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 	cleanupArtifacts(context.TODO(), materializedInput, c.Logger())
 
 	if err != nil {
+		// Extract and materialize artifacts even on error
+		if output != nil {
+			outputArtifacts, artErr := output.GetArtifacts()
+			if artErr != nil {
+				c.Logger().Warn("Failed to extract artifacts from error case", "error", artErr)
+			} else {
+				materializedOutput, matErr := materializeArtifacts(context.TODO(), outputArtifacts, c.Logger())
+				if matErr != nil {
+					c.Logger().Warn("Failed to materialize output artifacts from error case", "error", matErr)
+				} else {
+					// Mark this chapter as written even on error
+					c.record.mu.Lock()
+					c.record.chapters[c.step] = true
+					c.record.mu.Unlock()
+					c.step++
+
+					// Cleanup the materialized error artifacts
+					cleanupArtifacts(context.TODO(), materializedOutput, c.Logger())
+				}
+			}
+		}
 		return nil, err
 	}
 

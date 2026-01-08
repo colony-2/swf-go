@@ -400,6 +400,15 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			if tdErr != nil {
 				return nil, tdErr
 			}
+			// Extract artifacts even on error
+			if output != nil {
+				artifacts, err = output.GetArtifacts()
+				if err != nil {
+					r.logger.Warn("Failed to extract artifacts from error case",
+						"error", err, "taskType", taskType, "ordinal", ordinal)
+					artifacts = []swf.Artifact{}
+				}
+			}
 		} else {
 			// success
 			dataBytes, err := output.GetData()
@@ -446,6 +455,10 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 
 		// Error - check if should retry
 		if retryable && attempt < maxAttempts {
+			// Cleanup input artifacts before retry
+			inputArtifacts, _ := data.GetArtifacts()
+			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
+
 			if backoff > 0 {
 				if err := r.awaitUntil(now.Add(backoff), ordinal, attempt, "task", inputRef, time.Time{}, totalDeadline, 0, totalTimeout); err != nil {
 					return nil, err
@@ -839,6 +852,15 @@ func (r *runner) prepareJobResultPayload(output swf.JobData, originalErr error, 
 		if tdErr != nil {
 			return nil, nil, "", fmt.Errorf("failed to marshal error payload: %w", tdErr)
 		}
+		// Extract artifacts even on error
+		if output != nil {
+			var err error
+			artifacts, err = output.GetArtifacts()
+			if err != nil {
+				r.logger.Warn("Failed to extract artifacts from job error case", "error", err)
+				artifacts = []swf.Artifact{}
+			}
+		}
 		return payload, artifacts, errKind, nil
 	}
 
@@ -983,22 +1005,32 @@ func (r *runner) DoJob(ctx context.Context, lease *pgwf.Lease) {
 			_ = lease.Complete(ctx, r.engine.udb)
 			return
 		}
+		if len(artifacts) > 0 {
+			cleanupArtifacts(context.TODO(), artifacts, r.logger)
+		}
 
 		// Determine if we're done or need to retry
 		if jobErr == nil {
-			// Success - complete lease and return
+			// Success - cleanup input artifacts, complete lease and return
+			inputArtifacts, _ := inputData.GetArtifacts()
+			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			_ = lease.Complete(ctx, r.engine.udb)
 			return
 		}
 
 		retryable := isRetryable(jobErr, config.retryCfg)
 		if !retryable || attempt >= maxAttempts {
-			// Non-retryable or max attempts reached - complete lease and return
+			// Non-retryable or max attempts reached - cleanup input artifacts, complete lease and return
+			inputArtifacts, _ := inputData.GetArtifacts()
+			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			_ = lease.Complete(ctx, r.engine.udb)
 			return
 		}
 
-		// Retryable error and under max attempts - wait backoff and retry with new ordinal
+		// Retryable error and under max attempts - cleanup input artifacts, wait backoff and retry with new ordinal
+		inputArtifacts, _ := inputData.GetArtifacts()
+		cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
+
 		backoff := computeBackoff(config.retryCfg, attempt)
 		attempt++
 		if backoff > 0 {

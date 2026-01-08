@@ -276,6 +276,14 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 		return swf.JobKey{}, err
 	}
 
+	// Cleanup input artifacts after successful storage
+	artifacts, _ := taskData.GetArtifacts()
+	for _, art := range artifacts {
+		if cleanupErr := art.Cleanup(); cleanupErr != nil {
+			s.logger.Warn("Failed to cleanup job input artifact", "artifact", art.Name(), "error", cleanupErr)
+		}
+	}
+
 	return jobKey, s.startJob(ctx, jobKey, job.JobType, job.SingletonKey, jobPayload{RunPolicy: jobPolicy})
 }
 
