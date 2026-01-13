@@ -903,7 +903,7 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 	c.engine.pending[capability] = append(c.engine.pending[capability], pending)
 	c.record.mu.Lock()
 	if c.record.status != swf.JobStatusCancelled {
-		c.record.status = swf.JobStatusPendingJobs
+		c.record.status = swf.JobStatusReady
 	}
 	c.record.capability = capability
 	c.record.step = pending.step
