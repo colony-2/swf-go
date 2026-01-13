@@ -3,6 +3,7 @@ package impl
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
@@ -67,17 +68,64 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// write the story.
-	inputTD, err := chapterToTaskData(h.inputChapter)
-	if err != nil {
-		return err
-	}
-	inputHash, err := computeInputHash(ctx, inputTD)
-	if err != nil {
-		return err
+	// Load input chapter if not already set (e.g., when created by FindTasksWaitingForCapability)
+	if h.inputChapter == nil && h.inputOrdinal > 0 {
+		jobKey := h.JobKey()
+		ch, err := h.engine.strata.Chapter(ctx, jobKey.ToStoryKey(), h.inputOrdinal)
+		if err != nil {
+			return fmt.Errorf("failed to load input chapter: %w", err)
+		}
+		h.inputChapter = ch
 	}
 
-	chap, err := taskDataToChapter(taskData, h.outputOrdinal, h.taskType, h.engine.workerId, payloadKindApp, inputHash, time.Now().UTC(), chapterMetadata{})
+	// Compute input hash from input chapter
+	var inputHash string
+	if h.inputChapter != nil {
+		inputTD, err := chapterToTaskData(h.inputChapter)
+		if err != nil {
+			return err
+		}
+		inputHash, err = computeInputHash(ctx, inputTD)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Extract metadata from payload and input chapter
+	var payload jobPayload
+	_ = json.Unmarshal(h.payload, &payload)
+
+	// Build chapter metadata from input chapter and payload
+	meta := chapterMetadata{}
+	if h.inputChapter != nil {
+		if env, decErr := decodeChapterEnvelope(h.inputChapter.Body()); decErr == nil {
+			// Preserve attempt information from input
+			if env.Meta.Attempt > 0 {
+				meta.Attempt = env.Meta.Attempt
+			}
+			if env.Meta.MaxAttempts > 0 {
+				meta.MaxAttempts = env.Meta.MaxAttempts
+			}
+			if env.Meta.NextAttemptAt != nil {
+				meta.NextAttemptAt = env.Meta.NextAttemptAt
+			}
+			if env.Meta.BackoffMillis > 0 {
+				meta.BackoffMillis = env.Meta.BackoffMillis
+			}
+			if env.Meta.Retryable != nil {
+				meta.Retryable = env.Meta.Retryable
+			}
+			if env.Meta.InputRef != nil {
+				meta.InputRef = env.Meta.InputRef
+			}
+		}
+	}
+	// Include RunPolicy from payload
+	if payload.RunPolicy.Retry.MaximumAttempts > 0 {
+		meta.RunPolicy = &payload.RunPolicy
+	}
+
+	chap, err := taskDataToChapter(taskData, h.outputOrdinal, h.taskType, h.engine.workerId, payloadKindApp, inputHash, time.Now().UTC(), meta)
 	if err != nil {
 		return err
 	}
@@ -86,8 +134,6 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 	if err != nil {
 		return err
 	}
-	var payload jobPayload
-	_ = json.Unmarshal(h.payload, &payload)
 	tenantID := pgwf.TenantID(h.tenantId)
 	return pgwf.RescheduleUnheldJob(
 		ctx,
