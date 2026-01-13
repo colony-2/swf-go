@@ -64,7 +64,7 @@ type jobRecord struct {
 	payload    []byte
 	capability string
 	step       int64
-	chapters   map[int64]bool // tracks which ordinals have been written
+	chapters   map[int64]swf.TaskData // tracks ordinals and their output data
 }
 
 type pendingTask struct {
@@ -153,7 +153,7 @@ func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobKe
 		singleton: singletonPtr,
 		createdAt: time.Now(),
 		payload:   payloadBytes,
-		chapters:  make(map[int64]bool),
+		chapters:  make(map[int64]swf.TaskData),
 	}
 	e.setJobRecord(jobKey, record)
 	e.runJob(runCtx, jobKey, ws, swf.JobData(start.Data))
@@ -298,7 +298,25 @@ func (h *pendingHandle) JobKey() swf.JobKey {
 }
 
 func (h *pendingHandle) Data() (swf.TaskData, error) {
-	return h.task.data, nil
+	// Return the OUTPUT from the previous step (inputOrdinal = outputOrdinal - 1)
+	// This matches the real engine behavior which reads from the persisted chapter
+	h.engine.mu.Lock()
+	record, ok := h.engine.jobRecords[h.task.jobKey]
+	h.engine.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("job record not found")
+	}
+
+	inputOrdinal := h.task.step - 1
+	record.mu.Lock()
+	data, exists := record.chapters[inputOrdinal]
+	record.mu.Unlock()
+
+	if !exists || data == nil {
+		return nil, fmt.Errorf("input chapter %d not found", inputOrdinal)
+	}
+
+	return data, nil
 }
 
 func (h *pendingHandle) TaskOrdinalToComplete() int64 {
@@ -673,8 +691,6 @@ func (e *ToyEngine) runJob(ctx context.Context, jobKey swf.JobKey, ws swf.WorkSe
 	record.mu.Lock()
 	record.started = time.Now()
 	record.status = swf.JobStatusActive
-	// Mark ordinal 0 (job input) as written
-	record.chapters[0] = true
 	record.mu.Unlock()
 
 	var (
@@ -712,6 +728,11 @@ func (e *ToyEngine) runJob(ctx context.Context, jobKey swf.JobKey, ws swf.WorkSe
 		Data:      jobBytes,
 		Artifacts: materializedArtifacts,
 	}
+
+	// Mark ordinal 0 (job input) as written and save the materialized job data
+	record.mu.Lock()
+	record.chapters[0] = materializedJobData
+	record.mu.Unlock()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -796,7 +817,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 
 	// Check if this chapter (ordinal) has already been written
 	c.record.mu.Lock()
-	if c.record.chapters[c.step] {
+	if c.record.chapters[c.step] != nil {
 		c.record.mu.Unlock()
 		return nil, fmt.Errorf("chapter already created: ordinal %d", c.step)
 	}
@@ -860,9 +881,15 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 				if matErr != nil {
 					c.Logger().Warn("Failed to materialize output artifacts from error case", "error", matErr)
 				} else {
-					// Mark this chapter as written even on error
+					// Create TaskData for error case output
+					outputBytes, _ := output.GetData()
+					errorOutputData := &swf.SimpleTaskData{
+						Data:      outputBytes,
+						Artifacts: materializedOutput,
+					}
+					// Mark this chapter as written even on error and save the output data
 					c.record.mu.Lock()
-					c.record.chapters[c.step] = true
+					c.record.chapters[c.step] = errorOutputData
 					c.record.mu.Unlock()
 					c.step++
 
@@ -894,9 +921,9 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 		Artifacts: materializedOutput,
 	}
 
-	// Mark this chapter as written
+	// Mark this chapter as written and save the output data
 	c.record.mu.Lock()
-	c.record.chapters[c.step] = true
+	c.record.chapters[c.step] = materializedOutputData
 	c.record.mu.Unlock()
 
 	c.step++
@@ -906,7 +933,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskData) (swf.TaskData, error) {
 	// Check if this chapter (ordinal) has already been written
 	c.record.mu.Lock()
-	if c.record.chapters[c.step] {
+	if c.record.chapters[c.step] != nil {
 		c.record.mu.Unlock()
 		return nil, fmt.Errorf("chapter already created: ordinal %d", c.step)
 	}
@@ -963,9 +990,9 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 			Artifacts: materializedOutput,
 		}
 
-		// Mark this chapter as written
+		// Mark this chapter as written and save the output data
 		c.record.mu.Lock()
-		c.record.chapters[c.step] = true
+		c.record.chapters[c.step] = materializedOutputData
 		c.record.mu.Unlock()
 
 		c.step++

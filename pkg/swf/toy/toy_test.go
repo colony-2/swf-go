@@ -368,6 +368,145 @@ func TestPendingTaskCompletion(t *testing.T) {
 	}
 }
 
+func TestGetWaitingTaskReturnsCorrectStepData(t *testing.T) {
+	// This test verifies that GetWaitingTask returns the OUTPUT from the previous step,
+	// NOT the INPUT that was passed to DoTask (which might have been modified by the job).
+	//
+	// Job flow: input(n=1) → add(+1)=2 → double(*2)=4 → missing(pending)
+	// Expected: handle.Data() returns n=4 (output from step 2), NOT n=1 (from step 0)
+
+	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double", "missing"}}, addOneTask{}, doubleTask{})
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "test-step-data"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) { return jobKey, nil }))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = engine.StartJob(context.Background(), swf.StartJob{
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+		})
+	}()
+
+	// Wait for pending task "missing" to appear
+	var handles []swf.TaskHandle
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		handles, err = engine.FindTasksWaitingForCapability(context.Background(), ws.JobWorker.Name(), "missing", nil)
+		if err != nil {
+			t.Fatalf("FindTasksWaitingForCapability: %v", err)
+		}
+		if len(handles) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("expected 1 pending handle, got %d", len(handles))
+	}
+
+	handle, err := engine.GetWaitingTask(context.Background(), jobKey)
+	if err != nil {
+		t.Fatalf("GetWaitingTask: %v", err)
+	}
+
+	data, err := handle.Data()
+	if err != nil {
+		t.Fatalf("handle.Data(): %v", err)
+	}
+
+	actualValue := extractNumber(data)
+	expectedValue := 4 // (1 + 1) * 2 = 4
+	if actualValue != expectedValue {
+		t.Fatalf("handle.Data() returned wrong step data: expected n=%d (output from step 2), got n=%d",
+			expectedValue, actualValue)
+	}
+
+	if err := handle.Finish(context.Background(), swf.NewTaskDataOrPanic(map[string]int{"n": 100})); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	<-done
+}
+
+func TestGetWaitingTaskReturnsOutputNotInput(t *testing.T) {
+	// This test explicitly verifies the distinction between:
+	// - OUTPUT of the previous step (what's persisted)
+	// - INPUT to the current step (what the job passed to DoTask)
+	// These can be DIFFERENT if the job modifies data between steps.
+	//
+	// Job flow:
+	//   step 0: n=10
+	//   step 1: add(n=10) → n=11
+	//   Job transforms: n=11 + 100 = n=111
+	//   step 2: missing(n=111) - pending
+	//
+	// GetWaitingTask should return n=11 (persisted output from step 1),
+	// NOT n=111 (the transformed input passed to step 2)
+
+	jobWithTransform := &jobWorkerWithTransform{missingTask: "missing"}
+	ws := mustWorkSet(jobWithTransform, addOneTask{})
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "test-transform"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) { return jobKey, nil }))
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = engine.StartJob(context.Background(), swf.StartJob{
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 10}),
+		})
+	}()
+
+	// Wait for pending task
+	var handles []swf.TaskHandle
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		handles, err = engine.FindTasksWaitingForCapability(context.Background(), ws.JobWorker.Name(), "missing", nil)
+		if err != nil {
+			t.Fatalf("FindTasksWaitingForCapability: %v", err)
+		}
+		if len(handles) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("expected 1 pending handle, got %d", len(handles))
+	}
+
+	handle, err := engine.GetWaitingTask(context.Background(), jobKey)
+	if err != nil {
+		t.Fatalf("GetWaitingTask: %v", err)
+	}
+
+	data, err := handle.Data()
+	if err != nil {
+		t.Fatalf("handle.Data(): %v", err)
+	}
+
+	actualValue := extractNumber(data)
+	expectedValue := 11  // OUTPUT from step 1: 10 + 1 = 11
+	wrongValue := 111    // INPUT to step 2: (10 + 1) + 100 = 111
+
+	if actualValue == wrongValue {
+		t.Fatalf("BUG: handle.Data() returned the INPUT to the pending task (n=%d) instead of the OUTPUT from the previous step (n=%d)",
+			wrongValue, expectedValue)
+	}
+	if actualValue != expectedValue {
+		t.Fatalf("handle.Data() returned unexpected value: expected n=%d (output from step 1), got n=%d",
+			expectedValue, actualValue)
+	}
+
+	if err := handle.Finish(context.Background(), swf.NewTaskDataOrPanic(map[string]int{"n": 200})); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	<-done
+}
+
 func TestJobSummaryPendingStepMatchesHandle(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"add", "missing"}}, addOneTask{})
 	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "multi-step-pending"}
@@ -473,14 +612,14 @@ func TestChapterConstraintEnforcement(t *testing.T) {
 
 		expectedChapters := []int64{0, 1, 2, 3}
 		for _, ordinal := range expectedChapters {
-			if !record.chapters[ordinal] {
-				t.Errorf("expected chapter %d to be marked as written", ordinal)
+			if record.chapters[ordinal] == nil {
+				t.Errorf("expected chapter %d to be written", ordinal)
 			}
 		}
 
 		// Verify no unexpected chapters were written
 		if len(record.chapters) != len(expectedChapters) {
-			t.Errorf("expected %d chapters, got %d: %v", len(expectedChapters), len(record.chapters), record.chapters)
+			t.Errorf("expected %d chapters, got %d", len(expectedChapters), len(record.chapters))
 		}
 	})
 
@@ -633,6 +772,35 @@ func extractNumber(td swf.TaskData) int {
 
 func ptrString(s string) *string {
 	return &s
+}
+
+// jobWorkerWithTransform modifies data between tasks to test that
+// GetWaitingTask returns the OUTPUT from the previous step, not the INPUT to the current step
+type jobWorkerWithTransform struct {
+	missingTask string
+}
+
+func (j *jobWorkerWithTransform) Name() string { return "transform-job" }
+
+func (j *jobWorkerWithTransform) Run(ctx swf.JobContext, data swf.JobData) (swf.JobData, error) {
+	// Execute first task
+	out1, err := ctx.DoTask(swf.RunPolicy{}, "add", data)
+	if err != nil {
+		return nil, err
+	}
+
+	// Transform the output before passing to next task
+	// This simulates job-level data transformation between tasks
+	n := extractNumber(out1)
+	transformed := swf.NewTaskDataOrPanic(map[string]int{"n": n + 100})
+
+	// Execute second task with transformed data
+	out2, err := ctx.DoTask(swf.RunPolicy{}, j.missingTask, transformed)
+	if err != nil {
+		return nil, err
+	}
+
+	return out2, nil
 }
 
 type simpleJobWorker struct {
