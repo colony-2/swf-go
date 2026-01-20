@@ -43,17 +43,6 @@ type JobRunSummary struct {
     Status     swf.JobStatus
     CreatedAt  time.Time
     ArchivedAt *time.Time
-    Runtime    *JobRuntime
-}
-
-type JobRuntime struct {
-    Ready          bool
-    Leased         bool
-    LeaseOwner     *string // worker id if known
-    LeaseExpiresAt *time.Time
-    NextNeed       *string   // pgwf next_need/capability
-    AvailableAt    *time.Time
-    WaitFor        []swf.JobId
 }
 
 type JobStart struct {
@@ -83,7 +72,17 @@ type TaskAttempt struct {
     BackoffMillis *int64
     Input         *TaskIO
     Output        *TaskIO
+    State         string // "SUCCEEDED" | "FAILED" | "READY" | "LEASED" | "WAITING" | "RUNNING"
+    Runtime       *TaskRuntime
     Outcome       TaskOutcome
+}
+
+type TaskRuntime struct {
+    LeaseOwner     *string // worker id if known
+    LeaseExpiresAt *time.Time
+    NextNeed       *string   // pgwf next_need/capability
+    AvailableAt    *time.Time
+    WaitFor        []swf.JobId
 }
 
 type JobAttempt struct {
@@ -139,17 +138,23 @@ type jobRunApi interface {
 - `Start` is derived from chapter ordinal `0` (the initial job input chapter).
   - `JobRunSummary.JobType` is `Start`'s `meta.task_type` (same as job worker name).
   - `Start.Input` is the chapter payload + artifacts (job input).
-- `Runtime` is populated only when the job is not archived/completed, sourced from pgwf job state.
-  - `Leased` is true when the job has an active lease (now < lease_expires_at).
-  - `LeaseOwner` is the current worker id if present in pgwf.
-  - `Ready` is true when the job is eligible to be leased now (status READY and available_at <= now).
-  - `NextNeed` is the capability currently needed (from pgwf next_need).
-  - `WaitFor` is the current dependency list when the job is waiting on other jobs.
-  - `AvailableAt` surfaces the next scheduled time when waiting on a timer.
+- When the job is not archived/completed, expose runtime in the task model:
+  - Append a synthetic `TaskRun` for the current `next_need` capability.
+  - `TaskRun.TaskType` is set to `next_need` (capability) so callers can render the current task type.
+  - The synthetic run has a single `TaskAttempt` with `State` and `Runtime` populated, `Output` nil.
+  - `InputRef` points at the last completed ordinal; `Input` can be resolved from that chapter when available.
+  - `Ordinal` is `lastOrdinal + 1` to align with the task timeline, even if no chapter exists yet.
+  - State mapping from pgwf status:
+    - `READY` + `available_at <= now` -> `State="READY"`.
+    - Active lease present -> `State="LEASED"` with `Runtime.LeaseOwner`/`LeaseExpiresAt`.
+    - `AwaitingFuture` -> `State="WAITING"` with `Runtime.AvailableAt`.
+    - `PendingJobs` -> `State="WAITING"` with `Runtime.WaitFor`.
 - `Tasks` are derived from chapters with `meta.task_type != JobRunSummary.JobType`.
   - Each chapter is a task attempt; retries are separate chapters with incremented `meta.attempt`.
   - `TaskRunID` is built from the first attempt’s ordinal to keep it stable and unique.
   - Attempts are grouped by scan order: a new `TaskRun` begins when `meta.attempt == 1`.
+- For completed attempts, `State` mirrors `Outcome.Status` (`SUCCEEDED` or `FAILED`).
+- For runtime attempts, `Outcome` is omitted and `State` is one of `READY`, `LEASED`, or `WAITING`.
 - `JobAttempts` are derived from chapters with `meta.task_type == JobRunSummary.JobType` and `ordinal > 0`.
   - These represent job worker attempts (retries) and are separate from task runs.
 - `Result` is the last `JobAttempt` only if pgwf reports the job archived/completed; otherwise `nil`.
@@ -173,8 +178,39 @@ type jobRunApi interface {
 - When `IncludeArtifacts=false`, omit artifact arrays entirely to keep responses small.
 - When a chapter’s payload is invalid JSON, return `ErrWorkflowNotDeterministic` (same as internal reads).
 
+## Implementation Plan
+- Add `GetJobRun` on `swfEngineImpl` (and interface) mirroring `ListJobs` and `GetJobResult` patterns.
+- Fetch pgwf job status:
+  - Determine `Status`/`ArchivedAt` (same logic as `CheckJobStatus`).
+  - When not archived, populate a synthetic runtime task attempt from `pgwf.jobs_with_status` (lease, wait_for, available_at, next_need).
+- Fetch Strata story chapters in ascending ordinal; decode envelopes and artifacts.
+- Build response:
+  - `Start` from ordinal 0.
+  - `Tasks` from chapters whose `meta.task_type != JobType`, grouping by `meta.attempt==1`.
+  - `JobAttempts` from chapters whose `meta.task_type == JobType` and ordinal > 0.
+  - `Result` when archived: last `JobAttempt`.
+- Input/Output handling:
+  - Output is always the chapter payload + artifacts.
+  - Input uses `meta.input` when present.
+  - When `IncludeAttemptInputs=true` and `InputRef` is set, resolve input chapter to populate `Input`.
+- Error mapping:
+  - Convert payload kinds to `TaskOutcome` and `TaskError` as specified.
+  - Unknown payload kinds return `Status=FAILED` with `Error.Kind="SYSTEM"` and `Code="unknown_payload_kind"`.
+
 ## Testing Plan
-- Job with retries: `JobAttempts` shows multiple attempts with error payloads + final success.
-- Task retry: a single `TaskRun` with `Attempts` containing `attempt=1..n`.
-- Task input storage disabled: `TaskAttempt.Input` is nil; `InputRef` still set.
-- Running job: `Result` is nil, but `Tasks` includes completed attempts so far.
+- Running job state:
+  - Job not archived returns a synthetic runtime task attempt with `State` and `Runtime` populated based on pgwf state.
+- Completed job:
+  - Archived job returns `Result` populated with final job attempt.
+- Task retries:
+  - Single `TaskRun` with multiple `Attempts` and correct `Attempt` numbering.
+- Job retries:
+  - Multiple `JobAttempts` with error payloads and final success.
+- Task input storage disabled:
+  - `TaskAttempt.Input` is nil and `InputRef` is present.
+- `IncludeAttemptInputs=true`:
+  - Inputs are resolved from referenced chapters and include artifacts.
+- Error payload mapping:
+  - `AppError`, `SystemError`, `Timeout` populate `TaskError` fields correctly.
+- Unknown payload kind:
+  - Response marks attempt as failed with `unknown_payload_kind` code.

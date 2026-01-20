@@ -64,7 +64,14 @@ type jobRecord struct {
 	payload    []byte
 	capability string
 	step       int64
-	chapters   map[int64]swf.TaskData // tracks ordinals and their output data
+	chapters   map[int64]*toyChapter
+}
+
+type toyChapter struct {
+	TaskType  string
+	CreatedAt time.Time
+	Input     swf.TaskData
+	Output    swf.TaskData
 }
 
 type pendingTask struct {
@@ -153,7 +160,7 @@ func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobKe
 		singleton: singletonPtr,
 		createdAt: time.Now(),
 		payload:   payloadBytes,
-		chapters:  make(map[int64]swf.TaskData),
+		chapters:  make(map[int64]*toyChapter),
 	}
 	e.setJobRecord(jobKey, record)
 	e.runJob(runCtx, jobKey, ws, swf.JobData(start.Data))
@@ -221,6 +228,225 @@ func (e *ToyEngine) GetJobResult(ctx context.Context, jobKey swf.JobKey) (swf.Ta
 		return nil, fmt.Errorf("job %s not completed", jobKey)
 	}
 	return record.result, record.err
+}
+
+// GetJobRun returns a simplified job run view for the ToyEngine.
+func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (swf.GetJobRunResponse, error) {
+	e.mu.Lock()
+	record, ok := e.jobRecords[req.JobKey]
+	e.mu.Unlock()
+	if !ok {
+		return swf.GetJobRunResponse{}, fmt.Errorf("job %s not found", req.JobKey)
+	}
+
+	includeInputs, includeOutputs, includeArtifacts, _ := normalizeToyJobRunOptions(req)
+
+	resp := swf.GetJobRunResponse{
+		Job: swf.JobRunSummary{
+			JobKey:     req.JobKey,
+			JobType:    record.jobType,
+			Status:     record.status,
+			CreatedAt:  record.createdAt,
+			ArchivedAt: record.archived,
+		},
+	}
+
+	record.mu.Lock()
+	chapters := make(map[int64]*toyChapter, len(record.chapters))
+	for ord, chap := range record.chapters {
+		chapters[ord] = chap
+	}
+	capability := record.capability
+	pendingStep := record.step
+	status := record.status
+	finished := record.finished
+	result := record.result
+	record.mu.Unlock()
+
+	if includeInputs {
+		if chap := chapters[0]; chap != nil {
+			input, err := buildToyTaskIO(ctx, chap.Input, includeInputs, includeArtifacts)
+			if err != nil {
+				return swf.GetJobRunResponse{}, err
+			}
+			resp.Start = swf.JobStart{
+				Ordinal:   0,
+				CreatedAt: chap.CreatedAt,
+				Input:     input,
+			}
+		}
+	}
+
+	ordinals := make([]int64, 0, len(chapters))
+	for ord := range chapters {
+		if ord > 0 {
+			ordinals = append(ordinals, ord)
+		}
+	}
+	sort.Slice(ordinals, func(i, j int) bool { return ordinals[i] < ordinals[j] })
+
+	for _, ord := range ordinals {
+		chap := chapters[ord]
+		if chap == nil || chap.Output == nil {
+			continue
+		}
+
+		input, err := buildToyTaskIO(ctx, chap.Input, includeInputs, includeArtifacts)
+		if err != nil {
+			return swf.GetJobRunResponse{}, err
+		}
+		output, err := buildToyTaskIO(ctx, chap.Output, includeOutputs, includeArtifacts)
+		if err != nil {
+			return swf.GetJobRunResponse{}, err
+		}
+
+		attempt := swf.TaskAttempt{
+			Ordinal: ord,
+			Attempt: 1,
+			Input:   input,
+			Output:  output,
+			State:   swf.TaskAttemptStateSucceeded,
+			Outcome: swf.TaskOutcome{
+				Status:      swf.TaskOutcomeStatusSucceeded,
+				PayloadKind: "App",
+			},
+		}
+
+		resp.Tasks = append(resp.Tasks, swf.TaskRun{
+			TaskRunID: fmt.Sprintf("%s:%d", chap.TaskType, ord),
+			TaskType:  chap.TaskType,
+			Attempts:  []swf.TaskAttempt{attempt},
+		})
+	}
+
+	lastOrdinal := int64(0)
+	if len(ordinals) > 0 {
+		lastOrdinal = ordinals[len(ordinals)-1]
+	}
+
+	if status == swf.JobStatusCompleted && result != nil && includeOutputs {
+		output, err := buildToyTaskIO(ctx, result, includeOutputs, includeArtifacts)
+		if err != nil {
+			return swf.GetJobRunResponse{}, err
+		}
+		jobAttempt := swf.JobAttempt{
+			Ordinal:   lastOrdinal + 1,
+			Attempt:   1,
+			CreatedAt: finished,
+			Output:    output,
+			Outcome: swf.TaskOutcome{
+				Status:      swf.TaskOutcomeStatusSucceeded,
+				PayloadKind: "App",
+			},
+		}
+		resp.JobAttempts = append(resp.JobAttempts, jobAttempt)
+		resp.Result = &jobAttempt
+	}
+
+	if status != swf.JobStatusCompleted && capability != "" {
+		taskType := extractTaskType(capability)
+		input := (*swf.TaskIO)(nil)
+		if includeInputs {
+			if chap := chapters[pendingStep]; chap != nil {
+				loaded, err := buildToyTaskIO(ctx, chap.Input, includeInputs, includeArtifacts)
+				if err != nil {
+					return swf.GetJobRunResponse{}, err
+				}
+				input = loaded
+			}
+		}
+		state := swf.TaskAttemptStateWaiting
+		if status == swf.JobStatusReady {
+			state = swf.TaskAttemptStateReady
+		} else if status == swf.JobStatusActive {
+			state = swf.TaskAttemptStateRunning
+		}
+
+		resp.Tasks = append(resp.Tasks, swf.TaskRun{
+			TaskRunID: fmt.Sprintf("%s:%d", taskType, pendingStep),
+			TaskType:  taskType,
+			Attempts: []swf.TaskAttempt{
+				{
+					Ordinal: pendingStep,
+					Attempt: 1,
+					Input:   input,
+					State:   state,
+					Runtime: &swf.TaskRuntime{NextNeed: &capability},
+				},
+			},
+		})
+	}
+
+	return resp, nil
+}
+
+func normalizeToyJobRunOptions(req swf.GetJobRunRequest) (bool, bool, bool, bool) {
+	if !req.IncludeInputs && !req.IncludeOutputs && !req.IncludeArtifacts && !req.IncludeAttemptInputs {
+		return true, true, true, false
+	}
+	return req.IncludeInputs, req.IncludeOutputs, req.IncludeArtifacts, req.IncludeAttemptInputs
+}
+
+func buildToyTaskIO(ctx context.Context, data swf.TaskData, includeData bool, includeArtifacts bool) (*swf.TaskIO, error) {
+	if data == nil || (!includeData && !includeArtifacts) {
+		return nil, nil
+	}
+	out := &swf.TaskIO{}
+	if includeData {
+		bytes, err := data.GetData()
+		if err != nil {
+			return nil, err
+		}
+		out.Data = append([]byte(nil), bytes...)
+	}
+	if includeArtifacts {
+		arts, err := data.GetArtifacts()
+		if err != nil {
+			return nil, err
+		}
+		infos, err := buildToyArtifactInfos(ctx, arts)
+		if err != nil {
+			return nil, err
+		}
+		out.Artifacts = infos
+	}
+	if out.Data == nil && len(out.Artifacts) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func buildToyArtifactInfos(ctx context.Context, artifacts []swf.Artifact) ([]swf.ArtifactInfo, error) {
+	if len(artifacts) == 0 {
+		return nil, nil
+	}
+	out := make([]swf.ArtifactInfo, 0, len(artifacts))
+	for _, art := range artifacts {
+		if art == nil {
+			continue
+		}
+		sha, err := art.Sha256(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, swf.ArtifactInfo{
+			ID:          art.ID(),
+			Name:        art.Name(),
+			ContentType: art.ContentType(),
+			SizeBytes:   art.Size(),
+			Sha256:      sha,
+		})
+	}
+	return out, nil
+}
+
+func extractTaskType(capability string) string {
+	for i := len(capability) - 1; i >= 0; i-- {
+		if capability[i] == ':' {
+			return capability[i+1:]
+		}
+	}
+	return capability
 }
 
 // FindTasksWaitingForCapability returns pending task handles for a capability.
@@ -309,14 +535,14 @@ func (h *pendingHandle) Data() (swf.TaskData, error) {
 
 	inputOrdinal := h.task.step - 1
 	record.mu.Lock()
-	data, exists := record.chapters[inputOrdinal]
+	chapter, exists := record.chapters[inputOrdinal]
 	record.mu.Unlock()
 
-	if !exists || data == nil {
+	if !exists || chapter == nil || chapter.Output == nil {
 		return nil, fmt.Errorf("input chapter %d not found", inputOrdinal)
 	}
 
-	return data, nil
+	return chapter.Output, nil
 }
 
 func (h *pendingHandle) TaskOrdinalToComplete() int64 {
@@ -731,7 +957,12 @@ func (e *ToyEngine) runJob(ctx context.Context, jobKey swf.JobKey, ws swf.WorkSe
 
 	// Mark ordinal 0 (job input) as written and save the materialized job data
 	record.mu.Lock()
-	record.chapters[0] = materializedJobData
+	record.chapters[0] = &toyChapter{
+		TaskType:  ws.JobWorker.Name(),
+		CreatedAt: record.createdAt,
+		Input:     materializedJobData,
+		Output:    materializedJobData,
+	}
 	record.mu.Unlock()
 
 	defer func() {
@@ -848,6 +1079,14 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 		return c.awaitExternalCompletion(taskType, materializedData)
 	}
 
+	c.record.mu.Lock()
+	c.record.chapters[c.step] = &toyChapter{
+		TaskType:  taskType,
+		CreatedAt: time.Now(),
+		Input:     materializedData,
+	}
+	c.record.mu.Unlock()
+
 	await := func(wakeAt time.Time) error {
 		sleep := time.Until(wakeAt)
 		if sleep <= 0 {
@@ -889,7 +1128,9 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 					}
 					// Mark this chapter as written even on error and save the output data
 					c.record.mu.Lock()
-					c.record.chapters[c.step] = errorOutputData
+					if chapter := c.record.chapters[c.step]; chapter != nil {
+						chapter.Output = errorOutputData
+					}
 					c.record.mu.Unlock()
 					c.step++
 
@@ -923,7 +1164,9 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 
 	// Mark this chapter as written and save the output data
 	c.record.mu.Lock()
-	c.record.chapters[c.step] = materializedOutputData
+	if chapter := c.record.chapters[c.step]; chapter != nil {
+		chapter.Output = materializedOutputData
+	}
 	c.record.mu.Unlock()
 
 	c.step++
@@ -951,6 +1194,11 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 	c.engine.mu.Lock()
 	c.engine.pending[capability] = append(c.engine.pending[capability], pending)
 	c.record.mu.Lock()
+	c.record.chapters[c.step] = &toyChapter{
+		TaskType:  taskType,
+		CreatedAt: time.Now(),
+		Input:     data,
+	}
 	if c.record.status != swf.JobStatusCancelled {
 		c.record.status = swf.JobStatusReady
 	}
@@ -992,7 +1240,9 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 
 		// Mark this chapter as written and save the output data
 		c.record.mu.Lock()
-		c.record.chapters[c.step] = materializedOutputData
+		if chapter := c.record.chapters[c.step]; chapter != nil {
+			chapter.Output = materializedOutputData
+		}
 		c.record.mu.Unlock()
 
 		c.step++

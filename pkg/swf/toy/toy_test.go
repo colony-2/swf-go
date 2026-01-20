@@ -185,6 +185,137 @@ func TestToyEngineCancelJob(t *testing.T) {
 	}
 }
 
+func TestToyEngineGetJobRunCompleted(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
+	engine := NewToyEngine([]swf.WorkSet{ws})
+
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  ws.JobWorker.Name(),
+		Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+	})
+	if err != nil {
+		t.Fatalf("StartJob failed: %v", err)
+	}
+
+	resp, err := engine.GetJobRun(context.Background(), swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("GetJobRun failed: %v", err)
+	}
+	if resp.Job.Status != swf.JobStatusCompleted {
+		t.Fatalf("expected completed status, got %s", resp.Job.Status)
+	}
+	if resp.Start.Input == nil {
+		t.Fatalf("expected start input")
+	}
+	if got := extractNumberFromIO(t, resp.Start.Input); got != 1 {
+		t.Fatalf("unexpected start input: %d", got)
+	}
+	if len(resp.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks, got %d", len(resp.Tasks))
+	}
+	if resp.Tasks[0].TaskType != "add" || resp.Tasks[1].TaskType != "double" {
+		t.Fatalf("unexpected task types: %s, %s", resp.Tasks[0].TaskType, resp.Tasks[1].TaskType)
+	}
+	if got := extractNumberFromIO(t, resp.Tasks[0].Attempts[0].Output); got != 2 {
+		t.Fatalf("unexpected add output: %d", got)
+	}
+	if got := extractNumberFromIO(t, resp.Tasks[1].Attempts[0].Output); got != 4 {
+		t.Fatalf("unexpected double output: %d", got)
+	}
+	if resp.Result == nil || resp.Result.Output == nil {
+		t.Fatalf("expected job result output")
+	}
+	if got := extractNumberFromIO(t, resp.Result.Output); got != 4 {
+		t.Fatalf("unexpected job result output: %d", got)
+	}
+}
+
+func TestToyEngineGetJobRunPendingRuntime(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"missing"}})
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "pending-runtime"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) {
+		return jobKey, nil
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = engine.StartJob(context.Background(), swf.StartJob{
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+		})
+	}()
+
+	var handles []swf.TaskHandle
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		handles, err = engine.FindTasksWaitingForCapability(context.Background(), ws.JobWorker.Name(), "missing", nil)
+		if err != nil {
+			t.Fatalf("FindTasksWaitingForCapability: %v", err)
+		}
+		if len(handles) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("expected 1 pending handle, got %d", len(handles))
+	}
+
+	resp, err := engine.GetJobRun(context.Background(), swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("GetJobRun failed: %v", err)
+	}
+	if resp.Result != nil {
+		t.Fatalf("expected nil result for pending job")
+	}
+	if len(resp.Tasks) != 1 {
+		t.Fatalf("expected 1 task run, got %d", len(resp.Tasks))
+	}
+	task := resp.Tasks[0]
+	if task.TaskType != "missing" {
+		t.Fatalf("unexpected task type: %s", task.TaskType)
+	}
+	if len(task.Attempts) != 1 {
+		t.Fatalf("expected 1 attempt, got %d", len(task.Attempts))
+	}
+	attempt := task.Attempts[0]
+	if attempt.State != swf.TaskAttemptStateReady {
+		t.Fatalf("expected READY state, got %s", attempt.State)
+	}
+	if attempt.Runtime == nil || attempt.Runtime.NextNeed == nil || *attempt.Runtime.NextNeed != "seq:missing" {
+		t.Fatalf("expected runtime next_need seq:missing")
+	}
+	if attempt.Input == nil {
+		t.Fatalf("expected runtime input")
+	}
+	if got := extractNumberFromIO(t, attempt.Input); got != 1 {
+		t.Fatalf("unexpected runtime input: %d", got)
+	}
+
+	err = handles[0].Finish(context.Background(), swf.NewTaskDataOrPanic(map[string]int{"n": 2}))
+	if err != nil {
+		t.Fatalf("Finish failed: %v", err)
+	}
+	wg.Wait()
+}
+
+func extractNumberFromIO(t *testing.T, io *swf.TaskIO) int {
+	t.Helper()
+	if io == nil {
+		t.Fatalf("missing task io")
+	}
+	var payload map[string]int
+	if err := json.Unmarshal(io.Data, &payload); err != nil {
+		t.Fatalf("unmarshal task io: %v", err)
+	}
+	return payload["n"]
+}
+
 func TestFindTasksWaitingForCapabilityEmpty(t *testing.T) {
 	engine := NewToyEngine(nil)
 	handles, err := engine.FindTasksWaitingForCapability(context.Background(), "job", "task", nil)
@@ -489,8 +620,8 @@ func TestGetWaitingTaskReturnsOutputNotInput(t *testing.T) {
 	}
 
 	actualValue := extractNumber(data)
-	expectedValue := 11  // OUTPUT from step 1: 10 + 1 = 11
-	wrongValue := 111    // INPUT to step 2: (10 + 1) + 100 = 111
+	expectedValue := 11 // OUTPUT from step 1: 10 + 1 = 11
+	wrongValue := 111   // INPUT to step 2: (10 + 1) + 100 = 111
 
 	if actualValue == wrongValue {
 		t.Fatalf("BUG: handle.Data() returned the INPUT to the pending task (n=%d) instead of the OUTPUT from the previous step (n=%d)",

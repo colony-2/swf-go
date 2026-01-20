@@ -16,11 +16,11 @@ import (
 // StartJob defines the parameters for starting a new workflow job.
 // If JobID is provided, it will be used as the job identifier; otherwise, a new unique ID will be generated.
 type StartJob struct {
-	TenantId     string   // REQUIRED: Tenant for this job
-	JobType      string   // The type of job to start (must match a registered JobWorker name)
-	JobID        string   // Optional job identifier. If empty, a new unique ID will be generated using ksuid
-	SingletonKey string   // Optional key to ensure only one job with this key runs at a time
-	Data         JobData  // Input data for the job
+	TenantId     string    // REQUIRED: Tenant for this job
+	JobType      string    // The type of job to start (must match a registered JobWorker name)
+	JobID        string    // Optional job identifier. If empty, a new unique ID will be generated using ksuid
+	SingletonKey string    // Optional key to ensure only one job with this key runs at a time
+	Data         JobData   // Input data for the job
 	RunPolicy    RunPolicy // Runtime policy for retries, timeouts, etc.
 }
 
@@ -71,6 +71,7 @@ type jobRunApi interface {
 	CancelJob(ctx context.Context, cancel CancelJob) error
 	CheckJobStatus(ctx context.Context, jobKey JobKey) (JobStatus, error)
 	GetJobResult(ctx context.Context, jobKey JobKey) (TaskData, error)
+	GetJobRun(ctx context.Context, req GetJobRunRequest) (GetJobRunResponse, error)
 }
 
 type EngineBuilder struct {
