@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -414,6 +415,158 @@ func TestTaskMaxRetriesExhausted(t *testing.T) {
 	}
 }
 
+func TestTaskInputStoredOnSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var taskExecutionCount atomic.Int32
+	taskWorker := &countingTaskWorker{
+		name:    "input-success-task",
+		counter: &taskExecutionCount,
+	}
+
+	jobWorker := &taskCallingJobWorkerSimple{
+		name:     "input-success-job",
+		taskType: taskWorker.Name(),
+		taskPolicy: swf.RunPolicy{
+			Retry: swf.RetryPolicy{
+				MaximumAttempts: 1,
+			},
+		},
+	}
+	ws := initWorkset(jobWorker, taskWorker)
+	jobWorker.workset = ws
+
+	embedded, err := StartEmbeddedEngine(ctx, nil)
+	if err != nil {
+		t.Fatalf("start embedded engine: %v", err)
+	}
+	defer embedded.Shutdown()
+
+	engine := embedded.SWFEngine.(*swfEngineImpl)
+	go engine.Run(ctx)
+
+	if err := engine.RegisterWorkers(ws); err != nil {
+		t.Fatalf("register worker: %v", err)
+	}
+
+	type payload struct {
+		Name  string `json:"name"`
+		Count int    `json:"count"`
+	}
+	input := swf.NewTaskDataOrPanic(payload{Name: "ok", Count: 2})
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  jobWorker.Name(),
+		Data:     input,
+	})
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobKey, engine); err != nil {
+		t.Fatalf("job did not complete: %v", err)
+	}
+
+	key := jobKey.ToStoryKey()
+	chap, err := engine.strata.Chapter(ctx, key, 1)
+	if err != nil {
+		t.Fatalf("expected task chapter at ordinal 1: %v", err)
+	}
+	env, err := decodeChapterEnvelope(chap.Body())
+	if err != nil {
+		t.Fatalf("decode task chapter: %v", err)
+	}
+	if env.PayloadKind != payloadKindApp {
+		t.Fatalf("expected success at ordinal 1, got %s", env.PayloadKind)
+	}
+	if len(env.Meta.Input) == 0 {
+		t.Fatalf("expected task input to be stored in metadata")
+	}
+
+	wantInput, err := input.GetData()
+	if err != nil {
+		t.Fatalf("get input data: %v", err)
+	}
+	assertJSONEqual(t, env.Meta.Input, wantInput)
+}
+
+func TestTaskInputStoredOnError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var taskAttemptCount atomic.Int32
+	taskWorker := &alwaysFailTaskWorker{
+		name:    "input-error-task",
+		counter: &taskAttemptCount,
+	}
+
+	jobWorker := &taskCallingJobWorkerSimple{
+		name:     "input-error-job",
+		taskType: taskWorker.Name(),
+		taskPolicy: swf.RunPolicy{
+			Retry: swf.RetryPolicy{
+				MaximumAttempts: 1,
+			},
+		},
+	}
+	ws := initWorkset(jobWorker, taskWorker)
+	jobWorker.workset = ws
+
+	embedded, err := StartEmbeddedEngine(ctx, nil)
+	if err != nil {
+		t.Fatalf("start embedded engine: %v", err)
+	}
+	defer embedded.Shutdown()
+
+	engine := embedded.SWFEngine.(*swfEngineImpl)
+	go engine.Run(ctx)
+
+	if err := engine.RegisterWorkers(ws); err != nil {
+		t.Fatalf("register worker: %v", err)
+	}
+
+	type payload struct {
+		Status string `json:"status"`
+		Count  int    `json:"count"`
+	}
+	input := swf.NewTaskDataOrPanic(payload{Status: "fail", Count: 5})
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  jobWorker.Name(),
+		Data:     input,
+	})
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobKey, engine); err != nil {
+		t.Fatalf("job did not complete: %v", err)
+	}
+
+	key := jobKey.ToStoryKey()
+	chap, err := engine.strata.Chapter(ctx, key, 1)
+	if err != nil {
+		t.Fatalf("expected task chapter at ordinal 1: %v", err)
+	}
+	env, err := decodeChapterEnvelope(chap.Body())
+	if err != nil {
+		t.Fatalf("decode task chapter: %v", err)
+	}
+	if env.PayloadKind != payloadKindAppError {
+		t.Fatalf("expected error at ordinal 1, got %s", env.PayloadKind)
+	}
+	if len(env.Meta.Input) == 0 {
+		t.Fatalf("expected task input to be stored in metadata")
+	}
+
+	wantInput, err := input.GetData()
+	if err != nil {
+		t.Fatalf("get input data: %v", err)
+	}
+	assertJSONEqual(t, env.Meta.Input, wantInput)
+}
+
 // TestTaskNonRetryableError verifies non-retryable task errors stop immediately
 func TestTaskNonRetryableError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -480,6 +633,22 @@ func TestTaskNonRetryableError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "task-non-retryable") {
 		t.Fatalf("expected error message to contain 'task-non-retryable', got: %v", err)
+	}
+}
+
+func assertJSONEqual(t *testing.T, got []byte, want []byte) {
+	t.Helper()
+
+	var gotVal any
+	if err := json.Unmarshal(got, &gotVal); err != nil {
+		t.Fatalf("unmarshal got json: %v", err)
+	}
+	var wantVal any
+	if err := json.Unmarshal(want, &wantVal); err != nil {
+		t.Fatalf("unmarshal want json: %v", err)
+	}
+	if !reflect.DeepEqual(gotVal, wantVal) {
+		t.Fatalf("json mismatch: got=%s want=%s", string(got), string(want))
 	}
 }
 
