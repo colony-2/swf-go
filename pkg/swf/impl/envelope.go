@@ -29,6 +29,7 @@ type chapterMeta struct {
 	WorkerID      string              `json:"worker_id"`
 	CreatedAt     time.Time           `json:"created_at"`
 	InputHash     string              `json:"input_hash"`
+	Input         json.RawMessage     `json:"input,omitempty"`
 	Attempt       int                 `json:"attempt,omitempty"`
 	MaxAttempts   int                 `json:"max_attempts,omitempty"`
 	NextAttemptAt *time.Time          `json:"next_attempt_at,omitempty"`

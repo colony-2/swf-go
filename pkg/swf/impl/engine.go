@@ -212,6 +212,7 @@ type chapterMetadata struct {
 	Retryable     *bool
 	InputRef      *swf.InputReference
 	RunPolicy     *swf.RunPolicy
+	InputPayload  json.RawMessage
 }
 
 func taskDataToChapter(jobData swf.TaskData, ordinal int64, taskType string, workerId string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMetadata) (story.Chapter, error) {
@@ -603,6 +604,9 @@ func payloadToChapter(payload json.RawMessage, artifacts []swf.Artifact, ordinal
 	}
 	if metaOpts.RunPolicy != nil {
 		meta.RunPolicy = metaOpts.RunPolicy
+	}
+	if metaOpts.InputPayload != nil {
+		meta.Input = metaOpts.InputPayload
 	}
 
 	envBytes, err := buildChapterEnvelope(meta, payloadKind, payload)

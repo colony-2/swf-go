@@ -451,9 +451,18 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		if originalErr != nil && retryable && attempt < maxAttempts {
 			backoff = computeBackoff(retryCfg, attempt)
 		}
+		inputPayload := json.RawMessage(nil)
+		if swf.TaskInputStorageEnabled() {
+			inputData, err := data.GetData()
+			if err != nil {
+				return nil, err
+			}
+			inputPayload = append(json.RawMessage(nil), inputData...)
+		}
 		meta := chapterMetadata{
-			Attempt:  attempt,
-			InputRef: inputRef,
+			Attempt:      attempt,
+			InputRef:     inputRef,
+			InputPayload: inputPayload,
 		}
 
 		chap, err = payloadToChapter(payload, artifacts, ordinal, taskType, r.engine.workerId, payloadKind, inputHash, now, meta)
