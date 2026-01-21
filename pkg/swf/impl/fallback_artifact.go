@@ -18,32 +18,12 @@ type fallbackArtifact struct {
 	fallback swf.Artifact
 }
 
-func (a *fallbackArtifact) ID() string {
-	if a.primary != nil && a.primary.ID() != "" {
-		return a.primary.ID()
-	}
-	if a.fallback != nil {
-		return a.fallback.ID()
-	}
-	return ""
-}
-
 func (a *fallbackArtifact) Name() string {
 	if a.primary != nil && a.primary.Name() != "" {
 		return a.primary.Name()
 	}
 	if a.fallback != nil {
 		return a.fallback.Name()
-	}
-	return ""
-}
-
-func (a *fallbackArtifact) ContentType() string {
-	if a.primary != nil && a.primary.ContentType() != "" {
-		return a.primary.ContentType()
-	}
-	if a.fallback != nil {
-		return a.fallback.ContentType()
 	}
 	return ""
 }
@@ -151,17 +131,13 @@ type strataRemoteArtifact struct {
 	anthologyID string
 	storyID     string
 	ordinal     int64
-	artifactID  string
 	name        string
-	contentType string
 	sizeBytes   int64
 	sha256      string
 }
 
-func (a *strataRemoteArtifact) ID() string          { return a.artifactID }
-func (a *strataRemoteArtifact) Name() string        { return a.name }
-func (a *strataRemoteArtifact) ContentType() string { return a.contentType }
-func (a *strataRemoteArtifact) Size() int64         { return a.sizeBytes }
+func (a *strataRemoteArtifact) Name() string { return a.name }
+func (a *strataRemoteArtifact) Size() int64  { return a.sizeBytes }
 
 func (a *strataRemoteArtifact) Sha256(ctx context.Context) (string, error) {
 	if a.sha256 != "" {
@@ -215,6 +191,7 @@ func (a *strataRemoteArtifact) ArtifactKey() (swf.ArtifactKey, error) {
 		JobId:       a.storyID,
 		TaskOrdinal: a.ordinal,
 		Name:        a.name,
+		SizeBytes:   a.sizeBytes,
 	}, nil
 }
 
@@ -237,14 +214,11 @@ func (a *strataRemoteArtifact) remote() (strataartifact.Artifact, error) {
 	}
 	desc := strataartifact.Descriptor{
 		Name:        a.name,
-		ContentType: a.contentType,
+		ContentType: "application/octet-stream",
 		SizeBytes:   a.sizeBytes,
 		Sha256:      a.sha256,
 	}
 	opts := []strataartifact.Option{}
-	if a.artifactID != "" {
-		opts = append(opts, strataartifact.WithID(a.artifactID))
-	}
 	if a.sha256 != "" {
 		opts = append(opts, strataartifact.WithSha256(a.sha256))
 	}
@@ -327,7 +301,6 @@ func newStrataRemoteArtifact(primary swf.Artifact, digest string, key story.Key,
 		return nil, fmt.Errorf("artifact %s sha256 is required", name)
 	}
 
-	contentType := primary.ContentType()
 	size := primary.Size()
 
 	return &strataRemoteArtifact{
@@ -335,9 +308,7 @@ func newStrataRemoteArtifact(primary swf.Artifact, digest string, key story.Key,
 		anthologyID: key.AnthologyID,
 		storyID:     key.StoryID,
 		ordinal:     ordinal,
-		artifactID:  primary.ID(),
 		name:        name,
-		contentType: contentType,
 		sizeBytes:   size,
 		sha256:      digest,
 	}, nil

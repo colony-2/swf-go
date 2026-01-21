@@ -121,6 +121,9 @@ func TestDoTaskArtifactKeyAndGetArtifact(t *testing.T) {
 	if result.key.TaskOrdinal <= 0 {
 		t.Fatalf("expected task ordinal > 0, got %d", result.key.TaskOrdinal)
 	}
+	if result.key.SizeBytes != int64(len(task.data)) {
+		t.Fatalf("expected size %d, got %d", len(task.data), result.key.SizeBytes)
+	}
 
 	artifact, err := engine.GetArtifact(jobKey.TenantId, result.key)
 	if err != nil {
@@ -132,5 +135,14 @@ func TestDoTaskArtifactKeyAndGetArtifact(t *testing.T) {
 	}
 	if string(data) != string(task.data) {
 		t.Fatalf("expected artifact data %q, got %q", string(task.data), string(data))
+	}
+
+	lazy := result.key.TooLazyArtifact(engine, jobKey.TenantId)
+	lazyData, err := lazy.Bytes(ctx)
+	if err != nil {
+		t.Fatalf("lazy bytes: %v", err)
+	}
+	if string(lazyData) != string(task.data) {
+		t.Fatalf("expected lazy data %q, got %q", string(task.data), string(lazyData))
 	}
 }

@@ -18,6 +18,7 @@ func assignArtifactKeys(artifacts []swf.Artifact, jobID string, ordinal int64) {
 			JobId:       jobID,
 			TaskOrdinal: ordinal,
 			Name:        name,
+			SizeBytes:   art.Size(),
 		})
 	}
 }

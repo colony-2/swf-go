@@ -93,14 +93,9 @@ func computeInputHash(ctx context.Context, taskData swf.TaskData) (string, error
 		if err != nil {
 			return "", err
 		}
-		uri := art.ID()
-		if uri == "" {
-			uri = art.Name()
-		}
-		artifactParts = append(artifactParts, fmt.Sprintf("%s|%s|%s", uri, hash, art.Name()))
+		artifactParts = append(artifactParts, fmt.Sprintf("%s|%s", art.Name(), hash))
 		artifactDetails = append(artifactDetails, map[string]string{
 			"name": art.Name(),
-			"id":   uri,
 			"hash": hash,
 		})
 	}

@@ -117,6 +117,7 @@ type ArtifactKey struct {
 	JobId       string `json:"jobId"`
 	TaskOrdinal int64  `json:"taskOrdinal"`
 	Name        string `json:"name"`
+	SizeBytes   int64  `json:"sizeBytes"`
 }
 
 // Validate checks if the ArtifactKey is valid.
@@ -129,6 +130,9 @@ func (ak ArtifactKey) Validate() error {
 	}
 	if ak.Name == "" {
 		return fmt.Errorf("artifact name cannot be empty")
+	}
+	if ak.SizeBytes < -1 {
+		return fmt.Errorf("sizeBytes cannot be less than -1")
 	}
 	return nil
 }

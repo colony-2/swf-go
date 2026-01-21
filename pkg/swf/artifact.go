@@ -17,14 +17,8 @@ import (
 // and persisted in workflow storage. Artifacts support lazy loading and
 // automatic cleanup of temporary resources.
 type Artifact interface {
-	// ID returns a unique identifier for the artifact (may be empty for new artifacts)
-	ID() string
-
 	// Name returns the artifact name (e.g., "output.tar.gz")
 	Name() string
-
-	// ContentType returns the MIME content type of the artifact
-	ContentType() string
 
 	// Size returns the artifact size in bytes, or -1 if unknown.
 	Size() int64
@@ -210,10 +204,8 @@ type bytesArtifact struct {
 	key  atomic.Pointer[ArtifactKey]
 }
 
-func (a *bytesArtifact) ID() string          { return "" }
-func (a *bytesArtifact) Name() string        { return a.name }
-func (a *bytesArtifact) ContentType() string { return "application/octet-stream" }
-func (a *bytesArtifact) Size() int64         { return int64(len(a.data)) }
+func (a *bytesArtifact) Name() string { return a.name }
+func (a *bytesArtifact) Size() int64  { return int64(len(a.data)) }
 func (a *bytesArtifact) Open() (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(a.data)), nil
 }
@@ -259,10 +251,8 @@ type readerArtifact struct {
 	key    atomic.Pointer[ArtifactKey]
 }
 
-func (a *readerArtifact) ID() string          { return "" }
-func (a *readerArtifact) Name() string        { return a.name }
-func (a *readerArtifact) ContentType() string { return "application/octet-stream" }
-func (a *readerArtifact) Size() int64         { return a.size }
+func (a *readerArtifact) Name() string { return a.name }
+func (a *readerArtifact) Size() int64  { return a.size }
 func (a *readerArtifact) Open() (io.ReadCloser, error) {
 	var r io.Reader
 	a.once.Do(func() { r = a.reader })
@@ -334,10 +324,8 @@ type fileArtifact struct {
 	key       atomic.Pointer[ArtifactKey]
 }
 
-func (a *fileArtifact) ID() string          { return "" }
-func (a *fileArtifact) Name() string        { return a.name }
-func (a *fileArtifact) ContentType() string { return "application/octet-stream" }
-func (a *fileArtifact) Size() int64         { return a.size }
+func (a *fileArtifact) Name() string { return a.name }
+func (a *fileArtifact) Size() int64  { return a.size }
 func (a *fileArtifact) Open() (io.ReadCloser, error) {
 	return os.Open(a.path)
 }
@@ -417,10 +405,8 @@ type customArtifact struct {
 	key     atomic.Pointer[ArtifactKey]
 }
 
-func (a *customArtifact) ID() string          { return "" }
-func (a *customArtifact) Name() string        { return a.name }
-func (a *customArtifact) ContentType() string { return "application/octet-stream" }
-func (a *customArtifact) Size() int64         { return a.size }
+func (a *customArtifact) Name() string { return a.name }
+func (a *customArtifact) Size() int64  { return a.size }
 func (a *customArtifact) Open() (io.ReadCloser, error) {
 	rc, size, err := a.opener()
 	if err != nil {
@@ -500,16 +486,8 @@ type strataArtifactAdapter struct {
 	key atomic.Pointer[ArtifactKey]
 }
 
-func (a *strataArtifactAdapter) ID() string {
-	return a.art.ID()
-}
-
 func (a *strataArtifactAdapter) Name() string {
 	return a.art.Name()
-}
-
-func (a *strataArtifactAdapter) ContentType() string {
-	return a.art.ContentType()
 }
 
 func (a *strataArtifactAdapter) Size() int64 {
@@ -559,7 +537,7 @@ type swfToStrataAdapter struct {
 }
 
 func (a *swfToStrataAdapter) ID() string {
-	return a.art.ID()
+	return ""
 }
 
 func (a *swfToStrataAdapter) Name() string {
@@ -567,7 +545,7 @@ func (a *swfToStrataAdapter) Name() string {
 }
 
 func (a *swfToStrataAdapter) ContentType() string {
-	return a.art.ContentType()
+	return "application/octet-stream"
 }
 
 func (a *swfToStrataAdapter) SizeBytes() int64 {
@@ -598,7 +576,7 @@ func (a *swfToStrataAdapter) ToInput(ctx context.Context) (strata.Descriptor, io
 
 	desc := strata.Descriptor{
 		Name:        a.art.Name(),
-		ContentType: a.art.ContentType(),
+		ContentType: "application/octet-stream",
 		SizeBytes:   a.art.Size(),
 	}
 

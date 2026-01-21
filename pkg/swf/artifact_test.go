@@ -458,22 +458,6 @@ func TestFileArtifact_Directory(t *testing.T) {
 	}
 }
 
-func TestArtifactID(t *testing.T) {
-	// All new artifacts should have empty ID
-	art1 := swf.NewArtifactFromBytes("test.txt", []byte("data"))
-	assert.Equal(t, "", art1.ID())
-
-	tmpFile, _ := os.CreateTemp("", "test-*.txt")
-	tmpFile.WriteString("data")
-	path := tmpFile.Name()
-	tmpFile.Close()
-	defer os.Remove(path)
-
-	art2, _ := swf.NewArtifactFromFile("test.txt", path)
-	defer art2.Cleanup()
-	assert.Equal(t, "", art2.ID())
-}
-
 func TestArtifactSize_Unknown(t *testing.T) {
 	art := swf.NewArtifactFromReader("test.txt", strings.NewReader("data"), -1)
 	assert.Equal(t, int64(-1), art.Size())
@@ -555,11 +539,6 @@ func TestArtifact_BytesAndOpen(t *testing.T) {
 	data2, err := io.ReadAll(rc)
 	require.NoError(t, err)
 	assert.Equal(t, testData, data2)
-}
-
-func TestArtifact_ContentType(t *testing.T) {
-	art := swf.NewArtifactFromBytes("test.bin", []byte("data"))
-	assert.Equal(t, "application/octet-stream", art.ContentType())
 }
 
 func TestArtifact_WriteTo(t *testing.T) {

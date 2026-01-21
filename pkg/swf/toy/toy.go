@@ -474,9 +474,8 @@ func buildToyArtifactInfos(ctx context.Context, artifacts []swf.Artifact) ([]swf
 			return nil, err
 		}
 		out = append(out, swf.ArtifactInfo{
-			ID:          art.ID(),
 			Name:        art.Name(),
-			ContentType: art.ContentType(),
+			ContentType: "application/octet-stream",
 			SizeBytes:   art.Size(),
 			Sha256:      sha,
 		})
@@ -1170,6 +1169,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 						Data:      outputBytes,
 						Artifacts: materializedOutput,
 					}
+					assignToyArtifactKeys(materializedOutput, c.jobKey.JobId, c.step)
 					// Mark this chapter as written even on error and save the output data
 					c.record.mu.Lock()
 					if chapter := c.record.chapters[c.step]; chapter != nil {
@@ -1205,6 +1205,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 		Data:      outputBytes,
 		Artifacts: materializedOutput,
 	}
+	assignToyArtifactKeys(materializedOutput, c.jobKey.JobId, c.step)
 
 	// Mark this chapter as written and save the output data
 	c.record.mu.Lock()
@@ -1281,6 +1282,7 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 			Data:      outputBytes,
 			Artifacts: materializedOutput,
 		}
+		assignToyArtifactKeys(materializedOutput, c.jobKey.JobId, c.step)
 
 		// Mark this chapter as written and save the output data
 		c.record.mu.Lock()
@@ -1377,6 +1379,23 @@ func materializeArtifacts(ctx context.Context, artifacts []swf.Artifact, logger 
 	cleanupArtifacts(ctx, artifacts, logger)
 
 	return materialized, nil
+}
+
+func assignToyArtifactKeys(artifacts []swf.Artifact, jobID string, ordinal int64) {
+	if jobID == "" || ordinal < 0 {
+		return
+	}
+	for _, art := range artifacts {
+		if art == nil || art.Name() == "" {
+			continue
+		}
+		swf.AssignArtifactKey(art, swf.ArtifactKey{
+			JobId:       jobID,
+			TaskOrdinal: ordinal,
+			Name:        art.Name(),
+			SizeBytes:   art.Size(),
+		})
+	}
 }
 
 // cleanupArtifacts calls Cleanup() on each artifact and logs any errors.
