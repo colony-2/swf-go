@@ -54,7 +54,7 @@ func (h *taskHandleImpl) Data() (swf.TaskData, error) {
 	if err != nil {
 		return nil, err
 	}
-	return chapterToTaskData(c)
+	return chapterToTaskData(c, h.JobKey())
 }
 
 func (h *taskHandleImpl) JobKey() swf.JobKey {
@@ -128,6 +128,8 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 	if err != nil {
 		return err
 	}
+	artifacts, _ := taskData.GetArtifacts()
+	assignArtifactKeys(artifacts, jobKey.JobId, h.outputOrdinal)
 	tenantID := pgwf.TenantID(h.tenantId)
 	return pgwf.RescheduleUnheldJob(
 		ctx,
@@ -140,11 +142,12 @@ func (h *taskHandleImpl) Finish(ctx context.Context, taskData swf.TaskData) erro
 
 var _ swf.TaskHandle = &taskHandleImpl{}
 
-func chapterToTaskData(chapter story.Chapter) (swf.TaskData, error) {
+func chapterToTaskData(chapter story.Chapter, jobKey swf.JobKey) (swf.TaskData, error) {
 	artifacts := make([]swf.Artifact, 0, len(chapter.Artifacts()))
 	for _, a := range chapter.Artifacts() {
 		artifacts = append(artifacts, swf.FromStrataArtifact(a))
 	}
+	assignArtifactKeys(artifacts, jobKey.JobId, chapter.Ordinal())
 
 	env, err := decodeChapterEnvelope(chapter.Body())
 	if err != nil {

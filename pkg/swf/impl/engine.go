@@ -277,8 +277,10 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 		return swf.JobKey{}, err
 	}
 
-	// Cleanup input artifacts after successful storage
 	artifacts, _ := taskData.GetArtifacts()
+	assignArtifactKeys(artifacts, jobKey.JobId, 0)
+
+	// Cleanup input artifacts after successful storage
 	for _, art := range artifacts {
 		if cleanupErr := art.Cleanup(); cleanupErr != nil {
 			s.logger.Warn("Failed to cleanup job input artifact", "artifact", art.Name(), "error", cleanupErr)
@@ -334,6 +336,8 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 	if err != nil {
 		return swf.JobKey{}, err
 	}
+	artifacts, _ := job.Data.GetArtifacts()
+	assignArtifactKeys(artifacts, jobKey.JobId, job.LastStepToKeep+1)
 	return jobKey, s.startJob(ctx, jobKey, job.JobType, job.SingletonKey, jobPayload{RunPolicy: jobPolicy})
 }
 
@@ -738,11 +742,36 @@ func (s *swfEngineImpl) GetJobResult(ctx context.Context, jobKey swf.JobKey) (sw
 	if err != nil {
 		return nil, err
 	}
-	td, payloadErr := chapterToTaskData(chap)
+	td, payloadErr := chapterToTaskData(chap, jobKey)
 	if payloadErr != nil {
 		return td, payloadErr
 	}
 	return td, nil
+}
+
+func (s *swfEngineImpl) GetArtifact(tenantId string, key swf.ArtifactKey) (swf.Artifact, error) {
+	if tenantId == "" {
+		return nil, fmt.Errorf("tenantId is required")
+	}
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
+	storyKey := story.Key{
+		AnthologyID: tenantId,
+		StoryID:     key.JobId,
+	}
+	chap, err := s.strata.Chapter(context.Background(), storyKey, key.TaskOrdinal)
+	if err != nil {
+		return nil, err
+	}
+	for _, art := range chap.Artifacts() {
+		if art != nil && art.Name() == key.Name {
+			swfArt := swf.FromStrataArtifact(art)
+			swf.AssignArtifactKey(swfArt, key)
+			return swfArt, nil
+		}
+	}
+	return nil, fmt.Errorf("artifact %s not found for job %s ordinal %d", key.Name, key.JobId, key.TaskOrdinal)
 }
 
 func (s *swfEngineImpl) jobResultIfComplete(ctx context.Context, jobKey swf.JobKey) (swf.TaskData, bool, error) {

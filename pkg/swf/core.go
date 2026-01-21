@@ -14,6 +14,7 @@ type SWFEngine interface {
 	jobsListApi
 
 	RegisterWorkers(workset *WorkSet) error
+	GetArtifact(tenantId string, key ArtifactKey) (Artifact, error)
 }
 
 func WaitForJobToComplete(ctx context.Context, timeout time.Duration, jobKey JobKey, engine SWFEngine) error {

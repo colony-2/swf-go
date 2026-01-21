@@ -230,6 +230,50 @@ func (e *ToyEngine) GetJobResult(ctx context.Context, jobKey swf.JobKey) (swf.Ta
 	return record.result, record.err
 }
 
+// GetArtifact returns a persisted artifact from the in-memory ToyEngine.
+func (e *ToyEngine) GetArtifact(tenantId string, key swf.ArtifactKey) (swf.Artifact, error) {
+	if tenantId == "" {
+		return nil, fmt.Errorf("tenantId is required")
+	}
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
+	jobKey := swf.JobKey{TenantId: tenantId, JobId: key.JobId}
+	record := e.getJobRecord(jobKey)
+	if record == nil {
+		return nil, fmt.Errorf("job %s not found", jobKey)
+	}
+
+	record.mu.Lock()
+	chap := record.chapters[key.TaskOrdinal]
+	record.mu.Unlock()
+	if chap == nil {
+		return nil, fmt.Errorf("chapter %d not found for job %s", key.TaskOrdinal, jobKey)
+	}
+
+	var data swf.TaskData
+	if chap.Output != nil {
+		data = chap.Output
+	} else {
+		data = chap.Input
+	}
+	if data == nil {
+		return nil, fmt.Errorf("chapter %d has no data for job %s", key.TaskOrdinal, jobKey)
+	}
+
+	artifacts, err := data.GetArtifacts()
+	if err != nil {
+		return nil, err
+	}
+	for _, art := range artifacts {
+		if art != nil && art.Name() == key.Name {
+			swf.AssignArtifactKey(art, key)
+			return art, nil
+		}
+	}
+	return nil, fmt.Errorf("artifact %s not found for job %s ordinal %d", key.Name, key.JobId, key.TaskOrdinal)
+}
+
 // GetJobRun returns a simplified job run view for the ToyEngine.
 func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (swf.GetJobRunResponse, error) {
 	e.mu.Lock()

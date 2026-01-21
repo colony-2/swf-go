@@ -112,6 +112,27 @@ type JobKey struct {
 	JobId    string `json:"jobId"`
 }
 
+// ArtifactKey identifies an artifact within a job's story.
+type ArtifactKey struct {
+	JobId       string `json:"jobId"`
+	TaskOrdinal int64  `json:"taskOrdinal"`
+	Name        string `json:"name"`
+}
+
+// Validate checks if the ArtifactKey is valid.
+func (ak ArtifactKey) Validate() error {
+	if ak.JobId == "" {
+		return fmt.Errorf("jobId cannot be empty")
+	}
+	if ak.TaskOrdinal < 0 {
+		return fmt.Errorf("taskOrdinal cannot be negative")
+	}
+	if ak.Name == "" {
+		return fmt.Errorf("artifact name cannot be empty")
+	}
+	return nil
+}
+
 // String returns a string representation of the JobKey.
 // Format: "tenantId/jobId"
 func (jk JobKey) String() string {

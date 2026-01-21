@@ -265,7 +265,7 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			}
 
 			// Try to decode result
-			artifacts := convertStrataArtifacts(chap.Artifacts())
+			artifacts := convertStrataArtifacts(chap.Artifacts(), key.StoryID, ordinal)
 			td, payloadErr := envelopeToTaskData(env, artifacts)
 			if payloadErr == nil {
 				// Cached success - return immediately
@@ -480,6 +480,7 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		if err != nil {
 			return nil, err
 		}
+		assignArtifactKeys(artifacts, r.GetJobKey().JobId, ordinal)
 
 		returnedOutput := output
 		if originalErr == nil {
@@ -536,11 +537,12 @@ func cleanupArtifacts(ctx context.Context, artifacts []swf.Artifact, logger *slo
 }
 
 // convertStrataArtifacts converts strata artifacts to swf artifacts
-func convertStrataArtifacts(strataArts []strata.Artifact) []swf.Artifact {
+func convertStrataArtifacts(strataArts []strata.Artifact, jobID string, ordinal int64) []swf.Artifact {
 	artifacts := make([]swf.Artifact, 0, len(strataArts))
 	for _, a := range strataArts {
 		artifacts = append(artifacts, swf.FromStrataArtifact(a))
 	}
+	assignArtifactKeys(artifacts, jobID, ordinal)
 	return artifacts
 }
 
@@ -716,7 +718,7 @@ func (r *runner) loadInitialChapterAndPolicy() (swf.TaskData, chapterEnvelope, e
 		r.jobPolicy = mergeRunPolicy(*env0.Meta.RunPolicy, r.jobPolicy)
 	}
 	r.jobPolicy = normalizeRunPolicy(r.jobPolicy)
-	artifacts := convertStrataArtifacts(chap0.Artifacts())
+	artifacts := convertStrataArtifacts(chap0.Artifacts(), r.GetJobKey().JobId, chap0.Ordinal())
 	inputData, err := envelopeToTaskData(env0, artifacts)
 	if err != nil {
 		return nil, chapterEnvelope{}, fmt.Errorf("failed to decode initial chapter payload: %w", err)
@@ -899,7 +901,7 @@ func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordina
 	}
 
 	// Try to decode the result
-	artifacts := convertStrataArtifacts(cached.Artifacts())
+	artifacts := convertStrataArtifacts(cached.Artifacts(), key.StoryID, cached.Ordinal())
 	output, payloadErr := envelopeToTaskData(env, artifacts)
 	if payloadErr == nil {
 		// Cached success - terminal
@@ -986,6 +988,8 @@ func (r *runner) saveJobChapter(key story.Key, payload json.RawMessage, artifact
 	if err != nil {
 		return fmt.Errorf("failed to save chapter: %w", err)
 	}
+
+	assignArtifactKeys(artifacts, key.StoryID, ordinal)
 
 	return nil
 }

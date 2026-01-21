@@ -125,6 +125,20 @@ func (a *fallbackArtifact) Open() (io.ReadCloser, error) {
 	return nil, errors.New("artifact missing primary and fallback")
 }
 
+func (a *fallbackArtifact) ArtifactKey() (swf.ArtifactKey, error) {
+	if a.primary != nil {
+		if key, err := a.primary.ArtifactKey(); err == nil {
+			return key, nil
+		}
+	}
+	if a.fallback != nil {
+		if key, err := a.fallback.ArtifactKey(); err == nil {
+			return key, nil
+		}
+	}
+	return swf.ArtifactKey{}, swf.ErrArtifactKeyUnavailable
+}
+
 func (a *fallbackArtifact) Cleanup() error {
 	if a.primary != nil {
 		return a.primary.Cleanup()
@@ -191,6 +205,17 @@ func (a *strataRemoteArtifact) Open() (io.ReadCloser, error) {
 	}
 	_, rc, err := remote.ToInput(context.Background())
 	return rc, err
+}
+
+func (a *strataRemoteArtifact) ArtifactKey() (swf.ArtifactKey, error) {
+	if a.storyID == "" || a.name == "" {
+		return swf.ArtifactKey{}, swf.ErrArtifactKeyUnavailable
+	}
+	return swf.ArtifactKey{
+		JobId:       a.storyID,
+		TaskOrdinal: a.ordinal,
+		Name:        a.name,
+	}, nil
 }
 
 func (a *strataRemoteArtifact) Cleanup() error {

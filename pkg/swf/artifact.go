@@ -3,6 +3,7 @@ package swf
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -46,6 +47,10 @@ type Artifact interface {
 	// This is a convenience method not in strata.Artifact.
 	Open() (io.ReadCloser, error)
 
+	// ArtifactKey returns the key for this artifact after it has been persisted.
+	// New artifacts return an error until persistence assigns a key.
+	ArtifactKey() (ArtifactKey, error)
+
 	// Cleanup is called by SWF after the artifact has been fully consumed
 	// and is no longer needed. Implementations should clean up any temporary
 	// resources (files, directories, connections, etc.).
@@ -56,6 +61,32 @@ type Artifact interface {
 	//
 	// For artifacts without cleanup needs, return nil.
 	Cleanup() error
+}
+
+// ErrArtifactKeyUnavailable indicates the artifact has not been persisted yet.
+var ErrArtifactKeyUnavailable = errors.New("artifact key is only available for artifacts that have been persisted")
+
+// artifactKeySetter allows SWF to update the artifact key after persistence.
+type artifactKeySetter interface {
+	setArtifactKey(key ArtifactKey)
+}
+
+// AssignArtifactKey updates the key on artifacts that support it.
+// This is intended for use by SWF persistence code after the artifact is saved.
+func AssignArtifactKey(art Artifact, key ArtifactKey) {
+	if setter, ok := art.(artifactKeySetter); ok {
+		setter.setArtifactKey(key)
+	}
+}
+
+func loadArtifactKey(key *atomic.Pointer[ArtifactKey]) (ArtifactKey, error) {
+	if key == nil {
+		return ArtifactKey{}, ErrArtifactKeyUnavailable
+	}
+	if value := key.Load(); value != nil {
+		return *value, nil
+	}
+	return ArtifactKey{}, ErrArtifactKeyUnavailable
 }
 
 // NewArtifactFromBytes creates an in-memory artifact from bytes.
@@ -176,6 +207,7 @@ type bytesArtifact struct {
 	name string
 	data []byte
 	hash atomic.Pointer[string]
+	key  atomic.Pointer[ArtifactKey]
 }
 
 func (a *bytesArtifact) ID() string          { return "" }
@@ -184,6 +216,9 @@ func (a *bytesArtifact) ContentType() string { return "application/octet-stream"
 func (a *bytesArtifact) Size() int64         { return int64(len(a.data)) }
 func (a *bytesArtifact) Open() (io.ReadCloser, error) {
 	return io.NopCloser(bytes.NewReader(a.data)), nil
+}
+func (a *bytesArtifact) ArtifactKey() (ArtifactKey, error) {
+	return loadArtifactKey(&a.key)
 }
 func (a *bytesArtifact) Sha256(ctx context.Context) (string, error) {
 	if h := a.hash.Load(); h != nil {
@@ -209,6 +244,9 @@ func (a *bytesArtifact) Bytes(ctx context.Context) ([]byte, error) {
 	copy(result, a.data)
 	return result, nil
 }
+func (a *bytesArtifact) setArtifactKey(key ArtifactKey) {
+	a.key.Store(&key)
+}
 func (a *bytesArtifact) Cleanup() error { return nil }
 
 // readerArtifact - one-time reader artifact
@@ -218,6 +256,7 @@ type readerArtifact struct {
 	size   int64
 	once   sync.Once
 	hash   atomic.Pointer[string]
+	key    atomic.Pointer[ArtifactKey]
 }
 
 func (a *readerArtifact) ID() string          { return "" }
@@ -234,6 +273,9 @@ func (a *readerArtifact) Open() (io.ReadCloser, error) {
 		return rc, nil
 	}
 	return io.NopCloser(r), nil
+}
+func (a *readerArtifact) ArtifactKey() (ArtifactKey, error) {
+	return loadArtifactKey(&a.key)
 }
 func (a *readerArtifact) Sha256(ctx context.Context) (string, error) {
 	if h := a.hash.Load(); h != nil {
@@ -276,6 +318,9 @@ func (a *readerArtifact) Bytes(ctx context.Context) ([]byte, error) {
 	defer rc.Close()
 	return io.ReadAll(rc)
 }
+func (a *readerArtifact) setArtifactKey(key ArtifactKey) {
+	a.key.Store(&key)
+}
 func (a *readerArtifact) Cleanup() error { return nil }
 
 // fileArtifact - file-based artifact with optional cleanup
@@ -286,6 +331,7 @@ type fileArtifact struct {
 	autoClean bool
 	cleaned   atomic.Bool
 	hash      atomic.Pointer[string]
+	key       atomic.Pointer[ArtifactKey]
 }
 
 func (a *fileArtifact) ID() string          { return "" }
@@ -294,6 +340,9 @@ func (a *fileArtifact) ContentType() string { return "application/octet-stream" 
 func (a *fileArtifact) Size() int64         { return a.size }
 func (a *fileArtifact) Open() (io.ReadCloser, error) {
 	return os.Open(a.path)
+}
+func (a *fileArtifact) ArtifactKey() (ArtifactKey, error) {
+	return loadArtifactKey(&a.key)
 }
 func (a *fileArtifact) Sha256(ctx context.Context) (string, error) {
 	if h := a.hash.Load(); h != nil {
@@ -344,6 +393,9 @@ func (a *fileArtifact) SaveToFile(ctx context.Context, path string) error {
 func (a *fileArtifact) Bytes(ctx context.Context) ([]byte, error) {
 	return os.ReadFile(a.path)
 }
+func (a *fileArtifact) setArtifactKey(key ArtifactKey) {
+	a.key.Store(&key)
+}
 func (a *fileArtifact) Cleanup() error {
 	if !a.autoClean {
 		return nil
@@ -362,6 +414,7 @@ type customArtifact struct {
 	size    int64
 	cleaned atomic.Bool
 	hash    atomic.Pointer[string]
+	key     atomic.Pointer[ArtifactKey]
 }
 
 func (a *customArtifact) ID() string          { return "" }
@@ -375,6 +428,9 @@ func (a *customArtifact) Open() (io.ReadCloser, error) {
 	}
 	a.size = size
 	return rc, nil
+}
+func (a *customArtifact) ArtifactKey() (ArtifactKey, error) {
+	return loadArtifactKey(&a.key)
 }
 func (a *customArtifact) Sha256(ctx context.Context) (string, error) {
 	if h := a.hash.Load(); h != nil {
@@ -425,6 +481,9 @@ func (a *customArtifact) Bytes(ctx context.Context) ([]byte, error) {
 	defer rc.Close()
 	return io.ReadAll(rc)
 }
+func (a *customArtifact) setArtifactKey(key ArtifactKey) {
+	a.key.Store(&key)
+}
 func (a *customArtifact) Cleanup() error {
 	if a.cleanup == nil {
 		return nil
@@ -438,6 +497,7 @@ func (a *customArtifact) Cleanup() error {
 // strataArtifactAdapter wraps a strata.Artifact as a swf.Artifact
 type strataArtifactAdapter struct {
 	art strata.Artifact
+	key atomic.Pointer[ArtifactKey]
 }
 
 func (a *strataArtifactAdapter) ID() string {
@@ -475,6 +535,14 @@ func (a *strataArtifactAdapter) Bytes(ctx context.Context) ([]byte, error) {
 func (a *strataArtifactAdapter) Open() (io.ReadCloser, error) {
 	_, rc, err := a.art.ToInput(context.Background())
 	return rc, err
+}
+
+func (a *strataArtifactAdapter) ArtifactKey() (ArtifactKey, error) {
+	return loadArtifactKey(&a.key)
+}
+
+func (a *strataArtifactAdapter) setArtifactKey(key ArtifactKey) {
+	a.key.Store(&key)
 }
 
 func (a *strataArtifactAdapter) Cleanup() error {
