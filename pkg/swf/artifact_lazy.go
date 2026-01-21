@@ -6,9 +6,9 @@ import (
 	"io"
 )
 
-// TooLazyArtifact returns an artifact that defers retrieval until access.
+// ToLazyArtifact returns an artifact that defers retrieval until access.
 // tenantId is required because ArtifactKey does not include tenant identity.
-func (ak ArtifactKey) TooLazyArtifact(engine SWFEngine, tenantId string) Artifact {
+func (ak ArtifactKey) ToLazyArtifact(engine SWFEngine, tenantId string) Artifact {
 	return &lazyArtifact{
 		engine:   engine,
 		tenantId: tenantId,

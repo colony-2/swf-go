@@ -137,7 +137,7 @@ func TestDoTaskArtifactKeyAndGetArtifact(t *testing.T) {
 		t.Fatalf("expected artifact data %q, got %q", string(task.data), string(data))
 	}
 
-	lazy := result.key.TooLazyArtifact(engine, jobKey.TenantId)
+	lazy := result.key.ToLazyArtifact(engine, jobKey.TenantId)
 	lazyData, err := lazy.Bytes(ctx)
 	if err != nil {
 		t.Fatalf("lazy bytes: %v", err)
