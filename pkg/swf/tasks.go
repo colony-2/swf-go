@@ -22,6 +22,7 @@ type TaskContext struct {
 	Logger *slog.Logger
 	// await is set by the runner so AwaitDuration can be engine-directed.
 	await      func(wakeAt time.Time) error
+	awaitJobs  func(jobIds ...string) error
 	spawnAsync func(jobType string, data TaskData) (*Future, error)
 }
 
@@ -41,6 +42,14 @@ func (tc TaskContext) AwaitDuration(waitFor Duration) error {
 	return nil
 }
 
+// AwaitJobs waits for the provided job IDs to complete.
+func (tc TaskContext) AwaitJobs(jobIds ...string) error {
+	if tc.awaitJobs == nil {
+		return fmt.Errorf("awaiting jobs not supported in this context")
+	}
+	return tc.awaitJobs(jobIds...)
+}
+
 // SpawnAsync launches a child job asynchronously.
 func (tc TaskContext) SpawnAsync(jobType string, data TaskData) (*Future, error) {
 	if tc.spawnAsync == nil {
@@ -50,12 +59,13 @@ func (tc TaskContext) SpawnAsync(jobType string, data TaskData) (*Future, error)
 }
 
 // NewTaskContext builds a task context with an optional await handler.
-func NewTaskContext(jobKey JobKey, step int64, logger *slog.Logger, await func(time.Time) error, spawn func(string, TaskData) (*Future, error)) TaskContext {
+func NewTaskContext(jobKey JobKey, step int64, logger *slog.Logger, await func(time.Time) error, awaitJobs func(...string) error, spawn func(string, TaskData) (*Future, error)) TaskContext {
 	return TaskContext{
 		JobKey:     jobKey,
 		Step:       step,
 		Logger:     logger,
 		await:      await,
+		awaitJobs:  awaitJobs,
 		spawnAsync: spawn,
 	}
 }

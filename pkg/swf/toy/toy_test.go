@@ -256,6 +256,120 @@ func TestToyEngineAwaitJobs(t *testing.T) {
 	}
 }
 
+func TestToyEngineTaskContextAwaitJobs(t *testing.T) {
+	tenantID := "test-tenant"
+	childJobID := "child-job-task"
+	parentJobID := "parent-job-task"
+
+	childStarted := make(chan struct{})
+	releaseChild := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-releaseChild:
+		default:
+			close(releaseChild)
+		}
+	})
+
+	childWorker := blockingJobWorker{name: "child-worker-task", started: childStarted, release: releaseChild}
+	taskWorker := awaitJobsTaskWorker{name: "await-task", waitFor: []string{childJobID}}
+	parentWorker := simpleJobWorker{name: "parent-task-worker", task: taskWorker.Name()}
+	engine := NewToyEngine([]swf.WorkSet{
+		mustWorkSet(childWorker),
+		mustWorkSet(parentWorker, taskWorker),
+	})
+
+	childDone := make(chan error, 1)
+	go func() {
+		_, err := engine.StartJob(context.Background(), swf.StartJob{
+			TenantId: tenantID,
+			JobType:  childWorker.Name(),
+			JobID:    childJobID,
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+		})
+		childDone <- err
+	}()
+
+	select {
+	case <-childStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("child job did not start")
+	}
+
+	parentDone := make(chan error, 1)
+	go func() {
+		_, err := engine.StartJob(context.Background(), swf.StartJob{
+			TenantId: tenantID,
+			JobType:  parentWorker.Name(),
+			JobID:    parentJobID,
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 2}),
+		})
+		parentDone <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := engine.CheckJobStatus(context.Background(), swf.JobKey{TenantId: tenantID, JobId: parentJobID})
+		if err == nil && status == swf.JobStatusPendingJobs {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	status, err := engine.CheckJobStatus(context.Background(), swf.JobKey{TenantId: tenantID, JobId: parentJobID})
+	if err != nil {
+		t.Fatalf("CheckJobStatus failed: %v", err)
+	}
+	if status != swf.JobStatusPendingJobs {
+		t.Fatalf("expected parent status %s, got %s", swf.JobStatusPendingJobs, status)
+	}
+
+	resp, err := engine.ListJobs(context.Background(), swf.ListJobsRequest{TenantIds: []string{tenantID}})
+	if err != nil {
+		t.Fatalf("ListJobs failed: %v", err)
+	}
+	found := false
+	for _, job := range resp.Jobs {
+		if job.JobKey.JobId == parentJobID {
+			found = true
+			if len(job.WaitFor) != 1 || job.WaitFor[0] != childJobID {
+				t.Fatalf("expected wait_for %s, got %v", childJobID, job.WaitFor)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("parent job not found in ListJobs response")
+	}
+
+	close(releaseChild)
+
+	select {
+	case err := <-childDone:
+		if err != nil {
+			t.Fatalf("child job error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("child job did not finish")
+	}
+
+	select {
+	case err := <-parentDone:
+		if err != nil {
+			t.Fatalf("parent job error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("parent job did not finish")
+	}
+
+	finalStatus, err := engine.CheckJobStatus(context.Background(), swf.JobKey{TenantId: tenantID, JobId: parentJobID})
+	if err != nil {
+		t.Fatalf("CheckJobStatus failed: %v", err)
+	}
+	if finalStatus != swf.JobStatusCompleted {
+		t.Fatalf("expected parent status %s, got %s", swf.JobStatusCompleted, finalStatus)
+	}
+}
+
 func TestToyEngineCancelJob(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"slow"}}, slowTask{sleep: 500 * time.Millisecond})
 	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "cancel-me"}
@@ -1078,6 +1192,19 @@ type awaitJobsParentWorker struct {
 
 func (a awaitJobsParentWorker) Name() string { return a.name }
 func (a awaitJobsParentWorker) Run(ctx swf.JobContext, input swf.JobData) (swf.JobData, error) {
+	if err := ctx.AwaitJobs(a.waitFor...); err != nil {
+		return nil, err
+	}
+	return input, nil
+}
+
+type awaitJobsTaskWorker struct {
+	name    string
+	waitFor []string
+}
+
+func (a awaitJobsTaskWorker) Name() string { return a.name }
+func (a awaitJobsTaskWorker) Run(ctx swf.TaskContext, input swf.TaskData) (swf.TaskData, error) {
 	if err := ctx.AwaitJobs(a.waitFor...); err != nil {
 		return nil, err
 	}

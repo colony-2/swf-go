@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
@@ -346,6 +347,8 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			output swf.TaskData
 			err    error
 		}
+		exitCh := make(chan struct{})
+		var exitOnce sync.Once
 		resultCh := make(chan taskResult, 1)
 		go func(attemptNum int) {
 			var output swf.TaskData
@@ -363,6 +366,20 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 						r.logger.With("task", taskType, "step", ordinal, "attempt", attemptNum),
 						func(wakeAt time.Time) error {
 							return r.awaitUntil(wakeAt, ordinal, attemptNum, "task", inputRef, attemptInvocationDeadline, totalDeadline, invocationTimeout, totalTimeout)
+						},
+						func(jobIds ...string) error {
+							rescheduled, err := r.rescheduleAwaitJobs(jobIds...)
+							if err != nil {
+								return err
+							}
+							if !rescheduled {
+								return nil
+							}
+							exitOnce.Do(func() {
+								close(exitCh)
+							})
+							runtime.Goexit()
+							return nil
 						},
 						func(jobType string, td swf.TaskData) (*swf.Future, error) {
 							return r.spawnAsyncWithDeadlines(jobType, td, attemptInvocationDeadline, totalDeadline, invocationTimeout, totalTimeout, inputRef)
@@ -382,8 +399,12 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 		var output swf.TaskData
 		var taskErr error
 		if deadline.IsZero() {
-			res := <-resultCh
-			output, taskErr = res.output, res.err
+			select {
+			case res := <-resultCh:
+				output, taskErr = res.output, res.err
+			case <-exitCh:
+				prematureCloseOut()
+			}
 		} else {
 			timer := time.NewTimer(time.Until(deadline))
 			select {
@@ -395,6 +416,14 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 					}
 				}
 				output, taskErr = res.output, res.err
+			case <-exitCh:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				prematureCloseOut()
 			case <-timer.C:
 				if !totalDeadline.IsZero() && deadline.Equal(totalDeadline) {
 					taskErr = swf.NewTimeoutError("task", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
@@ -577,27 +606,34 @@ func (r *runner) AwaitDuration(waitFor swf.Duration) error {
 	return r.awaitUntil(time.Now().Add(wait), r.storyCounter, 0, kind, r.currentInputRef, r.currentInvocationDeadline, r.currentTotalDeadline, r.currentInvocationLimit, r.currentTotalLimit)
 }
 
-func (r *runner) AwaitJobs(jobIds ...string) error {
+func (r *runner) rescheduleAwaitJobs(jobIds ...string) (bool, error) {
 	if len(jobIds) == 0 {
-		return fmt.Errorf("at least one jobId is required")
+		return false, fmt.Errorf("at least one jobId is required")
 	}
 	if r.engine == nil || r.engine.udb == nil {
-		return fmt.Errorf("engine is not available")
+		return false, fmt.Errorf("engine is not available")
 	}
 	if r.lease == nil {
-		return fmt.Errorf("lease is not available")
+		return false, fmt.Errorf("lease is not available")
 	}
 	capability := r.capability
 	if capability == "" {
 		capability = r.lease.NextNeed()
 	}
 	if capability == "" {
-		return fmt.Errorf("capability is required")
+		return false, fmt.Errorf("capability is required")
+	}
+	completed, err := r.awaitJobsComplete(jobIds...)
+	if err != nil {
+		return false, err
+	}
+	if completed {
+		return false, nil
 	}
 	waitFor := make([]pgwf.JobID, 0, len(jobIds))
 	for _, id := range jobIds {
 		if id == "" {
-			return fmt.Errorf("jobId cannot be empty")
+			return false, fmt.Errorf("jobId cannot be empty")
 		}
 		waitFor = append(waitFor, pgwf.JobID(id))
 	}
@@ -610,7 +646,63 @@ func (r *runner) AwaitJobs(jobIds ...string) error {
 		WaitFor:  waitFor,
 	}
 	if err := r.lease.Reschedule(context.TODO(), r.engine.udb, deps, payload); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (r *runner) awaitJobsComplete(jobIds ...string) (bool, error) {
+	if r.engine == nil {
+		return false, fmt.Errorf("engine is not available")
+	}
+	tenantId := r.tenantId
+	if tenantId == "" {
+		return false, fmt.Errorf("tenantId is required")
+	}
+	jobKeys := make([]swf.JobKey, 0, len(jobIds))
+	jobIDSet := make(map[string]struct{}, len(jobIds))
+	for _, id := range jobIds {
+		if id == "" {
+			return false, fmt.Errorf("jobId cannot be empty")
+		}
+		jobKeys = append(jobKeys, swf.JobKey{TenantId: tenantId, JobId: id})
+		jobIDSet[id] = struct{}{}
+	}
+	ctx := r.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pageToken := ""
+	for {
+		resp, err := r.engine.ListJobs(ctx, swf.ListJobsRequest{
+			TenantIds: []string{tenantId},
+			Stores:    []swf.JobStore{swf.JobStoreActive},
+			JobKeys:   jobKeys,
+			PageSize:  swf.MaxListJobsPageSize,
+			PageToken: pageToken,
+		})
+		if err != nil {
+			return false, err
+		}
+		for _, job := range resp.Jobs {
+			if _, ok := jobIDSet[job.JobKey.JobId]; ok {
+				return false, nil
+			}
+		}
+		if resp.NextPageToken == "" {
+			return true, nil
+		}
+		pageToken = resp.NextPageToken
+	}
+}
+
+func (r *runner) AwaitJobs(jobIds ...string) error {
+	rescheduled, err := r.rescheduleAwaitJobs(jobIds...)
+	if err != nil {
 		return err
+	}
+	if !rescheduled {
+		return nil
 	}
 	prematureCloseOut()
 	return nil

@@ -1147,7 +1147,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 		}
 	}
 
-	tc := swf.NewTaskContext(c.jobKey, c.step, c.Logger(), await, nil)
+	tc := swf.NewTaskContext(c.jobKey, c.step, c.Logger(), await, c.AwaitJobs, nil)
 	output, err := taskWorker.Run(tc, materializedData)
 
 	// Cleanup materialized input artifacts after task completes
@@ -1321,16 +1321,30 @@ func (c *toyJobContext) AwaitJobs(jobIds ...string) error {
 	if len(jobIds) == 0 {
 		return fmt.Errorf("at least one jobId is required")
 	}
-	waitKeys := make([]swf.JobKey, 0, len(jobIds))
+	jobKeys := make([]swf.JobKey, 0, len(jobIds))
 	for _, id := range jobIds {
 		if id == "" {
 			return fmt.Errorf("jobId cannot be empty")
 		}
-		key := swf.JobKey{TenantId: c.jobKey.TenantId, JobId: id}
+		jobKeys = append(jobKeys, swf.JobKey{TenantId: c.jobKey.TenantId, JobId: id})
+	}
+	resp, err := c.engine.ListJobs(context.Background(), swf.ListJobsRequest{
+		TenantIds: []string{c.jobKey.TenantId},
+		Stores:    []swf.JobStore{swf.JobStoreActive},
+		JobKeys:   jobKeys,
+		PageSize:  len(jobKeys),
+	})
+	if err != nil {
+		return err
+	}
+	if len(resp.Jobs) == 0 {
+		return nil
+	}
+	waitKeys := jobKeys
+	for _, key := range waitKeys {
 		if rec := c.engine.getJobRecord(key); rec == nil {
 			return fmt.Errorf("job %s not found", key)
 		}
-		waitKeys = append(waitKeys, key)
 	}
 
 	c.record.mu.Lock()
