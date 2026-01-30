@@ -132,6 +132,64 @@ func TestToyEngineRestartWithExtraOutputSkipsExecution(t *testing.T) {
 	}
 }
 
+func TestToyEngineRestartRejectsMidRetryBoundary(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
+	engine := NewToyEngine([]swf.WorkSet{ws})
+
+	input := swf.NewTaskDataOrPanic(map[string]int{"n": 1})
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: "tenant-retry",
+		JobType:  ws.JobWorker.Name(),
+		Data:     input,
+	})
+	if err != nil {
+		t.Fatalf("StartJob failed: %v", err)
+	}
+
+	// Simulate a retry chain by marking the next chapter as attempt 2.
+	record := engine.getJobRecord(jobKey)
+	if record == nil {
+		t.Fatalf("job record not found")
+	}
+	record.mu.Lock()
+	if chap := record.chapters[1]; chap != nil {
+		chap.Attempt = 2
+	} else {
+		record.mu.Unlock()
+		t.Fatalf("expected chapter 1 to exist")
+	}
+	record.mu.Unlock()
+
+	if _, err := engine.RestartJob(context.Background(), swf.RestartJob{
+		PriorJobKey:    jobKey,
+		LastStepToKeep: 0, // next ordinal 1 now marked attempt 2
+	}); err == nil {
+		t.Fatalf("expected restart to fail when slicing into retry chain")
+	}
+}
+
+func TestToyEngineRestartRejectsWhenNextMissing(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
+	engine := NewToyEngine([]swf.WorkSet{ws})
+
+	input := swf.NewTaskDataOrPanic(map[string]int{"n": 1})
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: "tenant-missing-next",
+		JobType:  ws.JobWorker.Name(),
+		Data:     input,
+	})
+	if err != nil {
+		t.Fatalf("StartJob failed: %v", err)
+	}
+
+	if _, err := engine.RestartJob(context.Background(), swf.RestartJob{
+		PriorJobKey:    jobKey,
+		LastStepToKeep: 3, // next ordinal 4 does not exist
+	}); err == nil {
+		t.Fatalf("expected restart to fail when next chapter is missing")
+	}
+}
+
 func TestToyEngineRunsJobInline(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
 	engine := NewToyEngine([]swf.WorkSet{ws})

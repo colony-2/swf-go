@@ -73,6 +73,7 @@ type toyChapter struct {
 	CreatedAt time.Time
 	Input     swf.TaskData
 	Output    swf.TaskData
+	Attempt   int
 }
 
 type pendingTask struct {
@@ -187,6 +188,22 @@ func (e *ToyEngine) RestartJob(ctx context.Context, restart swf.RestartJob) (swf
 		return swf.JobKey{}, fmt.Errorf("prior job %s missing initial input", restart.PriorJobKey)
 	}
 
+	// Validate boundary: chapter at LastStepToKeep+1 must exist and be attempt 1.
+	nextOrdinal := restart.LastStepToKeep + 1
+	prior.mu.Lock()
+	nextChap, ok := prior.chapters[nextOrdinal]
+	prior.mu.Unlock()
+	if !ok || nextChap == nil {
+		return swf.JobKey{}, fmt.Errorf("LastStepToKeep %d invalid: no chapter at ordinal %d", restart.LastStepToKeep, nextOrdinal)
+	}
+	nextAttempt := nextChap.Attempt
+	if nextAttempt == 0 {
+		nextAttempt = 1
+	}
+	if nextAttempt > 1 {
+		return swf.JobKey{}, fmt.Errorf("LastStepToKeep %d cuts into retry chain: next ordinal %d is attempt %d of %s", restart.LastStepToKeep, nextOrdinal, nextAttempt, nextChap.TaskType)
+	}
+
 	// Determine new job key.
 	jobKey := swf.JobKey{TenantId: restart.PriorJobKey.TenantId, JobId: restart.JobID}
 	if jobKey.JobId == "" {
@@ -222,6 +239,7 @@ func (e *ToyEngine) RestartJob(ctx context.Context, restart swf.RestartJob) (swf
 			CreatedAt: chap.CreatedAt,
 			Input:     chap.Input,
 			Output:    chap.Output,
+			Attempt:   chap.Attempt,
 		}
 	}
 	prior.mu.Unlock()
@@ -238,6 +256,7 @@ func (e *ToyEngine) RestartJob(ctx context.Context, restart swf.RestartJob) (swf
 			CreatedAt: now,
 			Input:     input,
 			Output:    restart.ExtraTaskOutput,
+			Attempt:   1,
 		}
 		// Mark job completed with provided output.
 		record.status = swf.JobStatusCompleted
@@ -1082,6 +1101,7 @@ func (e *ToyEngine) runJob(ctx context.Context, jobKey swf.JobKey, ws swf.WorkSe
 		CreatedAt: record.createdAt,
 		Input:     materializedJobData,
 		Output:    materializedJobData,
+		Attempt:   1,
 	}
 	record.mu.Unlock()
 
@@ -1204,6 +1224,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 		TaskType:  taskType,
 		CreatedAt: time.Now(),
 		Input:     materializedData,
+		Attempt:   1,
 	}
 	c.record.mu.Unlock()
 
@@ -1320,6 +1341,7 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 		TaskType:  taskType,
 		CreatedAt: time.Now(),
 		Input:     data,
+		Attempt:   1,
 	}
 	if c.record.status != swf.JobStatusCancelled {
 		c.record.status = swf.JobStatusReady

@@ -335,6 +335,25 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 		jobPolicy = normalizeRunPolicy(*runPolicy)
 	}
 
+	// Validate LastStepToKeep is on a task/job boundary:
+	// the next chapter (LastStepToKeep+1) must exist and be the first attempt.
+	nextOrdinal := job.LastStepToKeep + 1
+	nextChap, err := s.strata.Chapter(ctx, sourceJob, nextOrdinal)
+	if err != nil {
+		return swf.JobKey{}, fmt.Errorf("LastStepToKeep %d invalid: no chapter at ordinal %d: %w", job.LastStepToKeep, nextOrdinal, err)
+	}
+	nextEnv, err := decodeChapterEnvelope(nextChap.Body())
+	if err != nil {
+		return swf.JobKey{}, fmt.Errorf("decode source chapter %d: %w", nextOrdinal, err)
+	}
+	nextAttempt := nextEnv.Meta.Attempt
+	if nextAttempt == 0 {
+		nextAttempt = 1
+	}
+	if nextAttempt > 1 {
+		return swf.JobKey{}, fmt.Errorf("LastStepToKeep %d cuts into retry chain: next ordinal %d is attempt %d of %s", job.LastStepToKeep, nextOrdinal, nextAttempt, nextEnv.Meta.TaskType)
+	}
+
 	createOptions := story.CreateOptions{RequestID: uuid.New().String()}
 	if job.ExtraTaskOutput != nil {
 		// Hash based on provided input or empty input.
