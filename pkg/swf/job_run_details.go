@@ -106,6 +106,7 @@ type ArtifactInfo struct {
 	ContentType string
 	SizeBytes   int64
 	Sha256      string
+	Key         *ArtifactKey
 }
 
 type TaskOutcome struct {

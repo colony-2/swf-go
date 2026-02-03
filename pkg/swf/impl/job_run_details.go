@@ -84,7 +84,7 @@ func (s *swfEngineImpl) GetJobRun(ctx context.Context, req swf.GetJobRunRequest)
 		if chap.Ordinal() == 0 && !startSet {
 			jobType = env.Meta.TaskType
 			resp.Job.JobType = jobType
-			startInput, err := buildTaskIOFromPayload(ctx, env.Payload, chap.Artifacts(), includeInputs, includeArtifacts)
+			startInput, err := buildTaskIOFromPayload(ctx, env.Payload, chap.Artifacts(), req.JobKey.JobId, chap.Ordinal(), includeInputs, includeArtifacts)
 			if err != nil {
 				return swf.GetJobRunResponse{}, err
 			}
@@ -101,7 +101,7 @@ func (s *swfEngineImpl) GetJobRun(ctx context.Context, req swf.GetJobRunRequest)
 			continue
 		}
 
-		attempt, err := buildTaskAttempt(ctx, s, req.JobKey.ToStoryKey(), chap, env, includeInputs, includeOutputs, includeArtifacts, includeAttemptInputs)
+		attempt, err := buildTaskAttempt(ctx, s, req.JobKey.ToStoryKey(), chap, env, includeInputs, includeOutputs || env.Meta.TaskType == jobType, includeArtifacts, includeAttemptInputs)
 		if err != nil {
 			return swf.GetJobRunResponse{}, err
 		}
@@ -138,9 +138,15 @@ func (s *swfEngineImpl) GetJobRun(ctx context.Context, req swf.GetJobRunRequest)
 		resp.Job.JobType = swf.JobTypeFromNextNeed(statusInfo.NextNeed)
 	}
 
-	if statusInfo.ArchivedAt != nil && len(jobRuns) > 0 {
-		last := jobRuns[len(jobRuns)-1]
-		resp.Result = &last
+	if len(jobRuns) > 0 {
+		latest := latestJobAttempt(jobRuns)
+		resp.Result = &latest
+		if !includeOutputs {
+			for i := 0; i < len(jobRuns)-1; i++ {
+				jobRuns[i].Output = nil
+			}
+			resp.JobAttempts = jobRuns
+		}
 	}
 
 	if statusInfo.ArchivedAt == nil {
@@ -163,13 +169,24 @@ func normalizeGetJobRunOptions(req swf.GetJobRunRequest) (bool, bool, bool, bool
 	return req.IncludeInputs, req.IncludeOutputs, req.IncludeArtifacts, req.IncludeAttemptInputs
 }
 
+func latestJobAttempt(attempts []swf.JobAttempt) swf.JobAttempt {
+	best := attempts[0]
+	for i := 1; i < len(attempts); i++ {
+		attempt := attempts[i]
+		if attempt.Attempt > best.Attempt || (attempt.Attempt == best.Attempt && attempt.Ordinal > best.Ordinal) {
+			best = attempt
+		}
+	}
+	return best
+}
+
 func buildTaskAttempt(ctx context.Context, s *swfEngineImpl, key story.Key, chap story.Chapter, env chapterEnvelope, includeInputs, includeOutputs, includeArtifacts, includeAttemptInputs bool) (swf.TaskAttempt, error) {
 	attemptNum := env.Meta.Attempt
 	if attemptNum <= 0 {
 		attemptNum = 1
 	}
 
-	output, err := buildTaskIOFromPayload(ctx, env.Payload, chap.Artifacts(), includeOutputs, includeArtifacts)
+	output, err := buildTaskIOFromPayload(ctx, env.Payload, chap.Artifacts(), key.StoryID, chap.Ordinal(), includeOutputs, includeArtifacts)
 	if err != nil {
 		return swf.TaskAttempt{}, err
 	}
@@ -306,10 +323,10 @@ func resolveInputRef(ctx context.Context, s *swfEngineImpl, key story.Key, ref *
 	if err != nil {
 		return nil, fmt.Errorf("%w: decode input chapter: %v", swf.ErrWorkflowNotDeterministic, err)
 	}
-	return buildTaskIOFromPayload(ctx, env.Payload, chap.Artifacts(), true, includeArtifacts)
+	return buildTaskIOFromPayload(ctx, env.Payload, chap.Artifacts(), key.StoryID, ref.Ordinal, true, includeArtifacts)
 }
 
-func buildTaskIOFromPayload(ctx context.Context, payload json.RawMessage, artifacts []artifact.Artifact, includeData bool, includeArtifacts bool) (*swf.TaskIO, error) {
+func buildTaskIOFromPayload(ctx context.Context, payload json.RawMessage, artifacts []artifact.Artifact, jobID string, ordinal int64, includeData bool, includeArtifacts bool) (*swf.TaskIO, error) {
 	if !includeData && !includeArtifacts {
 		return nil, nil
 	}
@@ -318,7 +335,7 @@ func buildTaskIOFromPayload(ctx context.Context, payload json.RawMessage, artifa
 		out.Data = append([]byte(nil), payload...)
 	}
 	if includeArtifacts {
-		infos, err := buildArtifactInfos(ctx, artifacts)
+		infos, err := buildArtifactInfos(ctx, artifacts, jobID, ordinal)
 		if err != nil {
 			return nil, err
 		}
@@ -330,7 +347,7 @@ func buildTaskIOFromPayload(ctx context.Context, payload json.RawMessage, artifa
 	return out, nil
 }
 
-func buildArtifactInfos(ctx context.Context, artifacts []artifact.Artifact) ([]swf.ArtifactInfo, error) {
+func buildArtifactInfos(ctx context.Context, artifacts []artifact.Artifact, jobID string, ordinal int64) ([]swf.ArtifactInfo, error) {
 	if len(artifacts) == 0 {
 		return nil, nil
 	}
@@ -343,12 +360,23 @@ func buildArtifactInfos(ctx context.Context, artifacts []artifact.Artifact) ([]s
 		if err != nil {
 			return nil, err
 		}
+		var key *swf.ArtifactKey
+		if jobID != "" && ordinal >= 0 && art.Name() != "" {
+			k := swf.ArtifactKey{
+				JobId:       jobID,
+				TaskOrdinal: ordinal,
+				Name:        art.Name(),
+				SizeBytes:   art.SizeBytes(),
+			}
+			key = &k
+		}
 		out = append(out, swf.ArtifactInfo{
 			ID:          art.ID(),
 			Name:        art.Name(),
 			ContentType: art.ContentType(),
 			SizeBytes:   art.SizeBytes(),
 			Sha256:      sha,
+			Key:         key,
 		})
 	}
 	return out, nil

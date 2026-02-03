@@ -3,6 +3,8 @@ package impl
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +84,14 @@ func TestGetJobRunCompleted(t *testing.T) {
 	}
 	if len(resp.JobAttempts) != 1 {
 		t.Fatalf("expected 1 job attempt, got %d", len(resp.JobAttempts))
+	}
+
+	out, err := resp.GetOutput(engine, jobKey.TenantId)
+	if err != nil {
+		t.Fatalf("GetOutput failed: %v", err)
+	}
+	if got := extractFieldString(t, mustData(t, out), "job"); got != "input" {
+		t.Fatalf("unexpected job output: %s", got)
 	}
 }
 
@@ -171,6 +181,124 @@ func TestGetJobRunPendingRuntime(t *testing.T) {
 	if got := extractFieldString(t, attempt.Input.Data, "form"); got != "hello" {
 		t.Fatalf("unexpected runtime input: %s", got)
 	}
+
+	if _, err := resp.GetOutput(engine, jobKey.TenantId); !errors.Is(err, swf.ErrJobNotComplete) {
+		t.Fatalf("expected ErrJobNotComplete, got %v", err)
+	}
+}
+
+func TestGetJobRunGetOutputFailed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	jobWorker := &failingJobWorker{name: "job-run-failed"}
+	ws := initWorkset(jobWorker)
+
+	embedded, err := StartEmbeddedEngine(ctx, nil)
+	if err != nil {
+		t.Fatalf("start embedded engine: %v", err)
+	}
+	defer embedded.Shutdown()
+
+	engine := embedded.SWFEngine.(*swfEngineImpl)
+	if err := engine.RegisterWorkers(ws); err != nil {
+		t.Fatalf("register workers: %v", err)
+	}
+	go engine.Run(ctx)
+
+	jobInput := swf.NewTaskDataOrPanic(map[string]string{"job": "input"})
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  jobWorker.Name(),
+		Data:     jobInput,
+	})
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobKey, engine); err != nil {
+		t.Fatalf("wait for job complete: %v", err)
+	}
+
+	resp, err := engine.GetJobRun(ctx, swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("get job run: %v", err)
+	}
+	if _, err := resp.GetOutput(engine, jobKey.TenantId); !errors.Is(err, swf.ErrJobFailed) {
+		t.Fatalf("expected ErrJobFailed, got %v", err)
+	} else if err == nil || !strings.Contains(err.Error(), "intentional failure") {
+		t.Fatalf("expected error message to include failure text, got %v", err)
+	}
+}
+
+func TestGetJobRunGetOutputCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	taskType := "missing-task"
+	jobWorker := &taskCallingJobWorkerSimple{
+		name:     "job-run-cancelled",
+		taskType: taskType,
+	}
+	jobWorker.workset = initWorkset(jobWorker)
+
+	embedded, err := StartEmbeddedEngine(ctx, nil)
+	if err != nil {
+		t.Fatalf("start embedded engine: %v", err)
+	}
+	defer embedded.Shutdown()
+
+	engine := embedded.SWFEngine.(*swfEngineImpl)
+	if err := engine.RegisterWorkers(jobWorker.workset); err != nil {
+		t.Fatalf("register workers: %v", err)
+	}
+	go engine.Run(ctx)
+
+	jobInput := swf.NewTaskDataOrPanic(map[string]string{"form": "hello"})
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  jobWorker.Name(),
+		Data:     jobInput,
+	})
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		handles, err := engine.FindTasksWaitingForCapability(ctx, jobWorker.Name(), taskType, []string{jobKey.TenantId})
+		if err != nil {
+			t.Fatalf("find waiting tasks: %v", err)
+		}
+		if len(handles) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := engine.CancelJob(ctx, swf.CancelJob{JobKey: jobKey}); err != nil {
+		t.Fatalf("cancel job: %v", err)
+	}
+
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := engine.CheckJobStatus(ctx, jobKey)
+		if err != nil {
+			t.Fatalf("check job status: %v", err)
+		}
+		if status == swf.JobStatusCancelled {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	resp, err := engine.GetJobRun(ctx, swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("get job run: %v", err)
+	}
+	if _, err := resp.GetOutput(engine, jobKey.TenantId); !errors.Is(err, swf.ErrJobCancelled) {
+		t.Fatalf("expected ErrJobCancelled, got %v", err)
+	}
 }
 
 func extractFieldString(t *testing.T, data json.RawMessage, key string) string {
@@ -180,4 +308,23 @@ func extractFieldString(t *testing.T, data json.RawMessage, key string) string {
 		t.Fatalf("unmarshal payload: %v", err)
 	}
 	return payload[key]
+}
+
+func mustData(t *testing.T, data swf.TaskData) json.RawMessage {
+	t.Helper()
+	bytes, err := data.GetData()
+	if err != nil {
+		t.Fatalf("get data: %v", err)
+	}
+	return bytes
+}
+
+type failingJobWorker struct {
+	name string
+}
+
+func (w *failingJobWorker) Name() string { return w.name }
+
+func (w *failingJobWorker) Run(ctx swf.JobContext, data swf.JobData) (swf.JobData, error) {
+	return nil, errors.New("intentional failure")
 }

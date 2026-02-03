@@ -6,6 +6,8 @@ var (
 	ErrWorkflowNotDeterministic = errors.New("workflow was not deterministic")
 	ErrMissingInputHash         = errors.New("workflow deterministic metadata missing input hash")
 	ErrJobNotComplete           = errors.New("job not complete")
+	ErrJobFailed                = errors.New("job failed")
+	ErrJobCancelled             = errors.New("job cancelled")
 	ErrJobNotFound              = errors.New("job not found")
 )
 

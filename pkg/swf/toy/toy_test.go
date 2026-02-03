@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -595,6 +596,110 @@ func TestToyEngineGetJobRunCompleted(t *testing.T) {
 	}
 }
 
+func TestToyEngineGetJobRunGetOutput(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"add", "double"}}, addOneTask{}, doubleTask{})
+	engine := NewToyEngine([]swf.WorkSet{ws})
+
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  ws.JobWorker.Name(),
+		Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+	})
+	if err != nil {
+		t.Fatalf("StartJob failed: %v", err)
+	}
+
+	resp, err := engine.GetJobRun(context.Background(), swf.GetJobRunRequest{
+		JobKey:         jobKey,
+		IncludeOutputs: false,
+	})
+	if err != nil {
+		t.Fatalf("GetJobRun failed: %v", err)
+	}
+
+	output, err := resp.GetOutput(engine, jobKey.TenantId)
+	if err != nil {
+		t.Fatalf("GetOutput failed: %v", err)
+	}
+	if got := extractNumberFromData(t, output); got != 4 {
+		t.Fatalf("unexpected job output: %d", got)
+	}
+}
+
+func TestToyEngineGetJobRunGetOutputFailed(t *testing.T) {
+	ws := mustWorkSet(failingJob{}, dummyTask{name: "dummy"})
+	engine := NewToyEngine([]swf.WorkSet{ws})
+
+	jobKey, err := engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  ws.JobWorker.Name(),
+		Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+	})
+	if err != nil {
+		t.Fatalf("StartJob failed: %v", err)
+	}
+
+	resp, err := engine.GetJobRun(context.Background(), swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("GetJobRun failed: %v", err)
+	}
+
+	if _, err := resp.GetOutput(engine, jobKey.TenantId); !errors.Is(err, swf.ErrJobFailed) {
+		t.Fatalf("expected ErrJobFailed, got %v", err)
+	} else if err == nil || !strings.Contains(err.Error(), "intentional failure") {
+		t.Fatalf("expected error message to include failure text, got %v", err)
+	}
+}
+
+func TestToyEngineGetJobRunGetOutputCancelled(t *testing.T) {
+	ws := mustWorkSet(sequenceJob{steps: []string{"missing"}})
+	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "cancelled-job"}
+	engine := NewToyEngine([]swf.WorkSet{ws}, WithJobIDGenerator(func(tenantId string) (swf.JobKey, error) {
+		return jobKey, nil
+	}))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = engine.StartJob(context.Background(), swf.StartJob{
+			TenantId: "test-tenant",
+			JobType:  ws.JobWorker.Name(),
+			Data:     swf.NewTaskDataOrPanic(map[string]int{"n": 1}),
+		})
+	}()
+
+	var handles []swf.TaskHandle
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		handles, err = engine.FindTasksWaitingForCapability(context.Background(), ws.JobWorker.Name(), "missing", nil)
+		if err != nil {
+			t.Fatalf("FindTasksWaitingForCapability: %v", err)
+		}
+		if len(handles) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(handles) != 1 {
+		t.Fatalf("expected 1 pending handle, got %d", len(handles))
+	}
+
+	if err := engine.CancelJob(context.Background(), swf.CancelJob{JobKey: jobKey}); err != nil {
+		t.Fatalf("CancelJob failed: %v", err)
+	}
+	wg.Wait()
+
+	resp, err := engine.GetJobRun(context.Background(), swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("GetJobRun failed: %v", err)
+	}
+	if _, err := resp.GetOutput(engine, jobKey.TenantId); !errors.Is(err, swf.ErrJobCancelled) {
+		t.Fatalf("expected ErrJobCancelled, got %v", err)
+	}
+}
+
 func TestToyEngineGetJobRunPendingRuntime(t *testing.T) {
 	ws := mustWorkSet(sequenceJob{steps: []string{"missing"}})
 	jobKey := swf.JobKey{TenantId: "test-tenant", JobId: "pending-runtime"}
@@ -661,6 +766,10 @@ func TestToyEngineGetJobRunPendingRuntime(t *testing.T) {
 		t.Fatalf("unexpected runtime input: %d", got)
 	}
 
+	if _, err := resp.GetOutput(engine, jobKey.TenantId); !errors.Is(err, swf.ErrJobNotComplete) {
+		t.Fatalf("expected ErrJobNotComplete, got %v", err)
+	}
+
 	err = handles[0].Finish(context.Background(), swf.NewTaskDataOrPanic(map[string]int{"n": 2}))
 	if err != nil {
 		t.Fatalf("Finish failed: %v", err)
@@ -676,6 +785,22 @@ func extractNumberFromIO(t *testing.T, io *swf.TaskIO) int {
 	var payload map[string]int
 	if err := json.Unmarshal(io.Data, &payload); err != nil {
 		t.Fatalf("unmarshal task io: %v", err)
+	}
+	return payload["n"]
+}
+
+func extractNumberFromData(t *testing.T, data swf.TaskData) int {
+	t.Helper()
+	if data == nil {
+		t.Fatalf("missing task data")
+	}
+	bytes, err := data.GetData()
+	if err != nil {
+		t.Fatalf("get data: %v", err)
+	}
+	var payload map[string]int
+	if err := json.Unmarshal(bytes, &payload); err != nil {
+		t.Fatalf("unmarshal task data: %v", err)
 	}
 	return payload["n"]
 }

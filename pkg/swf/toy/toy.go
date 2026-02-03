@@ -405,7 +405,7 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 
 	if includeInputs {
 		if chap := chapters[0]; chap != nil {
-			input, err := buildToyTaskIO(ctx, chap.Input, includeInputs, includeArtifacts)
+			input, err := buildToyTaskIO(ctx, chap.Input, req.JobKey.JobId, 0, includeInputs, includeArtifacts)
 			if err != nil {
 				return swf.GetJobRunResponse{}, err
 			}
@@ -431,11 +431,11 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 			continue
 		}
 
-		input, err := buildToyTaskIO(ctx, chap.Input, includeInputs, includeArtifacts)
+		input, err := buildToyTaskIO(ctx, chap.Input, req.JobKey.JobId, ord, includeInputs, includeArtifacts)
 		if err != nil {
 			return swf.GetJobRunResponse{}, err
 		}
-		output, err := buildToyTaskIO(ctx, chap.Output, includeOutputs, includeArtifacts)
+		output, err := buildToyTaskIO(ctx, chap.Output, req.JobKey.JobId, ord, includeOutputs, includeArtifacts)
 		if err != nil {
 			return swf.GetJobRunResponse{}, err
 		}
@@ -464,23 +464,36 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 		lastOrdinal = ordinals[len(ordinals)-1]
 	}
 
-	if status == swf.JobStatusCompleted && result != nil && includeOutputs {
-		output, err := buildToyTaskIO(ctx, result, includeOutputs, includeArtifacts)
+	if status == swf.JobStatusCompleted && (result != nil || record.err != nil) {
+		output, err := buildToyTaskIO(ctx, result, req.JobKey.JobId, lastOrdinal+1, true, includeArtifacts)
 		if err != nil {
 			return swf.GetJobRunResponse{}, err
+		}
+		outcome := swf.TaskOutcome{
+			Status:      swf.TaskOutcomeStatusSucceeded,
+			PayloadKind: "App",
+		}
+		if record.err != nil {
+			outcome.Status = swf.TaskOutcomeStatusFailed
+			outcome.PayloadKind = "AppError"
+			outcome.Error = &swf.TaskError{
+				Kind:    swf.TaskErrorKindApp,
+				Message: record.err.Error(),
+			}
 		}
 		jobAttempt := swf.JobAttempt{
 			Ordinal:   lastOrdinal + 1,
 			Attempt:   1,
 			CreatedAt: finished,
 			Output:    output,
-			Outcome: swf.TaskOutcome{
-				Status:      swf.TaskOutcomeStatusSucceeded,
-				PayloadKind: "App",
-			},
+			Outcome:   outcome,
 		}
 		resp.JobAttempts = append(resp.JobAttempts, jobAttempt)
-		resp.Result = &jobAttempt
+	}
+
+	if len(resp.JobAttempts) > 0 {
+		latest := resp.JobAttempts[len(resp.JobAttempts)-1]
+		resp.Result = &latest
 	}
 
 	if status != swf.JobStatusCompleted && capability != "" {
@@ -488,7 +501,7 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 		input := (*swf.TaskIO)(nil)
 		if includeInputs {
 			if chap := chapters[pendingStep]; chap != nil {
-				loaded, err := buildToyTaskIO(ctx, chap.Input, includeInputs, includeArtifacts)
+				loaded, err := buildToyTaskIO(ctx, chap.Input, req.JobKey.JobId, pendingStep, includeInputs, includeArtifacts)
 				if err != nil {
 					return swf.GetJobRunResponse{}, err
 				}
@@ -527,7 +540,7 @@ func normalizeToyJobRunOptions(req swf.GetJobRunRequest) (bool, bool, bool, bool
 	return req.IncludeInputs, req.IncludeOutputs, req.IncludeArtifacts, req.IncludeAttemptInputs
 }
 
-func buildToyTaskIO(ctx context.Context, data swf.TaskData, includeData bool, includeArtifacts bool) (*swf.TaskIO, error) {
+func buildToyTaskIO(ctx context.Context, data swf.TaskData, jobID string, ordinal int64, includeData bool, includeArtifacts bool) (*swf.TaskIO, error) {
 	if data == nil || (!includeData && !includeArtifacts) {
 		return nil, nil
 	}
@@ -544,7 +557,7 @@ func buildToyTaskIO(ctx context.Context, data swf.TaskData, includeData bool, in
 		if err != nil {
 			return nil, err
 		}
-		infos, err := buildToyArtifactInfos(ctx, arts)
+		infos, err := buildToyArtifactInfos(ctx, arts, jobID, ordinal)
 		if err != nil {
 			return nil, err
 		}
@@ -556,7 +569,7 @@ func buildToyTaskIO(ctx context.Context, data swf.TaskData, includeData bool, in
 	return out, nil
 }
 
-func buildToyArtifactInfos(ctx context.Context, artifacts []swf.Artifact) ([]swf.ArtifactInfo, error) {
+func buildToyArtifactInfos(ctx context.Context, artifacts []swf.Artifact, jobID string, ordinal int64) ([]swf.ArtifactInfo, error) {
 	if len(artifacts) == 0 {
 		return nil, nil
 	}
@@ -569,11 +582,24 @@ func buildToyArtifactInfos(ctx context.Context, artifacts []swf.Artifact) ([]swf
 		if err != nil {
 			return nil, err
 		}
+		var key *swf.ArtifactKey
+		if k, err := art.ArtifactKey(); err == nil {
+			key = &k
+		} else if jobID != "" && ordinal >= 0 && art.Name() != "" {
+			k := swf.ArtifactKey{
+				JobId:       jobID,
+				TaskOrdinal: ordinal,
+				Name:        art.Name(),
+				SizeBytes:   art.Size(),
+			}
+			key = &k
+		}
 		out = append(out, swf.ArtifactInfo{
 			Name:        art.Name(),
 			ContentType: "application/octet-stream",
 			SizeBytes:   art.Size(),
 			Sha256:      sha,
+			Key:         key,
 		})
 	}
 	return out, nil
