@@ -42,10 +42,10 @@ func TestAwaitJobsReschedulesAndExits(t *testing.T) {
 	parentNeed := pgwf.Capability("await:parent")
 	childNeed := pgwf.Capability("await:child")
 
-	if err := pgwf.SubmitJob(ctx, db, tenantID, childJobID, pgwf.JobDependencies{NextNeed: childNeed}, nil, workerID, "", time.Time{}); err != nil {
+	if err := pgwf.SubmitJob(ctx, db, tenantID, childJobID, pgwf.JobDependencies{NextNeed: childNeed}, nil, nil, workerID, "", time.Time{}); err != nil {
 		t.Fatalf("submit child job: %v", err)
 	}
-	if err := pgwf.SubmitJob(ctx, db, tenantID, parentJobID, pgwf.JobDependencies{NextNeed: parentNeed}, nil, workerID, "", time.Time{}); err != nil {
+	if err := pgwf.SubmitJob(ctx, db, tenantID, parentJobID, pgwf.JobDependencies{NextNeed: parentNeed}, nil, nil, workerID, "", time.Time{}); err != nil {
 		t.Fatalf("submit parent job: %v", err)
 	}
 

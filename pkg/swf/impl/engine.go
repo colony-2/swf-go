@@ -264,10 +264,10 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 		}
 	}
 
-	return jobKey, s.startJob(ctx, jobKey, job.JobType, job.SingletonKey, jobPayload{RunPolicy: jobPolicy})
+	return jobKey, s.startJob(ctx, jobKey, job.JobType, job.SingletonKey, job.Metadata, jobPayload{RunPolicy: jobPolicy})
 }
 
-func (s *swfEngineImpl) startJob(ctx context.Context, jobKey swf.JobKey, jobType string, singletonKey string, payload jobPayload) error {
+func (s *swfEngineImpl) startJob(ctx context.Context, jobKey swf.JobKey, jobType string, singletonKey string, metadata json.RawMessage, payload jobPayload) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -275,7 +275,7 @@ func (s *swfEngineImpl) startJob(ctx context.Context, jobKey swf.JobKey, jobType
 		NextNeed: pgwf.Capability(jobType),
 	}
 	tenantID := pgwf.TenantID(jobKey.TenantId)
-	return pgwf.SubmitJob(ctx, s.pgwfDB(ctx), tenantID, pgwf.JobID(jobKey.JobId), dep, payload, pgwf.WorkerID(s.workerId), singletonKey, time.Time{})
+	return pgwf.SubmitJob(ctx, s.pgwfDB(ctx), tenantID, pgwf.JobID(jobKey.JobId), dep, payload, metadata, pgwf.WorkerID(s.workerId), singletonKey, time.Time{})
 }
 
 func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf.JobKey, error) {
@@ -365,7 +365,7 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 	if err != nil {
 		return swf.JobKey{}, err
 	}
-	return jobKey, s.startJob(ctx, jobKey, jobType, "", jobPayload{RunPolicy: jobPolicy})
+	return jobKey, s.startJob(ctx, jobKey, jobType, "", nil, jobPayload{RunPolicy: jobPolicy})
 }
 
 func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error {
@@ -772,11 +772,17 @@ func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (
 	pgwfStatuses := convertSwfStatusesToPgwf(req.Statuses)
 	includeArchived := shouldIncludeArchived(req.Stores, req.Statuses)
 
+	metadataPredicates, err := swf.PgwfMetadataPredicates(req.MetadataFilter)
+	if err != nil {
+		return swf.ListJobsResponse{}, err
+	}
+
 	opts := pgwf.ListJobsOptions{
 		TenantIDs:       tenantIDs,
 		Statuses:        pgwfStatuses,
 		JobTypePatterns: patterns,
 		IncludeArchived: includeArchived,
+		MetadataEquals:  metadataPredicates,
 		CreatedAfter:    req.CreatedAfter,
 		CreatedBefore:   req.CreatedBefore,
 		Limit:           normalizePageSize(req.PageSize),
@@ -837,6 +843,7 @@ func (s *swfEngineImpl) ListJobs(ctx context.Context, req swf.ListJobsRequest) (
 			CreatedAt:       job.CreatedAt,
 			ArchivedAt:      job.ArchivedAt,
 			Payload:         nil,
+			Metadata:        job.Metadata,
 		})
 	}
 
@@ -884,6 +891,7 @@ func (s *swfEngineImpl) FindTasksWaitingForCapability(ctx context.Context, jobTy
 			jobID:         j.JobID,
 			tenantId:      j.TenantID,
 			payload:       details.Payload,
+			metadata:      details.Metadata,
 			inputOrdinal:  tw.InputStep,
 			outputOrdinal: tw.OutputStep,
 			engine:        s,
@@ -944,6 +952,7 @@ func (s *swfEngineImpl) GetWaitingTask(ctx context.Context, key swf.JobKey) (swf
 		jobID:         job.JobID,
 		tenantId:      key.TenantId,
 		payload:       job.Payload,
+		metadata:      job.Metadata,
 		inputOrdinal:  tw.InputStep,
 		outputOrdinal: tw.OutputStep,
 		engine:        s,

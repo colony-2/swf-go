@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/cenkalti/backoff v2.2.1+incompatible
-	github.com/colony-2/pgwf-go v0.0.0-20260129022805-3144e7d85fce
+	github.com/colony-2/pgwf-go v0.0.0-20260205031304-22973a0704d2
 	github.com/colony-2/strata-go v0.0.0-20251215181525-c51f2cd6b43e
 	github.com/fergusstrange/embedded-postgres v1.32.0
 	github.com/google/uuid v1.6.0
@@ -28,7 +28,7 @@ require (
 	github.com/cockroachdb/pebble v1.0.0 // indirect
 	github.com/cockroachdb/redact v1.0.8 // indirect
 	github.com/cockroachdb/sentry-go v0.6.1-cockroachdb.2 // indirect
-	github.com/colony-2/pgwf v0.0.0-20260129015659-c3b26410e213 // indirect
+	github.com/colony-2/pgwf v0.0.0-20260205023558-5abc9c8562fb // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-chi/chi/v5 v5.0.10 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect

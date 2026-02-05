@@ -20,9 +20,9 @@ import (
 // - Chapters must be written in monotonic order starting at 0
 func TestChapterConstraintsAcrossEngines(t *testing.T) {
 	tests := []struct {
-		name          string
-		setupEngine   func(t *testing.T) (swf.SWFEngine, func())
-		skipReason    string
+		name        string
+		setupEngine func(t *testing.T) (swf.SWFEngine, func())
+		skipReason  string
 	}{
 		{
 			name: "ToyEngine",
@@ -36,7 +36,7 @@ func TestChapterConstraintsAcrossEngines(t *testing.T) {
 			},
 		},
 		{
-			name: "Strata-backed Engine",
+			name:       "Strata-backed Engine",
 			skipReason: "", // Set in individual subtests where needed
 			setupEngine: func(t *testing.T) (swf.SWFEngine, func()) {
 				ctx := context.Background()

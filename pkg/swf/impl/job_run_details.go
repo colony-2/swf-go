@@ -41,6 +41,7 @@ func (s *swfEngineImpl) GetJobRun(ctx context.Context, req swf.GetJobRunRequest)
 			Status:     jobStatus,
 			CreatedAt:  statusInfo.CreatedAt,
 			ArchivedAt: statusInfo.ArchivedAt,
+			Metadata:   statusInfo.Metadata,
 		},
 	}
 

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/segmentio/ksuid"
 )
@@ -62,6 +63,7 @@ type jobRecord struct {
 	createdAt  time.Time
 	archived   *time.Time
 	payload    []byte
+	metadata   json.RawMessage
 	capability string
 	step       int64
 	waitFor    []string
@@ -87,6 +89,121 @@ type pendingTask struct {
 type pendingResult struct {
 	data swf.TaskData
 	err  error
+}
+
+type normalizedMetadataPredicate struct {
+	Path       []string
+	ValuesJSON []string
+}
+
+func normalizeMetadataPredicates(predicates []pgwf.MetadataPredicate) ([]normalizedMetadataPredicate, error) {
+	if len(predicates) == 0 {
+		return nil, nil
+	}
+	normalized := make([]normalizedMetadataPredicate, 0, len(predicates))
+	for i, predicate := range predicates {
+		if len(predicate.Path) == 0 {
+			return nil, fmt.Errorf("metadata predicate %d path is required", i)
+		}
+		for _, segment := range predicate.Path {
+			if segment == "" {
+				return nil, fmt.Errorf("metadata predicate %d path contains empty segment", i)
+			}
+		}
+		if len(predicate.Values) == 0 {
+			return nil, fmt.Errorf("metadata predicate %d values are required", i)
+		}
+		valuesJSON := make([]string, 0, len(predicate.Values))
+		for _, value := range predicate.Values {
+			if value == nil {
+				return nil, fmt.Errorf("metadata predicate %d values cannot contain nil", i)
+			}
+			valueJSON, err := encodeMetadataPredicateValue(value)
+			if err != nil {
+				return nil, fmt.Errorf("metadata predicate %d values invalid: %w", i, err)
+			}
+			valuesJSON = append(valuesJSON, valueJSON)
+		}
+		normalized = append(normalized, normalizedMetadataPredicate{
+			Path:       predicate.Path,
+			ValuesJSON: valuesJSON,
+		})
+	}
+	return normalized, nil
+}
+
+func encodeMetadataPredicateValue(value any) (string, error) {
+	switch v := value.(type) {
+	case json.RawMessage:
+		if !json.Valid(v) {
+			return "", fmt.Errorf("metadata predicate value must be valid JSON")
+		}
+		return string(v), nil
+	case []byte:
+		if !json.Valid(v) {
+			return "", fmt.Errorf("metadata predicate value must be valid JSON")
+		}
+		return string(v), nil
+	default:
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return "", fmt.Errorf("metadata predicate value must be JSON-serializable: %w", err)
+		}
+		return string(encoded), nil
+	}
+}
+
+func metadataValueAtPath(root any, path []string) (any, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	current := root
+	for _, segment := range path {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		next, ok := obj[segment]
+		if !ok {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func metadataMatches(raw json.RawMessage, predicates []normalizedMetadataPredicate) (bool, error) {
+	if len(predicates) == 0 {
+		return true, nil
+	}
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	var metadata any
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return false, fmt.Errorf("metadata must be valid JSON object: %w", err)
+	}
+	for _, predicate := range predicates {
+		value, ok := metadataValueAtPath(metadata, predicate.Path)
+		if !ok {
+			return false, nil
+		}
+		valueJSON, err := encodeMetadataPredicateValue(value)
+		if err != nil {
+			return false, err
+		}
+		matched := false
+		for _, candidate := range predicate.ValuesJSON {
+			if valueJSON == candidate {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // NewToyEngine constructs a ToyEngine with the provided worksets.
@@ -162,6 +279,7 @@ func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobKe
 		singleton: singletonPtr,
 		createdAt: time.Now(),
 		payload:   payloadBytes,
+		metadata:  start.Metadata,
 		chapters:  make(map[int64]*toyChapter),
 	}
 	e.setJobRecord(jobKey, record)
@@ -392,6 +510,11 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 	}
 
 	record.mu.Lock()
+	if len(record.metadata) > 0 {
+		metadataCopy := make([]byte, len(record.metadata))
+		copy(metadataCopy, record.metadata)
+		resp.Job.Metadata = metadataCopy
+	}
 	chapters := make(map[int64]*toyChapter, len(record.chapters))
 	for ord, chap := range record.chapters {
 		chapters[ord] = chap
@@ -736,6 +859,23 @@ func (h *pendingHandle) CreatedAt() time.Time {
 	return record.createdAt
 }
 
+func (h *pendingHandle) Metadata() json.RawMessage {
+	h.engine.mu.Lock()
+	record, ok := h.engine.jobRecords[h.task.jobKey]
+	h.engine.mu.Unlock()
+	if !ok {
+		return json.RawMessage(`{}`)
+	}
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	if len(record.metadata) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	metadataCopy := make([]byte, len(record.metadata))
+	copy(metadataCopy, record.metadata)
+	return metadataCopy
+}
+
 func (h *pendingHandle) Finish(ctx context.Context, taskData swf.TaskData) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -838,6 +978,15 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 
 	if !includeActive && !includeArchive {
 		return swf.ListJobsResponse{}, nil
+	}
+
+	rawPredicates, err := swf.PgwfMetadataPredicates(req.MetadataFilter)
+	if err != nil {
+		return swf.ListJobsResponse{}, err
+	}
+	metadataPredicates, err := normalizeMetadataPredicates(rawPredicates)
+	if err != nil {
+		return swf.ListJobsResponse{}, err
 	}
 
 	var (
@@ -992,11 +1141,28 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			rec.mu.Unlock()
 			continue
 		}
+		if len(metadataPredicates) > 0 {
+			match, err := metadataMatches(rec.metadata, metadataPredicates)
+			if err != nil {
+				rec.mu.Unlock()
+				e.mu.Unlock()
+				return swf.ListJobsResponse{}, err
+			}
+			if !match {
+				rec.mu.Unlock()
+				continue
+			}
+		}
 
 		payloadCopy := json.RawMessage(nil)
 		if len(rec.payload) > 0 {
 			payloadCopy = make([]byte, len(rec.payload))
 			copy(payloadCopy, rec.payload)
+		}
+		metadataCopy := json.RawMessage(nil)
+		if len(rec.metadata) > 0 {
+			metadataCopy = make([]byte, len(rec.metadata))
+			copy(metadataCopy, rec.metadata)
 		}
 		summary := swf.JobSummary{
 			JobKey:          key,
@@ -1011,6 +1177,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.
 			CreatedAt:       rec.createdAt,
 			ArchivedAt:      rec.archived,
 			Payload:         payloadCopy,
+			Metadata:        metadataCopy,
 			TaskWaitInput:   nil,
 			TaskWaitOutput:  nil,
 			TaskWaitNext:    nil,

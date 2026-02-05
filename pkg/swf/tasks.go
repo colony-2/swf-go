@@ -2,6 +2,7 @@ package swf
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -71,6 +72,7 @@ type TaskHandle interface {
 	TaskOrdinalToComplete() int64
 	TaskType() string
 	CreatedAt() time.Time
+	Metadata() json.RawMessage
 }
 
 type TaskCompletion struct {

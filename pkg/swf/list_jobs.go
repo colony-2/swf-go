@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/colony-2/pgwf-go/pkg/pgwf"
 )
 
 // JobSummary is a lightweight view of a job sourced purely from pgwf tables.
@@ -23,6 +25,7 @@ type JobSummary struct {
 	CreatedAt       time.Time
 	ArchivedAt      *time.Time
 	Payload         json.RawMessage
+	Metadata        json.RawMessage
 	TaskWaitInput   *int64
 	TaskWaitOutput  *int64
 	TaskWaitNext    *string
@@ -45,17 +48,238 @@ type JobTaskFilter struct {
 
 // ListJobsRequest filters and paginates the union of active + archived jobs.
 type ListJobsRequest struct {
-	TenantIds     []string
-	Statuses      []JobStatus
-	Stores        []JobStore
-	JobTypes      []string
-	JobTasks      []JobTaskFilter
-	JobKeys       []JobKey
-	SingletonKeys []string
-	CreatedAfter  *time.Time
-	CreatedBefore *time.Time
-	PageSize      int
-	PageToken     string
+	TenantIds      []string
+	Statuses       []JobStatus
+	Stores         []JobStore
+	JobTypes       []string
+	JobTasks       []JobTaskFilter
+	JobKeys        []JobKey
+	SingletonKeys  []string
+	MetadataFilter MetadataFilter
+	CreatedAfter   *time.Time
+	CreatedBefore  *time.Time
+	PageSize       int
+	PageToken      string
+}
+
+type FieldName string
+
+type MetadataFilter interface {
+	AndFilter(MetadataFilter) (MetadataFilter, error)
+	OrFilter(MetadataFilter) (MetadataFilter, error)
+	EqualFilter(FieldName, any) (MetadataFilter, error)
+	metadataFilter()
+}
+
+type metadataEmpty struct{}
+type metadataEqual struct {
+	field FieldName
+	value any
+}
+type metadataOr struct {
+	field  FieldName
+	values []any
+}
+type metadataAnd struct {
+	left  MetadataFilter
+	right MetadataFilter
+}
+
+func Metadata() MetadataFilter {
+	return metadataEmpty{}
+}
+
+func (m metadataEmpty) AndFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	return other, nil
+}
+
+func (m metadataEmpty) OrFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	return other, nil
+}
+
+func (m metadataEmpty) EqualFilter(field FieldName, value any) (MetadataFilter, error) {
+	return newEqualFilter(field, value)
+}
+
+func (m metadataEqual) AndFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	return metadataAnd{left: m, right: other}, nil
+}
+
+func (m metadataEqual) OrFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	switch o := other.(type) {
+	case metadataEqual:
+		if m.field != o.field {
+			return nil, fmt.Errorf("metadata OR requires matching fields")
+		}
+		return metadataOr{field: m.field, values: []any{m.value, o.value}}, nil
+	case metadataOr:
+		if m.field != o.field {
+			return nil, fmt.Errorf("metadata OR requires matching fields")
+		}
+		values := append([]any{m.value}, o.values...)
+		return metadataOr{field: m.field, values: values}, nil
+	default:
+		return nil, fmt.Errorf("metadata OR requires matching fields")
+	}
+}
+
+func (m metadataEqual) EqualFilter(field FieldName, value any) (MetadataFilter, error) {
+	eq, err := newEqualFilter(field, value)
+	if err != nil {
+		return nil, err
+	}
+	return metadataAnd{left: m, right: eq}, nil
+}
+
+func (m metadataOr) AndFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	return metadataAnd{left: m, right: other}, nil
+}
+
+func (m metadataOr) OrFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	switch o := other.(type) {
+	case metadataEqual:
+		if m.field != o.field {
+			return nil, fmt.Errorf("metadata OR requires matching fields")
+		}
+		return metadataOr{field: m.field, values: append(m.values, o.value)}, nil
+	case metadataOr:
+		if m.field != o.field {
+			return nil, fmt.Errorf("metadata OR requires matching fields")
+		}
+		return metadataOr{field: m.field, values: append(m.values, o.values...)}, nil
+	default:
+		return nil, fmt.Errorf("metadata OR requires matching fields")
+	}
+}
+
+func (m metadataOr) EqualFilter(field FieldName, value any) (MetadataFilter, error) {
+	eq, err := newEqualFilter(field, value)
+	if err != nil {
+		return nil, err
+	}
+	return metadataAnd{left: m, right: eq}, nil
+}
+
+func (m metadataAnd) AndFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	return metadataAnd{left: m, right: other}, nil
+}
+
+func (m metadataAnd) OrFilter(other MetadataFilter) (MetadataFilter, error) {
+	if other == nil {
+		return m, nil
+	}
+	return nil, fmt.Errorf("metadata OR requires matching fields")
+}
+
+func (m metadataAnd) EqualFilter(field FieldName, value any) (MetadataFilter, error) {
+	eq, err := newEqualFilter(field, value)
+	if err != nil {
+		return nil, err
+	}
+	return metadataAnd{left: m, right: eq}, nil
+}
+
+func (metadataEmpty) metadataFilter() {}
+func (metadataEqual) metadataFilter() {}
+func (metadataOr) metadataFilter()    {}
+func (metadataAnd) metadataFilter()   {}
+
+func PgwfMetadataPredicates(filter MetadataFilter) ([]pgwf.MetadataPredicate, error) {
+	if filter == nil {
+		return nil, nil
+	}
+	predicates := make([]pgwf.MetadataPredicate, 0)
+	if err := collectMetadataPredicates(filter, &predicates); err != nil {
+		return nil, err
+	}
+	return predicates, nil
+}
+
+func collectMetadataPredicates(filter MetadataFilter, out *[]pgwf.MetadataPredicate) error {
+	switch v := filter.(type) {
+	case metadataEmpty:
+		return nil
+	case metadataEqual:
+		predicate, err := predicateFromEqual(v.field, []any{v.value})
+		if err != nil {
+			return err
+		}
+		*out = append(*out, predicate)
+		return nil
+	case metadataOr:
+		predicate, err := predicateFromEqual(v.field, v.values)
+		if err != nil {
+			return err
+		}
+		*out = append(*out, predicate)
+		return nil
+	case metadataAnd:
+		if err := collectMetadataPredicates(v.left, out); err != nil {
+			return err
+		}
+		return collectMetadataPredicates(v.right, out)
+	default:
+		return fmt.Errorf("unknown metadata filter")
+	}
+}
+
+func newEqualFilter(field FieldName, value any) (MetadataFilter, error) {
+	if err := validateField(field, value); err != nil {
+		return nil, err
+	}
+	return metadataEqual{field: field, value: value}, nil
+}
+
+func predicateFromEqual(field FieldName, values []any) (pgwf.MetadataPredicate, error) {
+	if err := validateField(field, values); err != nil {
+		return pgwf.MetadataPredicate{}, err
+	}
+	clean := make([]any, 0, len(values))
+	for _, value := range values {
+		if value == nil {
+			return pgwf.MetadataPredicate{}, fmt.Errorf("metadata field %q value is required", field)
+		}
+		clean = append(clean, value)
+	}
+	return pgwf.MetadataPredicate{
+		Path:   []string{string(field)},
+		Values: clean,
+	}, nil
+}
+
+func validateField(field FieldName, value any) error {
+	name := strings.TrimSpace(string(field))
+	if name == "" {
+		return fmt.Errorf("metadata field name is required")
+	}
+	if strings.Contains(name, ".") {
+		return fmt.Errorf("metadata field %q must be a top-level field", name)
+	}
+	if value == nil {
+		return fmt.Errorf("metadata field %q value is required", name)
+	}
+	return nil
 }
 
 type ListJobsResponse struct {

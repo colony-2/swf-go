@@ -27,6 +27,7 @@ type JobRunSummary struct {
 	Status     JobStatus
 	CreatedAt  time.Time
 	ArchivedAt *time.Time
+	Metadata   json.RawMessage
 }
 
 type JobStart struct {

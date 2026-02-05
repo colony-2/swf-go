@@ -15,6 +15,7 @@ type taskHandleImpl struct {
 	jobID         string
 	tenantId      string
 	payload       json.RawMessage
+	metadata      json.RawMessage
 	inputOrdinal  int64
 	outputOrdinal int64
 	inputChapter  story.Chapter
@@ -34,6 +35,15 @@ func (h *taskHandleImpl) TaskType() string {
 
 func (h *taskHandleImpl) CreatedAt() time.Time {
 	return h.createdAt
+}
+
+func (h *taskHandleImpl) Metadata() json.RawMessage {
+	if h.metadata == nil {
+		return json.RawMessage(`{}`)
+	}
+	cpy := make(json.RawMessage, len(h.metadata))
+	copy(cpy, h.metadata)
+	return cpy
 }
 
 func (h *taskHandleImpl) chapter() (story.Chapter, error) {
