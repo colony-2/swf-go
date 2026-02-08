@@ -301,6 +301,154 @@ func TestGetJobRunGetOutputCancelled(t *testing.T) {
 	}
 }
 
+func TestGetJobRunJobRetryRepresentation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var attemptCount atomic.Int32
+	jobWorker := &failThenSucceedJobWorker{
+		name:         "job-run-retry",
+		failAttempts: 1,
+		counter:      &attemptCount,
+	}
+	jobWorker.workset = initWorkset(jobWorker)
+
+	embedded, err := StartEmbeddedEngine(ctx, nil)
+	if err != nil {
+		t.Fatalf("start embedded engine: %v", err)
+	}
+	defer embedded.Shutdown()
+
+	engine := embedded.SWFEngine.(*swfEngineImpl)
+	if err := engine.RegisterWorkers(jobWorker.workset); err != nil {
+		t.Fatalf("register workers: %v", err)
+	}
+	go engine.Run(ctx)
+
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  jobWorker.Name(),
+		Data:     swf.NewTaskDataOrPanic(map[string]string{"job": "retry"}),
+		RunPolicy: swf.RunPolicy{
+			Retry: swf.RetryPolicy{
+				MaximumAttempts:    2,
+				BackoffCoefficient: 1.0,
+				InitialInterval:    swf.Duration(10 * time.Millisecond),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobKey, engine); err != nil {
+		t.Fatalf("wait for job complete: %v", err)
+	}
+	if attemptCount.Load() != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attemptCount.Load())
+	}
+
+	resp, err := engine.GetJobRun(ctx, swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("get job run: %v", err)
+	}
+	if len(resp.JobAttempts) != 2 {
+		t.Fatalf("expected 2 job attempts, got %d", len(resp.JobAttempts))
+	}
+	if resp.JobAttempts[0].Attempt != 1 || resp.JobAttempts[1].Attempt != 2 {
+		t.Fatalf("unexpected attempt numbers: %d, %d", resp.JobAttempts[0].Attempt, resp.JobAttempts[1].Attempt)
+	}
+	if resp.JobAttempts[0].Outcome.Status != swf.TaskOutcomeStatusFailed {
+		t.Fatalf("expected first attempt to fail, got %s", resp.JobAttempts[0].Outcome.Status)
+	}
+	if resp.JobAttempts[1].Outcome.Status != swf.TaskOutcomeStatusSucceeded {
+		t.Fatalf("expected second attempt to succeed, got %s", resp.JobAttempts[1].Outcome.Status)
+	}
+	if resp.Result == nil {
+		t.Fatalf("expected job result")
+	}
+	if resp.Result.Attempt != 2 {
+		t.Fatalf("expected result attempt 2, got %d", resp.Result.Attempt)
+	}
+}
+
+func TestGetJobRunTaskRetryRepresentation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var taskAttemptCount atomic.Int32
+	taskWorker := &failThenSucceedTaskWorker{
+		name:         "job-run-retry-task",
+		failAttempts: 1,
+		counter:      &taskAttemptCount,
+	}
+	jobWorker := &taskCallingJobWorkerSimple{
+		name:     "job-run-retry-task-job",
+		taskType: taskWorker.Name(),
+		taskPolicy: swf.RunPolicy{
+			Retry: swf.RetryPolicy{
+				MaximumAttempts:    2,
+				BackoffCoefficient: 1.0,
+				InitialInterval:    swf.Duration(10 * time.Millisecond),
+			},
+		},
+	}
+	ws := initWorkset(jobWorker, taskWorker)
+	jobWorker.workset = ws
+
+	embedded, err := StartEmbeddedEngine(ctx, nil)
+	if err != nil {
+		t.Fatalf("start embedded engine: %v", err)
+	}
+	defer embedded.Shutdown()
+
+	engine := embedded.SWFEngine.(*swfEngineImpl)
+	if err := engine.RegisterWorkers(ws); err != nil {
+		t.Fatalf("register workers: %v", err)
+	}
+	go engine.Run(ctx)
+
+	jobKey, err := engine.StartJob(ctx, swf.StartJob{
+		TenantId: "test-tenant",
+		JobType:  jobWorker.Name(),
+		Data:     swf.NewTaskDataOrPanic(map[string]string{"task": "retry"}),
+	})
+	if err != nil {
+		t.Fatalf("start job: %v", err)
+	}
+
+	if err := swf.WaitForJobToComplete(ctx, 10*time.Second, jobKey, engine); err != nil {
+		t.Fatalf("wait for job complete: %v", err)
+	}
+	if taskAttemptCount.Load() != 2 {
+		t.Fatalf("expected 2 task attempts, got %d", taskAttemptCount.Load())
+	}
+
+	resp, err := engine.GetJobRun(ctx, swf.GetJobRunRequest{JobKey: jobKey})
+	if err != nil {
+		t.Fatalf("get job run: %v", err)
+	}
+	if len(resp.Tasks) != 1 {
+		t.Fatalf("expected 1 task run, got %d", len(resp.Tasks))
+	}
+	taskRun := resp.Tasks[0]
+	if taskRun.TaskType != taskWorker.Name() {
+		t.Fatalf("unexpected task type: %s", taskRun.TaskType)
+	}
+	if len(taskRun.Attempts) != 2 {
+		t.Fatalf("expected 2 task attempts, got %d", len(taskRun.Attempts))
+	}
+	if taskRun.Attempts[0].Attempt != 1 || taskRun.Attempts[1].Attempt != 2 {
+		t.Fatalf("unexpected task attempt numbers: %d, %d", taskRun.Attempts[0].Attempt, taskRun.Attempts[1].Attempt)
+	}
+	if taskRun.Attempts[0].Outcome.Status != swf.TaskOutcomeStatusFailed {
+		t.Fatalf("expected first task attempt to fail, got %s", taskRun.Attempts[0].Outcome.Status)
+	}
+	if taskRun.Attempts[1].Outcome.Status != swf.TaskOutcomeStatusSucceeded {
+		t.Fatalf("expected second task attempt to succeed, got %s", taskRun.Attempts[1].Outcome.Status)
+	}
+}
+
 func extractFieldString(t *testing.T, data json.RawMessage, key string) string {
 	t.Helper()
 	var payload map[string]string

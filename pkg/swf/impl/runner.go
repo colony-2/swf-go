@@ -1019,6 +1019,39 @@ func (r *runner) DoJob(ctx context.Context, lease *pgwf.Lease) {
 		// Check if total timeout has been exceeded
 		if err := r.checkTotalTimeoutExceeded(config.totalDeadline, config.totalTimeout, config.inputRef); err != nil {
 			r.logger.Error("job total timeout", "error", err)
+			jobResultOrdinal := r.storyCounter
+			r.storyCounter++
+			chap, chapErr := r.engine.strata.Chapter(ctx, key, jobResultOrdinal)
+			if chapErr == nil {
+				env, decErr := decodeChapterEnvelope(chap.Body())
+				if decErr != nil {
+					r.logger.Error("decode cached job result failed", "error", decErr)
+					return
+				}
+				if env.Meta.Attempt > 0 {
+					attempt = env.Meta.Attempt + 1
+				}
+				jobResultOrdinal = r.storyCounter
+				r.storyCounter++
+			} else if !errors.Is(chapErr, core.ErrNotFound) {
+				r.logger.Error("failed to check cached job result", "error", chapErr)
+				return
+			}
+
+			payload, artifacts, payloadKind, prepErr := r.prepareJobResultPayload(nil, err, config.inputRef)
+			if prepErr != nil {
+				r.logger.Error(prepErr.Error())
+				return
+			}
+			if saveErr := r.saveJobChapter(key, payload, artifacts, jobResultOrdinal, r.worker.JobWorker.Name(), config.inputRef.Hash, payloadKind, attempt, config.inputRef); saveErr != nil {
+				r.logger.Error(saveErr.Error())
+				return
+			}
+			if len(artifacts) > 0 {
+				cleanupArtifacts(context.TODO(), artifacts, r.logger)
+			}
+			inputArtifacts, _ := inputData.GetArtifacts()
+			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			_ = lease.Complete(ctx, r.engine.udb)
 			return
 		}
@@ -1084,7 +1117,6 @@ func (r *runner) DoJob(ctx context.Context, lease *pgwf.Lease) {
 		// Save the execution result at this ordinal (write-once)
 		if err := r.saveJobChapter(key, payload, artifacts, jobResultOrdinal, r.worker.JobWorker.Name(), config.inputRef.Hash, payloadKind, attempt, config.inputRef); err != nil {
 			r.logger.Error(err.Error())
-			_ = lease.Complete(ctx, r.engine.udb)
 			return
 		}
 		if len(artifacts) > 0 {
