@@ -76,6 +76,7 @@ type toyChapter struct {
 	Input     swf.TaskData
 	Output    swf.TaskData
 	Attempt   int
+	Err       error
 }
 
 type pendingTask struct {
@@ -285,6 +286,46 @@ func (e *ToyEngine) StartJob(ctx context.Context, start swf.StartJob) (swf.JobKe
 	e.setJobRecord(jobKey, record)
 	e.runJob(runCtx, jobKey, ws, swf.JobData(start.Data))
 	return jobKey, nil
+}
+
+// ReplayJobRun executes a job using cached results only.
+func (e *ToyEngine) ReplayJobRun(ctx context.Context, req swf.ReplayRunRequest) (swf.JobData, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := req.JobKey.Validate(); err != nil {
+		return nil, err
+	}
+	record := e.getJobRecord(req.JobKey)
+	if record == nil {
+		return nil, swf.ErrJobNotFound
+	}
+	record.mu.Lock()
+	chap0 := record.chapters[0]
+	jobType := record.jobType
+	record.mu.Unlock()
+	if chap0 == nil || chap0.Input == nil {
+		return nil, swf.ReplayCacheMissError{
+			JobKey:  req.JobKey,
+			Ordinal: 0,
+			Attempt: 1,
+			Reason:  swf.ReplayCacheMissJobResultMissing,
+		}
+	}
+	ws, ok := e.getWorkSet(jobType)
+	if !ok {
+		return nil, fmt.Errorf("job worker %s not registered", jobType)
+	}
+	replayCtx := &toyReplayJobContext{
+		engine:   e,
+		jobKey:   req.JobKey,
+		logger:   e.logger,
+		workSet:  ws,
+		step:     1,
+		cancelCh: ctx.Done(),
+		record:   record,
+	}
+	return ws.JobWorker.Run(replayCtx, chap0.Input)
 }
 
 // RestartJob executes like StartJob but with the provided restart data.
@@ -1377,11 +1418,32 @@ type toyJobContext struct {
 	record   *jobRecord
 }
 
+type toyReplayJobContext struct {
+	engine   *ToyEngine
+	jobKey   swf.JobKey
+	logger   *slog.Logger
+	workSet  swf.WorkSet
+	step     int64
+	cancelCh <-chan struct{}
+	record   *jobRecord
+}
+
 func (c *toyJobContext) GetJobKey() swf.JobKey {
 	return c.jobKey
 }
 
+func (c *toyReplayJobContext) GetJobKey() swf.JobKey {
+	return c.jobKey
+}
+
 func (c *toyJobContext) Logger() *slog.Logger {
+	if c.logger != nil {
+		return c.logger
+	}
+	return slog.Default()
+}
+
+func (c *toyReplayJobContext) Logger() *slog.Logger {
 	if c.logger != nil {
 		return c.logger
 	}
@@ -1482,6 +1544,7 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 					c.record.mu.Lock()
 					if chapter := c.record.chapters[c.step]; chapter != nil {
 						chapter.Output = errorOutputData
+						chapter.Err = err
 					}
 					c.record.mu.Unlock()
 					c.step++
@@ -1524,6 +1587,45 @@ func (c *toyJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskDa
 
 	c.step++
 	return materializedOutputData, nil
+}
+
+func (c *toyReplayJobContext) DoTask(_ swf.RunPolicy, taskType string, data swf.TaskData) (swf.TaskData, error) {
+	select {
+	case <-c.cancelCh:
+		return nil, context.Canceled
+	default:
+	}
+
+	c.record.mu.Lock()
+	chapter := c.record.chapters[c.step]
+	c.record.mu.Unlock()
+	if chapter == nil {
+		return nil, swf.ReplayCacheMissError{
+			JobKey:   c.jobKey,
+			TaskType: taskType,
+			Ordinal:  c.step,
+			Attempt:  1,
+			Reason:   swf.ReplayCacheMissTaskResultMissing,
+		}
+	}
+	if chapter.TaskType != taskType {
+		return nil, fmt.Errorf("%w: unexpected task %s at ordinal %d", swf.ErrWorkflowNotDeterministic, chapter.TaskType, c.step)
+	}
+
+	c.step++
+	if chapter.Err != nil {
+		return nil, chapter.Err
+	}
+	if chapter.Output == nil {
+		return nil, swf.ReplayCacheMissError{
+			JobKey:   c.jobKey,
+			TaskType: taskType,
+			Ordinal:  c.step - 1,
+			Attempt:  1,
+			Reason:   swf.ReplayCacheMissTaskResultMissing,
+		}
+	}
+	return chapter.Output, nil
 }
 
 func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskData) (swf.TaskData, error) {
@@ -1569,6 +1671,11 @@ func (c *toyJobContext) awaitExternalCompletion(taskType string, data swf.TaskDa
 		}
 		c.record.mu.Unlock()
 		if res.err != nil {
+			c.record.mu.Lock()
+			if chapter := c.record.chapters[c.step]; chapter != nil {
+				chapter.Err = res.err
+			}
+			c.record.mu.Unlock()
 			return nil, res.err
 		}
 
@@ -1622,6 +1729,19 @@ func (c *toyJobContext) AwaitDuration(waitFor swf.Duration) error {
 	case <-c.cancelCh:
 		c.markCancelled()
 		return context.Canceled
+	}
+}
+
+func (c *toyReplayJobContext) AwaitDuration(waitFor swf.Duration) error {
+	d := waitFor.ToDuration()
+	if d <= 0 {
+		return nil
+	}
+	return swf.ReplayCacheMissError{
+		JobKey:  c.jobKey,
+		Ordinal: c.step,
+		Attempt: 1,
+		Reason:  swf.ReplayCacheMissAwaitNotReady,
 	}
 }
 
@@ -1696,6 +1816,38 @@ func (c *toyJobContext) AwaitJobs(jobIds ...string) error {
 			return nil
 		}
 	}
+}
+
+func (c *toyReplayJobContext) AwaitJobs(jobIds ...string) error {
+	if len(jobIds) == 0 {
+		return fmt.Errorf("at least one jobId is required")
+	}
+	for _, id := range jobIds {
+		if id == "" {
+			return fmt.Errorf("jobId cannot be empty")
+		}
+		rec := c.engine.getJobRecord(swf.JobKey{TenantId: c.jobKey.TenantId, JobId: id})
+		if rec == nil {
+			return swf.ReplayCacheMissError{
+				JobKey:  c.jobKey,
+				Ordinal: c.step,
+				Attempt: 1,
+				Reason:  swf.ReplayCacheMissAwaitJobsPending,
+			}
+		}
+		rec.mu.Lock()
+		status := rec.status
+		rec.mu.Unlock()
+		if status != swf.JobStatusCompleted && status != swf.JobStatusCancelled {
+			return swf.ReplayCacheMissError{
+				JobKey:  c.jobKey,
+				Ordinal: c.step,
+				Attempt: 1,
+				Reason:  swf.ReplayCacheMissAwaitJobsPending,
+			}
+		}
+	}
+	return nil
 }
 
 // ManipulateStepForTest is a test-only helper to manipulate the step counter

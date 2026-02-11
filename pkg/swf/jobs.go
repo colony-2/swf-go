@@ -76,6 +76,7 @@ type jobRunApi interface {
 	CheckJobStatus(ctx context.Context, jobKey JobKey) (JobStatus, error)
 	GetJobResult(ctx context.Context, jobKey JobKey) (TaskData, error)
 	GetJobRun(ctx context.Context, req GetJobRunRequest) (GetJobRunResponse, error)
+	ReplayJobRun(ctx context.Context, req ReplayRunRequest) (JobData, error)
 }
 
 type EngineBuilder struct {

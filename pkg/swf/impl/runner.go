@@ -29,6 +29,7 @@ type runner struct {
 	jobPolicy    swf.RunPolicy
 	capability   pgwf.Capability
 	workerId     string
+	observer     swf.ReattemptObserver
 	ctx          context.Context
 	// current attempt bookkeeping for job-level Await/Spawn paths.
 	currentInvocationDeadline time.Time
@@ -250,6 +251,7 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 			}
 
 			// Retryable error - wait backoff and continue to next iteration (new ordinal)
+			r.emitTaskReattemptBoundary(taskType, ordinal, priorAttempt, payloadErr, r.storyCounter, priorAttempt+1)
 			backoff := time.Duration(0)
 			if priorAttempt > 0 {
 				backoff = computeBackoff(retryCfg, priorAttempt)
@@ -515,6 +517,7 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 					return nil, err
 				}
 			}
+			r.emitTaskReattemptBoundary(taskType, ordinal, attempt, originalErr, r.storyCounter, attempt+1)
 			// Increment attempt for next iteration
 			attempt++
 			// Continue to next iteration (new ordinal, incremented attempt)
@@ -559,6 +562,38 @@ var _ swf.JobContext = &runner{}
 
 type RunError struct {
 	Err error
+}
+
+func (r *runner) observerOrNoop() swf.ReattemptObserver {
+	if r.observer != nil {
+		return r.observer
+	}
+	return noopReattemptObserver{}
+}
+
+func (r *runner) emitTaskReattemptBoundary(taskType string, prevOrdinal int64, prevAttempt int, prevErr error, nextOrdinal int64, nextAttempt int) {
+	obs := r.observerOrNoop()
+	obs.OnTaskReattemptBoundary(swf.TaskReattemptBoundary{
+		JobKey:                 r.GetJobKey(),
+		TaskType:               taskType,
+		PreviousAttemptOrdinal: prevOrdinal,
+		PreviousAttemptNumber:  prevAttempt,
+		PreviousAttemptError:   prevErr,
+		NextAttemptOrdinal:     nextOrdinal,
+		NextAttemptNumber:      nextAttempt,
+	})
+}
+
+func (r *runner) emitJobReattemptBoundary(prevOrdinal int64, prevAttempt int, prevErr error, nextOrdinal int64, nextAttempt int) {
+	obs := r.observerOrNoop()
+	obs.OnJobReattemptBoundary(swf.JobReattemptBoundary{
+		JobKey:                 r.GetJobKey(),
+		PreviousAttemptOrdinal: prevOrdinal,
+		PreviousAttemptNumber:  prevAttempt,
+		PreviousAttemptError:   prevErr,
+		NextAttemptOrdinal:     nextOrdinal,
+		NextAttemptNumber:      nextAttempt,
+	})
 }
 
 func (r *runner) getChapter(ordinal int64) (story.Chapter, error) {
@@ -761,30 +796,25 @@ func (r *runner) validatePostExecutionTimeouts(jobErr error, attemptInvocationDe
 }
 
 // checkCachedJobResult checks if a cached job result exists and handles retry logic
-// Returns: (output, attempt, cached, terminal, error)
-// - output: the cached result if successful
-// - attempt: the next attempt number
-// - cached: true if a cached result was found
-// - terminal: true if this is a final result (success or non-retryable error)
-// - error: any error encountered
-func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordinal int64, inputHash string, retryCfg swf.RetryPolicy, totalDeadline time.Time, totalTimeout time.Duration, inputRef *swf.InputReference) (swf.JobData, int, bool, bool, error) {
+// Returns: (output, nextAttempt, priorAttempt, cached, terminal, priorErr, err)
+func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordinal int64, inputHash string, retryCfg swf.RetryPolicy, totalDeadline time.Time, totalTimeout time.Duration, inputRef *swf.InputReference) (swf.JobData, int, int, bool, bool, error, error) {
 	maxAttempts := int(retryCfg.MaximumAttempts)
 	cached, err := r.backend.GetJobAttemptOutcome(ctx, key, ordinal)
 	if errors.Is(err, core.ErrNotFound) {
 		// No cached result, need to execute
-		return nil, 1, false, false, nil
+		return nil, 1, 0, false, false, nil, nil
 	}
 	if err != nil {
-		return nil, 0, false, false, fmt.Errorf("failed to get chapter %d: %w", ordinal, err)
+		return nil, 0, 0, false, false, nil, fmt.Errorf("failed to get chapter %d: %w", ordinal, err)
 	}
 
 	// Found cached result
 	env, decErr := decodeChapterEnvelope(cached.Body())
 	if decErr != nil {
-		return nil, 0, false, false, fmt.Errorf("%w: decode cached chapter: %v", swf.ErrWorkflowNotDeterministic, decErr)
+		return nil, 0, 0, false, false, nil, fmt.Errorf("%w: decode cached chapter: %v", swf.ErrWorkflowNotDeterministic, decErr)
 	}
 	if env.ChapterType != chapterTypeJobAttemptOutcome {
-		return nil, 0, false, false, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", swf.ErrWorkflowNotDeterministic, env.ChapterType, ordinal)
+		return nil, 0, 0, false, false, nil, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", swf.ErrWorkflowNotDeterministic, env.ChapterType, ordinal)
 	}
 
 	r.logger.Debug("checking cached job result",
@@ -798,10 +828,10 @@ func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordina
 			"ordinal", ordinal,
 			"cachedInputHash", env.Meta.InputHash,
 			"computedInputHash", inputHash)
-		return nil, 0, false, false, fmt.Errorf("%w: ordinal %d job result input hash mismatch", swf.ErrWorkflowNotDeterministic, ordinal)
+		return nil, 0, 0, false, false, nil, fmt.Errorf("%w: ordinal %d job result input hash mismatch", swf.ErrWorkflowNotDeterministic, ordinal)
 	}
 	if !totalDeadline.IsZero() && time.Now().After(totalDeadline) {
-		return nil, 0, false, false, swf.NewTimeoutError("job", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
+		return nil, 0, 0, false, false, nil, swf.NewTimeoutError("job", totalTimeout, swf.TimeoutScopeTotal, inputRef, false)
 	}
 
 	priorAttempt := env.Meta.Attempt
@@ -815,14 +845,14 @@ func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordina
 	output, payloadErr := envelopeToTaskData(env, artifacts)
 	if payloadErr == nil {
 		// Cached success - terminal
-		return output, nextAttempt, true, true, nil
+		return output, nextAttempt, priorAttempt, true, true, nil, nil
 	}
 
 	// Cached error - check if retryable
 	retryable := isRetryable(payloadErr, retryCfg)
 	if !retryable || priorAttempt >= maxAttempts {
 		// Non-retryable or max attempts - terminal
-		return nil, nextAttempt, true, true, payloadErr
+		return nil, nextAttempt, priorAttempt, true, true, payloadErr, payloadErr
 	}
 
 	// Retryable error - need to wait backoff then retry
@@ -834,13 +864,13 @@ func (r *runner) checkCachedJobResult(ctx context.Context, key story.Key, ordina
 		wakeAt := env.Meta.CreatedAt.Add(backoff)
 		if time.Now().Before(wakeAt) {
 			if err := r.awaitUntil(wakeAt, ordinal, priorAttempt, "job", inputRef, time.Time{}, totalDeadline, 0, totalTimeout); err != nil {
-				return nil, 0, false, false, err
+				return nil, 0, 0, false, false, nil, err
 			}
 		}
 	}
 
 	// After backoff, need to retry (not terminal)
-	return nil, nextAttempt, true, false, nil
+	return nil, nextAttempt, priorAttempt, true, false, payloadErr, nil
 }
 
 // prepareJobResultPayload converts job output or error into a payload and artifacts
@@ -907,7 +937,7 @@ func (r *runner) saveJobChapter(key story.Key, payload json.RawMessage, artifact
 // DoJob executes the job worker with retry logic, timeout handling, and result persistence
 // Follows cache-first pattern: checks for cached result before executing
 // Each retry attempt gets a new ordinal (chapters are write-once)
-func (r *runner) DoJob(ctx context.Context) {
+func (r *runner) DoJob(ctx context.Context) (swf.JobData, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -921,14 +951,14 @@ func (r *runner) DoJob(ctx context.Context) {
 	inputData, env0, err := r.loadInitialChapterAndPolicy()
 	if err != nil {
 		r.logger.Error(err.Error())
-		return
+		return nil, err
 	}
 
 	// Setup execution configuration with timeouts and deadlines
 	config, err := r.setupJobExecutionConfig(ctx, inputData, env0)
 	if err != nil {
 		r.logger.Error(err.Error())
-		return
+		return nil, err
 	}
 
 	key := r.GetJobKey().ToStoryKey()
@@ -947,7 +977,7 @@ func (r *runner) DoJob(ctx context.Context) {
 					env, decErr := decodeChapterEnvelope(chap.Body())
 					if decErr != nil {
 						r.logger.Error("decode cached job result failed", "error", decErr)
-						return
+						return nil, decErr
 					}
 					if env.Meta.TaskType == r.worker.JobWorker.Name() {
 						artifacts := convertStrataArtifacts(chap.Artifacts(), key.StoryID, chap.Ordinal())
@@ -955,21 +985,21 @@ func (r *runner) DoJob(ctx context.Context) {
 							inputArtifacts, _ := inputData.GetArtifacts()
 							cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 							_ = r.lease.Complete(ctx)
-							return
+							return nil, nil
 						}
 						_, payloadErr := envelopeToTaskData(env, artifacts)
 						if payloadErr == nil {
 							inputArtifacts, _ := inputData.GetArtifacts()
 							cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 							_ = r.lease.Complete(ctx)
-							return
+							return nil, nil
 						}
 						retryable := isRetryable(payloadErr, config.retryCfg)
 						if !retryable {
 							inputArtifacts, _ := inputData.GetArtifacts()
 							cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 							_ = r.lease.Complete(ctx)
-							return
+							return nil, payloadErr
 						}
 						if env.Meta.Attempt > 0 {
 							attempt = env.Meta.Attempt + 1
@@ -980,7 +1010,7 @@ func (r *runner) DoJob(ctx context.Context) {
 				}
 				if !errors.Is(chapErr, core.ErrNotFound) {
 					r.logger.Error("failed to check cached job result", "error", chapErr)
-					return
+					return nil, chapErr
 				}
 				break
 			}
@@ -989,11 +1019,11 @@ func (r *runner) DoJob(ctx context.Context) {
 			payload, artifacts, payloadKind, prepErr := r.prepareJobResultPayload(nil, err, config.inputRef)
 			if prepErr != nil {
 				r.logger.Error(prepErr.Error())
-				return
+				return nil, prepErr
 			}
 			if saveErr := r.saveJobChapter(key, payload, artifacts, jobResultOrdinal, r.worker.JobWorker.Name(), config.inputRef.Hash, payloadKind, attempt, config.inputRef); saveErr != nil {
 				r.logger.Error(saveErr.Error())
-				return
+				return nil, saveErr
 			}
 			if len(artifacts) > 0 {
 				cleanupArtifacts(context.TODO(), artifacts, r.logger)
@@ -1001,7 +1031,7 @@ func (r *runner) DoJob(ctx context.Context) {
 			inputArtifacts, _ := inputData.GetArtifacts()
 			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			_ = r.lease.Complete(ctx)
-			return
+			return nil, err
 		}
 
 		// Setup deadlines for this attempt
@@ -1018,7 +1048,7 @@ func (r *runner) DoJob(ctx context.Context) {
 		if output == nil && jobErr == nil {
 			// Job was rescheduled - lease was already updated by DoTask
 			// Exit without saving job result
-			return
+			return nil, nil
 		}
 
 		// Validate timeouts after execution
@@ -1034,10 +1064,10 @@ func (r *runner) DoJob(ctx context.Context) {
 
 		// Check if we already have a cached job result at this ordinal
 		// (e.g., if we crashed after saving the result but before completing the lease)
-		_, nextAttempt, cached, terminal, err := r.checkCachedJobResult(ctx, key, jobResultOrdinal, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)
+		outputCached, nextAttempt, priorAttempt, cached, terminal, priorErr, err := r.checkCachedJobResult(ctx, key, jobResultOrdinal, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)
 		if err != nil {
 			r.logger.Error("check cached job result failed", "error", err)
-			return
+			return nil, err
 		}
 
 		if cached {
@@ -1045,9 +1075,13 @@ func (r *runner) DoJob(ctx context.Context) {
 			if terminal {
 				// Terminal result (success or non-retryable error) - complete and return
 				_ = r.lease.Complete(ctx)
-				return
+				if priorErr != nil {
+					return nil, priorErr
+				}
+				return outputCached, nil
 			}
 			// Retryable error - update attempt number and retry
+			r.emitJobReattemptBoundary(jobResultOrdinal, priorAttempt, priorErr, r.storyCounter, nextAttempt)
 			attempt = nextAttempt
 			// Continue to next iteration for retry
 			continue
@@ -1057,13 +1091,13 @@ func (r *runner) DoJob(ctx context.Context) {
 		payload, artifacts, payloadKind, err := r.prepareJobResultPayload(output, jobErr, config.inputRef)
 		if err != nil {
 			r.logger.Error(err.Error())
-			return
+			return nil, err
 		}
 
 		// Save the execution result at this ordinal (write-once)
 		if err := r.saveJobChapter(key, payload, artifacts, jobResultOrdinal, r.worker.JobWorker.Name(), config.inputRef.Hash, payloadKind, attempt, config.inputRef); err != nil {
 			r.logger.Error(err.Error())
-			return
+			return nil, err
 		}
 		if len(artifacts) > 0 {
 			cleanupArtifacts(context.TODO(), artifacts, r.logger)
@@ -1075,7 +1109,7 @@ func (r *runner) DoJob(ctx context.Context) {
 			inputArtifacts, _ := inputData.GetArtifacts()
 			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			_ = r.lease.Complete(ctx)
-			return
+			return output, nil
 		}
 
 		retryable := isRetryable(jobErr, config.retryCfg)
@@ -1084,7 +1118,7 @@ func (r *runner) DoJob(ctx context.Context) {
 			inputArtifacts, _ := inputData.GetArtifacts()
 			cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 			_ = r.lease.Complete(ctx)
-			return
+			return nil, jobErr
 		}
 
 		// Retryable error and under max attempts - cleanup input artifacts, wait backoff and retry with new ordinal
@@ -1092,12 +1126,13 @@ func (r *runner) DoJob(ctx context.Context) {
 		cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
 
 		backoff := computeBackoff(config.retryCfg, attempt)
+		r.emitJobReattemptBoundary(jobResultOrdinal, attempt, jobErr, r.storyCounter, attempt+1)
 		attempt++
 		if backoff > 0 {
 			now := time.Now().UTC()
 			if err := r.awaitUntil(now.Add(backoff), jobResultOrdinal, attempt-1, "job", config.inputRef, time.Time{}, config.totalDeadline, 0, config.totalTimeout); err != nil {
 				r.logger.Error("job await failed", "error", err)
-				return
+				return nil, err
 			}
 		}
 		// Loop back - will check for next cached job result or execute again

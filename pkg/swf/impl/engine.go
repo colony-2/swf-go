@@ -15,6 +15,7 @@ import (
 	"github.com/cenkalti/backoff"
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	strataclient "github.com/colony-2/strata-go/pkg/client"
+	"github.com/colony-2/strata-go/pkg/client/core"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/google/uuid"
@@ -733,6 +734,63 @@ func (s *swfEngineImpl) GetJobResult(ctx context.Context, jobKey swf.JobKey) (sw
 	return td, nil
 }
 
+func (s *swfEngineImpl) ReplayJobRun(ctx context.Context, req swf.ReplayRunRequest) (swf.JobData, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := req.JobKey.Validate(); err != nil {
+		return nil, err
+	}
+
+	key := req.JobKey.ToStoryKey()
+	chap0, err := s.strata.Chapter(ctx, key, 0)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return nil, swf.ErrJobNotFound
+		}
+		return nil, err
+	}
+	env0, err := decodeChapterEnvelope(chap0.Body())
+	if err != nil {
+		return nil, err
+	}
+	jobType := env0.Meta.TaskType
+	if jobType == "" {
+		return nil, fmt.Errorf("missing job type in initial chapter")
+	}
+
+	ws, ok := s.workSetFor(pgwf.Capability(jobType))
+	if !ok {
+		return nil, fmt.Errorf("job worker %s not registered", jobType)
+	}
+
+	backend := &replayRunnerBackend{engine: s}
+	observer := req.Observer
+	if observer == nil {
+		observer = noopReattemptObserver{}
+	}
+
+	r := runner{
+		jobId:        pgwf.JobID(req.JobKey.JobId),
+		tenantId:     req.JobKey.TenantId,
+		worker:       ws,
+		storyCounter: 1,
+		backend:      backend,
+		lease:        replayLease{},
+		logger:       s.logger.With("jobId", req.JobKey.JobId, "capability", jobType),
+		jobPolicy:    normalizeRunPolicy(swf.RunPolicy{}),
+		capability:   pgwf.Capability(jobType),
+		workerId:     s.workerId,
+		observer:     observer,
+	}
+
+	output, runErr := r.DoJob(ctx)
+	if runErr != nil {
+		return nil, runErr
+	}
+	return output, nil
+}
+
 func (s *swfEngineImpl) GetArtifact(tenantId string, key swf.ArtifactKey) (swf.Artifact, error) {
 	if tenantId == "" {
 		return nil, fmt.Errorf("tenantId is required")
@@ -1070,6 +1128,7 @@ func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
 		jobPolicy:    payload.RunPolicy,
 		capability:   capability,
 		workerId:     s.workerId,
+		observer:     noopReattemptObserver{},
 	}
 	runner.DoJob(ctx)
 	s.resetAwaitState(lease.JobID())
