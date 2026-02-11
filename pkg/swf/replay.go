@@ -79,4 +79,8 @@ type JobEndEvent struct {
 type ReplayRunRequest struct {
 	JobKey   JobKey
 	Observer ReplayObserver // optional
+
+	// Optional job worker override for replay-time instrumentation.
+	// If nil, the registered job worker is used.
+	JobWorker JobWorker
 }

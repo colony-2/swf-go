@@ -15,8 +15,9 @@ This guide explains how to use **ReplayJobRun** to replay a workflow using cache
 ### Go API
 ```go
 type ReplayRunRequest struct {
-    JobKey   swf.JobKey
-    Observer swf.ReplayObserver // optional
+    JobKey    swf.JobKey
+    Observer  swf.ReplayObserver // optional
+    JobWorker swf.JobWorker      // optional override
 }
 
 // Executes a job with cached results only.
@@ -39,7 +40,7 @@ type ReplayObserver interface {
 ## Behavior Details
 
 ### What Replay Does
-- Executes your **job worker** as normal.
+- Executes your **job worker** as normal (or the override passed in `ReplayRunRequest.JobWorker`).
 - When the job worker calls `DoTask`, replay **loads cached results** instead of executing task workers.
 - If a cached task result is missing, replay returns `ReplayCacheMissError` immediately.
 
@@ -47,6 +48,7 @@ type ReplayObserver interface {
 - No chapter writes.
 - No pgwf updates (no lease completion/reschedule).
 - No real task execution.
+- Task workers are never invoked; replay is cache-only.
 - No sleeping or waiting for awaits.
 
 ### Timeouts and Errors

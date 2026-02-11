@@ -784,6 +784,13 @@ func (s *swfEngineImpl) ReplayJobRun(ctx context.Context, req swf.ReplayRunReque
 		observer:     observer,
 	}
 
+	if req.JobWorker != nil {
+		r.worker = &swf.WorkSet{
+			JobWorker:   req.JobWorker,
+			TaskWorkers: ws.TaskWorkers,
+		}
+	}
+
 	output, runErr := r.DoJob(ctx)
 	if runErr != nil {
 		return nil, runErr
