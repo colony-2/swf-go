@@ -24,6 +24,7 @@ type StartJob struct {
 	Data         JobData         // Input data for the job
 	RunPolicy    RunPolicy       // Runtime policy for retries, timeouts, etc.
 	Metadata     json.RawMessage // Optional metadata persisted with the job in pgwf
+	Prerequisites []JobPrerequisite // Optional prerequisites that must complete before this job starts
 }
 
 type RestartJob struct {
@@ -32,6 +33,21 @@ type RestartJob struct {
 	JobID           string   // optional override for new job id
 	ExtraTaskInput  TaskData // optional input used to compute hash for ExtraTaskOutput
 	ExtraTaskOutput TaskData // optional cached task/job output to append at LastStepToKeep+1
+	Prerequisites   []JobPrerequisite // Optional prerequisites that must complete before this job starts
+}
+
+// JobPrereqCondition defines how a prerequisite is evaluated.
+type JobPrereqCondition string
+
+const (
+	JobPrereqComplete JobPrereqCondition = "complete" // job must be archived (any outcome)
+	JobPrereqSuccess  JobPrereqCondition = "success"  // job must be archived + succeeded
+)
+
+// JobPrerequisite declares a dependency on another job.
+type JobPrerequisite struct {
+	JobID     string             // required; same tenant as the parent job
+	Condition JobPrereqCondition // required; default to JobPrereqComplete if empty
 }
 
 type CancelJob struct {

@@ -45,6 +45,7 @@ type chapterMeta struct {
 	Retryable     *bool               `json:"retryable,omitempty"`
 	InputRef      *swf.InputReference `json:"input_ref,omitempty"`
 	RunPolicy     *swf.RunPolicy      `json:"run_policy,omitempty"`
+	Prerequisites []swf.JobPrerequisite `json:"prereqs,omitempty"`
 }
 
 type chapterEnvelope struct {

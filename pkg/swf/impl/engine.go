@@ -193,6 +193,7 @@ type chapterMetadata struct {
 	InputPayload  json.RawMessage
 	StartedAt     *time.Time
 	FinishedAt    *time.Time
+	Prerequisites []swf.JobPrerequisite
 }
 
 func taskDataToChapter(jobData swf.TaskData, ordinal int64, taskType string, workerId string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMetadata) (story.Chapter, error) {
@@ -237,6 +238,10 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 		TenantId: job.TenantId,
 		JobId:    jobId,
 	}
+	prereqs, waitFor, err := normalizePrerequisites(jobKey, job.Prerequisites)
+	if err != nil {
+		return swf.JobKey{}, err
+	}
 	key := jobKey.ToStoryKey()
 	taskData := swf.TaskData(job.Data)
 	inputHash, err := computeInputHash(ctx, taskData)
@@ -248,6 +253,7 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 	jobPolicy = normalizeRunPolicy(jobPolicy)
 	co, err := taskDataToCreatOptions(taskData, 0, job.JobType, s.workerId, chapterTypeJobStart, payloadKindApp, inputHash, now, chapterMetadata{
 		Attempt: 1,
+		Prerequisites: prereqs,
 	})
 	if err != nil {
 		return swf.JobKey{}, err
@@ -267,15 +273,16 @@ func (s *swfEngineImpl) StartJob(ctx context.Context, job swf.StartJob) (swf.Job
 		}
 	}
 
-	return jobKey, s.startJob(ctx, jobKey, job.JobType, job.SingletonKey, job.Metadata, jobPayload{RunPolicy: jobPolicy})
+	return jobKey, s.startJob(ctx, jobKey, job.JobType, job.SingletonKey, job.Metadata, waitFor, jobPayload{RunPolicy: jobPolicy})
 }
 
-func (s *swfEngineImpl) startJob(ctx context.Context, jobKey swf.JobKey, jobType string, singletonKey string, metadata json.RawMessage, payload jobPayload) error {
+func (s *swfEngineImpl) startJob(ctx context.Context, jobKey swf.JobKey, jobType string, singletonKey string, metadata json.RawMessage, waitFor []pgwf.JobID, payload jobPayload) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	dep := pgwf.JobDependencies{
 		NextNeed: pgwf.Capability(jobType),
+		WaitFor:  waitFor,
 	}
 	tenantID := pgwf.TenantID(jobKey.TenantId)
 	return pgwf.SubmitJob(ctx, s.pgwfDB(ctx), tenantID, pgwf.JobID(jobKey.JobId), dep, payload, metadata, pgwf.WorkerID(s.workerId), singletonKey, time.Time{})
@@ -294,6 +301,10 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 	}
 	if jobKey.JobId == "" {
 		jobKey.JobId = ksuid.New().String()
+	}
+	prereqs, waitFor, err := normalizePrerequisites(jobKey, job.Prerequisites)
+	if err != nil {
+		return swf.JobKey{}, err
 	}
 	sourceJob := job.PriorJobKey.ToStoryKey()
 	targetJob := jobKey.ToStoryKey()
@@ -347,8 +358,9 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 		}
 		inputRef := &swf.InputReference{Ordinal: job.LastStepToKeep, Hash: inputHash}
 		meta := chapterMetadata{
-			Attempt:  1,
-			InputRef: inputRef,
+			Attempt:       1,
+			InputRef:      inputRef,
+			Prerequisites: prereqs,
 		}
 
 		// Store provided output as the next chapter after LastStepToKeep.
@@ -364,11 +376,42 @@ func (s *swfEngineImpl) RestartJob(ctx context.Context, job swf.RestartJob) (swf
 		CreateOptions:  createOptions,
 	}
 	_, err = s.strata.CloneStory(ctx, sourceJob, cloneOptions)
-
 	if err != nil {
 		return swf.JobKey{}, err
 	}
-	return jobKey, s.startJob(ctx, jobKey, jobType, "", nil, jobPayload{RunPolicy: jobPolicy})
+	return jobKey, s.startJob(ctx, jobKey, jobType, "", nil, waitFor, jobPayload{RunPolicy: jobPolicy})
+}
+
+func normalizePrerequisites(jobKey swf.JobKey, prereqs []swf.JobPrerequisite) ([]swf.JobPrerequisite, []pgwf.JobID, error) {
+	if len(prereqs) == 0 {
+		return nil, nil, nil
+	}
+	seen := make(map[string]struct{}, len(prereqs))
+	normalized := make([]swf.JobPrerequisite, 0, len(prereqs))
+	waitFor := make([]pgwf.JobID, 0, len(prereqs))
+	for _, p := range prereqs {
+		if strings.TrimSpace(p.JobID) == "" {
+			return nil, nil, fmt.Errorf("prerequisite job id is required")
+		}
+		if p.JobID == jobKey.JobId {
+			return nil, nil, fmt.Errorf("prerequisite job id cannot reference self")
+		}
+		if _, ok := seen[p.JobID]; ok {
+			continue
+		}
+		seen[p.JobID] = struct{}{}
+		if p.Condition == "" {
+			p.Condition = swf.JobPrereqComplete
+		}
+		switch p.Condition {
+		case swf.JobPrereqComplete, swf.JobPrereqSuccess:
+		default:
+			return nil, nil, fmt.Errorf("invalid prerequisite condition %q", p.Condition)
+		}
+		normalized = append(normalized, p)
+		waitFor = append(waitFor, pgwf.JobID(p.JobID))
+	}
+	return normalized, waitFor, nil
 }
 
 func (s *swfEngineImpl) CancelJob(ctx context.Context, job swf.CancelJob) error {
@@ -605,6 +648,9 @@ func payloadToChapter(payload json.RawMessage, artifacts []swf.Artifact, ordinal
 	if metaOpts.FinishedAt != nil {
 		meta.FinishedAt = metaOpts.FinishedAt
 	}
+	if len(metaOpts.Prerequisites) > 0 {
+		meta.Prerequisites = metaOpts.Prerequisites
+	}
 
 	envBytes, err := buildChapterEnvelope(meta, chapterType, payloadKind, payload)
 	if err != nil {
@@ -781,6 +827,7 @@ func (s *swfEngineImpl) ReplayJobRun(ctx context.Context, req swf.ReplayRunReque
 	r := runner{
 		jobId:        pgwf.JobID(req.JobKey.JobId),
 		tenantId:     req.JobKey.TenantId,
+		engine:       nil,
 		worker:       ws,
 		storyCounter: 1,
 		backend:      backend,
@@ -1135,6 +1182,7 @@ func (s *swfEngineImpl) runSomething(ctx context.Context, lease *swf.Lease) {
 	runner := runner{
 		jobId:        lease.JobID(),
 		tenantId:     string(lease.TenantID()),
+		engine:       s,
 		worker:       workSet,
 		storyCounter: 1,
 		backend:      backend,

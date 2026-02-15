@@ -21,6 +21,7 @@ import (
 type runner struct {
 	jobId        pgwf.JobID
 	tenantId     string
+	engine       *swfEngineImpl
 	worker       *swf.WorkSet
 	storyCounter int64
 	backend      swfinternal.RunnerBackend
@@ -212,6 +213,13 @@ func (r *runner) DoTask(policy swf.RunPolicy, taskType string, data swf.TaskData
 				"cachedInputHash", env.Meta.InputHash,
 				"computedInputHash", inputHash,
 				"hashMatch", env.Meta.InputHash == inputHash)
+
+			if env.ChapterType == chapterTypeRestartExtra && r.shouldCheckPrerequisites() && len(env.Meta.Prerequisites) > 0 {
+				if err := r.engine.prerequisitesSucceeded(ctx, r.tenantId, env.Meta.Prerequisites); err != nil {
+					r.emitTaskEnd(taskType, ordinal, attempt, nil, err, metaEndAt(env))
+					return nil, err
+				}
+			}
 
 			if env.Meta.InputHash == "" {
 				r.emitTaskEnd(taskType, ordinal, attempt, nil, fmt.Errorf("%w: ordinal %d task %s missing input hash", swf.ErrMissingInputHash, ordinal, taskType), metaEndAt(env))
@@ -721,6 +729,50 @@ func (r *runner) completeLease(ctx context.Context, err error) {
 	_ = r.lease.CompleteWithStatus(ctx, status, detail)
 }
 
+func (r *runner) shouldCheckPrerequisites() bool {
+	if r.engine == nil || r.lease == nil {
+		return false
+	}
+	if _, ok := r.lease.(replayLease); ok {
+		return false
+	}
+	return true
+}
+
+func (r *runner) checkPrerequisites(ctx context.Context, env0 chapterEnvelope) error {
+	if len(env0.Meta.Prerequisites) == 0 {
+		return nil
+	}
+	return r.engine.prerequisitesSucceeded(ctx, r.tenantId, env0.Meta.Prerequisites)
+}
+
+func (r *runner) failJobPrerequisites(ctx context.Context, inputData swf.JobData, config jobExecutionConfig, err error) (swf.JobData, error) {
+	attempt := 1
+	startAt := time.Now().UTC()
+	r.emitJobStart(attempt, inputData, startAt)
+
+	jobResultOrdinal := r.storyCounter
+	r.storyCounter++
+
+	payload, artifacts, payloadKind, prepErr := r.prepareJobResultPayload(nil, err, config.inputRef)
+	if prepErr != nil {
+		r.logger.Error(prepErr.Error())
+		return nil, prepErr
+	}
+	if saveErr := r.saveJobChapter(r.GetJobKey().ToStoryKey(), payload, artifacts, jobResultOrdinal, r.worker.JobWorker.Name(), config.inputRef.Hash, payloadKind, attempt, config.inputRef, &startAt, &startAt); saveErr != nil {
+		r.logger.Error(saveErr.Error())
+		return nil, saveErr
+	}
+	if len(artifacts) > 0 {
+		cleanupArtifacts(context.TODO(), artifacts, r.logger)
+	}
+	inputArtifacts, _ := inputData.GetArtifacts()
+	cleanupArtifacts(context.TODO(), inputArtifacts, r.logger)
+	r.completeLease(ctx, err)
+	r.emitJobEnd(attempt, nil, err, startAt)
+	return nil, err
+}
+
 func (r *runner) AwaitDuration(waitFor swf.Duration) error {
 	wait := waitFor.ToDuration()
 	if wait <= 0 {
@@ -1079,6 +1131,12 @@ func (r *runner) DoJob(ctx context.Context) (swf.JobData, error) {
 	if err != nil {
 		r.logger.Error(err.Error())
 		return nil, err
+	}
+
+	if r.shouldCheckPrerequisites() {
+		if err := r.checkPrerequisites(ctx, env0); err != nil {
+			return r.failJobPrerequisites(ctx, inputData, config, err)
+		}
 	}
 
 	key := r.GetJobKey().ToStoryKey()

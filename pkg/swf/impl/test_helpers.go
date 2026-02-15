@@ -172,6 +172,7 @@ func newRunnerForTest(engine *swfEngineImpl, lease *pgwf.Lease, ws *swf.WorkSet,
 		capability: cap,
 	}
 	r := &runner{
+		engine:       engine,
 		worker:       ws,
 		storyCounter: 1,
 		backend:      backend,
