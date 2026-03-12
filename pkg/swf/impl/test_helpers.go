@@ -117,15 +117,27 @@ func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.Ta
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
+		stopPG()
 		return nil, err
 	}
+	cleanup := func() {
+		_ = db.Close()
+		stopPG()
+	}
 
-	if err := InstallPGWF(ctx, db); err != nil {
+	// Engine setup can be noticeably slower on some macOS machines.
+	// Avoid coupling bootstrap time to a short caller timeout intended for the test body.
+	setupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	if err := InstallPGWF(setupCtx, db); err != nil {
+		cleanup()
 		return nil, err
 	}
 
 	s, err := StartEmbeddedStrata()
 	if err != nil {
+		cleanup()
 		return nil, err
 	}
 
@@ -144,11 +156,13 @@ func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.Ta
 	engine, err := b.Build(Builder)
 
 	if err != nil {
+		s.Shutdown()
+		cleanup()
 		return nil, err
 	}
 	full := &EmbeddedEngine{
 		SWFEngine:      engine,
-		stopPG:         stopPG,
+		stopPG:         cleanup,
 		strataShutdown: s.Shutdown,
 	}
 
