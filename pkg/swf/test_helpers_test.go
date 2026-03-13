@@ -15,6 +15,7 @@ import (
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
+	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 	directtest "github.com/colony-2/swf-go/pkg/swf/runtime/direct/testsupport"
 )
 
@@ -133,6 +134,22 @@ func buildDirectEngine(t *testing.T, postgresDSN, baseURL, apiKey string, config
 		t.Fatalf("build engine: %v", err)
 	}
 	return engine
+}
+
+func buildToyEngine(t *testing.T, configure func(*swf.EngineBuilder), opts ...toyruntime.Option) (swf.SWFEngine, context.CancelFunc) {
+	t.Helper()
+	runtime := toyruntime.New(opts...)
+	builder := swf.NewEngineBuilder().WithRuntime(runtime)
+	if configure != nil {
+		configure(builder)
+	}
+	engine, err := builder.BuildEngine()
+	if err != nil {
+		t.Fatalf("build toy engine: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go engine.Run(ctx)
+	return engine, cancel
 }
 
 func storyKeyForJob(jobKey swf.JobKey) story.Key {

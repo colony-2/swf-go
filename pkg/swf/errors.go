@@ -5,10 +5,12 @@ import "errors"
 var (
 	ErrWorkflowNotDeterministic = errors.New("workflow was not deterministic")
 	ErrMissingInputHash         = errors.New("workflow deterministic metadata missing input hash")
+	ErrChapterNotFound          = errors.New("chapter not found")
 	ErrJobNotComplete           = errors.New("job not complete")
 	ErrJobFailed                = errors.New("job failed")
 	ErrJobCancelled             = errors.New("job cancelled")
 	ErrJobNotFound              = errors.New("job not found")
+	ErrExecutionLeaseLost       = errors.New("execution lease lost")
 )
 
 // NonRetryableError marks an error as not eligible for retries.
@@ -75,4 +77,10 @@ func IsAppError(err error) bool {
 func IsSystemError(err error) bool {
 	var se systemErrorMarker
 	return errors.As(err, &se)
+}
+
+// IsExecutionLeaseLost reports whether the current worker no longer owns the
+// leased execution and should stop without treating it as a workflow failure.
+func IsExecutionLeaseLost(err error) bool {
+	return errors.Is(err, ErrExecutionLeaseLost)
 }

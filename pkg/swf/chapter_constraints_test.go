@@ -9,11 +9,10 @@ import (
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
-	"github.com/colony-2/swf-go/pkg/swf/toy"
 	_ "github.com/lib/pq"
 )
 
-// TestChapterConstraintsAcrossEngines validates that both ToyEngine and the full
+// TestChapterConstraintsAcrossEngines validates that both the toy and direct
 // Strata-backed engine enforce the same chapter constraints:
 // - Chapters must be written once (no duplicates)
 // - Chapters must be written in monotonic order starting at 0
@@ -24,18 +23,16 @@ func TestChapterConstraintsAcrossEngines(t *testing.T) {
 		skipReason  string
 	}{
 		{
-			name: "ToyEngine",
+			name: "toy",
 			setupEngine: func(t *testing.T) (swf.SWFEngine, func()) {
-				ws, err := swf.AsWorkSet(&deterministicJob{}, &incrementTask{})
-				if err != nil {
-					t.Fatalf("failed to create workset: %v", err)
-				}
-				engine := toy.NewToyEngine([]swf.WorkSet{*ws})
-				return engine, func() {}
+				engine, cancel := buildToyEngine(t, func(b *swf.EngineBuilder) {
+					b.PlusWorkers(&deterministicJob{}, &incrementTask{})
+				})
+				return engine, func() { cancel() }
 			},
 		},
 		{
-			name:       "Strata-backed Engine",
+			name:       "direct",
 			skipReason: "", // Set in individual subtests where needed
 			setupEngine: func(t *testing.T) (swf.SWFEngine, func()) {
 				ctx := context.Background()
@@ -105,17 +102,7 @@ func TestChapterConstraintsAcrossEngines(t *testing.T) {
 				}
 			})
 
-			t.Run("non-deterministic job fails with chapter error", func(t *testing.T) {
-				// For the Strata-backed engine, we can't easily simulate non-deterministic
-				// behavior without manipulating internal state, which isn't accessible.
-				// The Strata backend enforces chapter constraints at the storage layer
-				// (SaveChapter fails if chapter already exists), but testing this requires
-				// a more complex setup involving job restarts or replays.
-				// We rely on ToyEngine tests to verify the constraint behavior.
-				if tt.name == "Strata-backed Engine" {
-					t.Skip("Skipping non-deterministic test for Strata engine - constraint is enforced at storage layer")
-				}
-
+			t.Run("non-deterministic job fails with determinism error", func(t *testing.T) {
 				// Register a non-deterministic job worker
 				ws2, err := swf.AsWorkSet(&nonDeterministicJob{}, &incrementTask{})
 				if err != nil {
@@ -140,17 +127,17 @@ func TestChapterConstraintsAcrossEngines(t *testing.T) {
 				// Wait for job to complete (with timeout for async engines)
 				waitForJobToComplete(t, engine, jobKey)
 
-				// Should have an error result containing "chapter already created"
+				// Should have an error result indicating the replay diverged.
 				_, err = engine.GetJobResult(ctx, jobKey)
 				if err == nil {
 					t.Fatal("expected error from GetJobResult, got nil")
 				}
 
 				errMsg := err.Error()
-				if !strings.Contains(errMsg, "chapter already created") &&
-					!strings.Contains(errMsg, "already exists") &&
-					!strings.Contains(errMsg, "duplicate") {
-					t.Fatalf("expected chapter constraint error, got: %v", err)
+				if !strings.Contains(errMsg, "not deterministic") &&
+					!strings.Contains(errMsg, "input hash mismatch") &&
+					!strings.Contains(errMsg, "workflow was not deterministic") {
+					t.Fatalf("expected determinism error, got: %v", err)
 				}
 			})
 		})
@@ -187,15 +174,10 @@ func (j *nonDeterministicJob) Run(ctx swf.JobContext, data swf.JobData) (swf.Job
 		return nil, err
 	}
 
-	// Execute second task
-	result2, err := ctx.DoTask(swf.RunPolicy{}, "increment", result)
-	if err != nil {
-		return nil, err
-	}
-
 	// Now try to manipulate internal state to execute the same ordinal again
 	// This simulates what happens when a workflow is non-deterministic
-	// For ToyEngine, we'll use type assertion to manipulate the step counter
+	// The shared worker runner exposes a small test hook that allows this test
+	// to force a duplicate ordinal through the actual runtime-backed engine.
 	type stepManipulator interface {
 		ManipulateStepForTest(newStep int64)
 	}
@@ -203,19 +185,16 @@ func (j *nonDeterministicJob) Run(ctx swf.JobContext, data swf.JobData) (swf.Job
 	if manipulator, ok := ctx.(stepManipulator); ok {
 		// Reset step to 1 to try to write chapter 1 again
 		manipulator.ManipulateStepForTest(1)
-		// This should fail with "chapter already created" error
-		_, err := ctx.DoTask(swf.RunPolicy{}, "increment", data)
+		// Re-run the same ordinal with different input so the shared runner
+		// reports a determinism mismatch instead of replaying the cached step.
+		conflictingInput := swf.NewTaskDataOrPanic(map[string]int{"n": 99})
+		_, err := ctx.DoTask(swf.RunPolicy{}, "increment", conflictingInput)
 		if err != nil {
 			return nil, err // Expected error
 		}
-		return nil, swf.AppError{Payload: swf.AppErrorPayload{Message: "expected chapter already created error but got none"}}
+		return nil, swf.AppError{Payload: swf.AppErrorPayload{Message: "expected determinism error but got none"}}
 	}
-
-	// For the full Strata engine, we can't manipulate internal state in the same way.
-	// The full engine enforces chapter constraints at the Strata level, which we
-	// can't easily trigger in a test without restarting the job.
-	// This path means we're on the full engine - just return success for now.
-	return result2, nil
+	return result, nil
 }
 
 // incrementTask increments the "n" field in the input data

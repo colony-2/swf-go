@@ -10,7 +10,6 @@ import (
 	strataclient "github.com/colony-2/strata-go/pkg/client"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
-	"github.com/colony-2/swf-go/pkg/swf/impl"
 )
 
 func TestTaskErrorsAreEnvelopedAndReturned(t *testing.T) {
@@ -22,7 +21,7 @@ func TestTaskErrorsAreEnvelopedAndReturned(t *testing.T) {
 		expectSysError bool
 	}{
 		{name: "app error", taskErr: swf.AppError{Payload: swf.AppErrorPayload{Message: "task app fail"}}, expectedKind: "AppError", expectAppError: true},
-		{name: "system error", taskErr: impl.NewSystemErrorForTest(swf.SystemErrorPayload{Message: "task system fail"}), expectedKind: "SystemError", expectSysError: true},
+		{name: "system error", taskErr: swf.NewSystemError(swf.SystemErrorPayload{Message: "task system fail"}), expectedKind: "SystemError", expectSysError: true},
 	}
 
 	for _, tt := range tests {
@@ -92,7 +91,7 @@ func TestJobErrorsAreEnvelopedAndReturned(t *testing.T) {
 		expectSysError bool
 	}{
 		{name: "job app error", jobErr: swf.AppError{Payload: swf.AppErrorPayload{Message: "job app fail"}}, expectedKind: "AppError", expectAppError: true},
-		{name: "job system error", jobErr: impl.NewSystemErrorForTest(swf.SystemErrorPayload{Message: "job system fail"}), expectedKind: "SystemError", expectSysError: true},
+		{name: "job system error", jobErr: swf.NewSystemError(swf.SystemErrorPayload{Message: "job system fail"}), expectedKind: "SystemError", expectSysError: true},
 	}
 
 	for _, tt := range tests {

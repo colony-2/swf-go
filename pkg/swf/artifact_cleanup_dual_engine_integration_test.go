@@ -10,7 +10,6 @@ import (
 
 	strataclient "github.com/colony-2/strata-go/pkg/client"
 	"github.com/colony-2/swf-go/pkg/swf"
-	"github.com/colony-2/swf-go/pkg/swf/toy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,10 +34,10 @@ func TestArtifactCleanupAcrossEngines(t *testing.T) {
 			taskOrdinal: 1,
 		}
 		taskWorker := &artifactCleanupTask{dir: tempDir, fileNames: fileNames}
-		ws, err := swf.AsWorkSet(jobWorker, taskWorker)
-		require.NoError(t, err)
-		engine := toy.NewToyEngine([]swf.WorkSet{*ws})
-
+		engine, cancel := buildToyEngine(t, func(b *swf.EngineBuilder) {
+			b.PlusWorkers(jobWorker, taskWorker)
+		})
+		defer cancel()
 		runArtifactCleanupScenario(t, ctx, engine, filePaths)
 	})
 

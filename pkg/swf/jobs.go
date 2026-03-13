@@ -190,9 +190,13 @@ func (b *EngineBuilder) BuildEngine() (SWFEngine, error) {
 		i++
 	}
 
-	return b.runtime.BuildEngine(ws, RuntimeBuildOptions{
+	workerEngine, err := newWorkerEngine(b.runtime, ws, RuntimeBuildOptions{
 		Logger:                b.logger,
 		MaxActive:             b.maxActive,
 		AwaitRecycleThreshold: b.awaitRecycle,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return newRuntimeEngine(b.runtime, workerEngine), nil
 }

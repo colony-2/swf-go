@@ -16,6 +16,12 @@ type EmbeddedEngine struct {
 	strataShutdown func()
 }
 
+type EmbeddedRuntime struct {
+	Runtime        *Runtime
+	stopPG         func()
+	strataShutdown func()
+}
+
 func (e *EmbeddedEngine) Shutdown() {
 	if e == nil {
 		return
@@ -24,7 +30,15 @@ func (e *EmbeddedEngine) Shutdown() {
 	e.strataShutdown()
 }
 
-func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.TaskWorker) (*EmbeddedEngine, error) {
+func (e *EmbeddedRuntime) Shutdown() {
+	if e == nil {
+		return
+	}
+	e.stopPG()
+	e.strataShutdown()
+}
+
+func StartEmbeddedRuntime(ctx context.Context) (*EmbeddedRuntime, error) {
 	dsn, stopPG, err := testsupport.StartEmbeddedPostgres()
 	if err != nil {
 		return nil, err
@@ -60,8 +74,21 @@ func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.Ta
 		return nil, err
 	}
 
+	return &EmbeddedRuntime{
+		Runtime:        rt,
+		stopPG:         cleanup,
+		strataShutdown: s.Shutdown,
+	}, nil
+}
+
+func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.TaskWorker) (*EmbeddedEngine, error) {
+	embedded, err := StartEmbeddedRuntime(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	b := swf.NewEngineBuilder().
-		WithRuntime(rt).
+		WithRuntime(embedded.Runtime).
 		WithAwaitRecycleThreshold(5 * time.Second).
 		WithLogger(slog.Default()).
 		WithMaxActive(100)
@@ -71,14 +98,13 @@ func StartEmbeddedEngine(ctx context.Context, job swf.JobWorker, tasks ...swf.Ta
 	}
 	engine, err := b.BuildEngine()
 	if err != nil {
-		s.Shutdown()
-		cleanup()
+		embedded.Shutdown()
 		return nil, err
 	}
 
 	return &EmbeddedEngine{
 		SWFEngine:      engine,
-		stopPG:         cleanup,
-		strataShutdown: s.Shutdown,
+		stopPG:         embedded.stopPG,
+		strataShutdown: embedded.strataShutdown,
 	}, nil
 }

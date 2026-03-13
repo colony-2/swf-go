@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -71,17 +71,18 @@ func StartEmbeddedStrata() (*EmbeddedStrataHandle, error) {
 }
 
 func StartEmbeddedPostgres() (string, func(), error) {
-	pgPort := uint32(20000 + rand.Intn(1000))
+	pgPort, err := freeTCPPort()
+	if err != nil {
+		return "", nil, err
+	}
 	tmpDir, err := os.MkdirTemp("", "pgwf-embedded-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("temp dir: %w", err)
 	}
 	runtimePath := filepath.Join(tmpDir, "runtime")
 	dataPath := filepath.Join(tmpDir, "data")
-	cachePath := filepath.Join(tmpDir, "cache")
 	_ = os.MkdirAll(runtimePath, 0o755)
 	_ = os.MkdirAll(dataPath, 0o755)
-	_ = os.MkdirAll(cachePath, 0o755)
 
 	postgres := embeddedpostgres.NewDatabase(
 		embeddedpostgres.DefaultConfig().
@@ -98,4 +99,18 @@ func StartEmbeddedPostgres() (string, func(), error) {
 	}
 	dsn := fmt.Sprintf("postgres://postgres:postgres@localhost:%d/postgres?sslmode=disable", pgPort)
 	return dsn, stop, nil
+}
+
+func freeTCPPort() (uint32, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("reserve postgres port: %w", err)
+	}
+	defer listener.Close()
+
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return 0, fmt.Errorf("reserve postgres port: unexpected addr type %T", listener.Addr())
+	}
+	return uint32(addr.Port), nil
 }

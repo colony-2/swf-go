@@ -1,26 +1,23 @@
 package toy
 
 import (
-	"github.com/colony-2/swf-go/pkg/swf"
-	toyengine "github.com/colony-2/swf-go/pkg/swf/toy"
+	"log/slog"
+
+	toyimpl "github.com/colony-2/swf-go/pkg/swf/runtime/toy/internal/toyimpl"
 )
 
-// Runtime builds SWF engines backed by the in-memory toy implementation.
-type Runtime struct {
-	opts []toyengine.Option
+type Runtime = toyimpl.Runtime
+type JobIDGenerator = toyimpl.JobIDGenerator
+type Option = toyimpl.Option
+
+func New(opts ...Option) *Runtime {
+	return toyimpl.New(opts...)
 }
 
-func New(opts ...toyengine.Option) *Runtime {
-	cloned := make([]toyengine.Option, len(opts))
-	copy(cloned, opts)
-	return &Runtime{opts: cloned}
+func WithLogger(logger *slog.Logger) Option {
+	return toyimpl.WithLogger(logger)
 }
 
-func (r *Runtime) BuildEngine(workers []swf.WorkSet, opts swf.RuntimeBuildOptions) (swf.SWFEngine, error) {
-	engineOpts := make([]toyengine.Option, 0, len(r.opts)+1)
-	engineOpts = append(engineOpts, r.opts...)
-	if opts.Logger != nil {
-		engineOpts = append(engineOpts, toyengine.WithLogger(opts.Logger))
-	}
-	return toyengine.NewToyEngine(workers, engineOpts...), nil
+func WithJobIDGenerator(gen JobIDGenerator) Option {
+	return toyimpl.WithJobIDGenerator(gen)
 }
