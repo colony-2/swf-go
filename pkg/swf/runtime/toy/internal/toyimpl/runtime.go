@@ -1,11 +1,13 @@
 package toyimpl
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"time"
 
@@ -56,6 +58,15 @@ func (r *Runtime) StartJob(ctx context.Context, req swf.StartJobRequest) (swf.Jo
 	}
 	if err := jobKey.Validate(); err != nil {
 		return swf.JobHandle{}, err
+	}
+	if req.Job.JobID != "" {
+		inputHash, err := swfInputHash(ctx, req.Job.Data)
+		if err != nil {
+			return swf.JobHandle{}, err
+		}
+		if handle, ok, err := r.existingEquivalentJob(jobKey, req.Job, inputHash); ok || err != nil {
+			return handle, err
+		}
 	}
 
 	jobData, storedArtifacts, err := r.materializeTaskData(ctx, jobKey, 0, req.Job.Data)
@@ -136,6 +147,54 @@ func (r *Runtime) StartJob(ctx context.Context, req swf.StartJobRequest) (swf.Jo
 	r.engine.mu.Unlock()
 
 	return swf.JobHandle{JobKey: jobKey}, nil
+}
+
+func (r *Runtime) existingEquivalentJob(jobKey swf.JobKey, job swf.StartJob, inputHash string) (swf.JobHandle, bool, error) {
+	r.engine.mu.Lock()
+	defer r.engine.mu.Unlock()
+
+	record, ok := r.engine.jobRecords[jobKey]
+	if !ok {
+		return swf.JobHandle{}, false, nil
+	}
+	start, ok := r.engine.runtimeChapters[jobKey][0]
+	if !ok {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists without start chapter", jobKey)
+	}
+	if start.TaskType != job.JobType {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists with different job type", jobKey)
+	}
+	if start.InputHash != inputHash {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists with different input", jobKey)
+	}
+	if !bytes.Equal(record.metadata, job.Metadata) {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists with different metadata", jobKey)
+	}
+	if !sameSingletonKey(record.singleton, job.SingletonKey) {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists with different singleton key", jobKey)
+	}
+	runPolicy, err := extractRunPolicyFromMetadata(start.Metadata)
+	if err != nil {
+		return swf.JobHandle{}, false, err
+	}
+	if !reflect.DeepEqual(runPolicy, job.RunPolicy) {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists with different run policy", jobKey)
+	}
+	prereqs, err := extractPrerequisitesFromMetadata(start.Metadata)
+	if err != nil {
+		return swf.JobHandle{}, false, err
+	}
+	if !reflect.DeepEqual(prereqs, job.Prerequisites) {
+		return swf.JobHandle{}, false, fmt.Errorf("job %s already exists with different prerequisites", jobKey)
+	}
+	return swf.JobHandle{JobKey: jobKey}, true, nil
+}
+
+func sameSingletonKey(existing *string, requested string) bool {
+	if existing == nil {
+		return requested == ""
+	}
+	return *existing == requested
 }
 
 func (r *Runtime) RestartJob(ctx context.Context, req swf.RestartJobRequest) (swf.JobHandle, error) {
@@ -785,6 +844,19 @@ func extractRunPolicyFromMetadata(raw json.RawMessage) (swf.RunPolicy, error) {
 		return swf.RunPolicy{}, err
 	}
 	return payload.RunPolicy, nil
+}
+
+func extractPrerequisitesFromMetadata(raw json.RawMessage) ([]swf.JobPrerequisite, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var payload struct {
+		Prereqs []swf.JobPrerequisite `json:"prereqs"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	return append([]swf.JobPrerequisite(nil), payload.Prereqs...), nil
 }
 
 func extractAttemptFromMetadata(raw json.RawMessage) (int, error) {

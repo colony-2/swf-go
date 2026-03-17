@@ -68,6 +68,36 @@ func (j *awaitFailedChildJob) Run(ctx swf.JobContext, data swf.JobData) (swf.Job
 	return result, nil
 }
 
+type awaitFailedChildViaRunOutputJob struct {
+	engine swf.SWFEngine
+}
+
+func (awaitFailedChildViaRunOutputJob) Name() string { return "await-failed-child-run-output" }
+
+func (j *awaitFailedChildViaRunOutputJob) Run(ctx swf.JobContext, data swf.JobData) (swf.JobData, error) {
+	childKey, err := j.engine.StartJob(context.Background(), swf.StartJob{
+		TenantId: ctx.GetJobKey().TenantId,
+		JobType:  "failed-child",
+		JobID:    ctx.GetJobKey().JobId + "-child",
+		Data:     data,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.AwaitJobs(childKey.JobId); err != nil {
+		return nil, err
+	}
+	run, err := j.engine.GetJobRun(context.Background(), swf.GetJobRunRequest{
+		JobKey:           childKey,
+		IncludeOutputs:   true,
+		IncludeArtifacts: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return run.GetOutput(j.engine, childKey.TenantId)
+}
+
 func TestArtifactPassthroughAcrossBuiltInRuntimes(t *testing.T) {
 	ws := swftest.MustWorkSet(t, artifactPassthroughJob{}, artifactPassthroughTask{})
 
@@ -193,5 +223,71 @@ func TestAwaitFailedChildReplayAcrossBuiltInRuntimes(t *testing.T) {
 				t.Fatalf("unexpected replay error %v", replayErr)
 			}
 		})
+	}
+}
+
+func TestToyAwaitFailedChildViaGetJobRunOutputCompletes(t *testing.T) {
+	var toyHarness swftest.RuntimeHarness
+	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
+		if harness.Name == "toy" {
+			toyHarness = harness
+			break
+		}
+	}
+	if toyHarness.Name == "" {
+		t.Fatal("toy runtime harness not found")
+	}
+
+	childStarted := make(chan struct{})
+	releaseChild := make(chan struct{})
+	parent := &awaitFailedChildViaRunOutputJob{}
+	child := failedChildJob{started: childStarted, release: releaseChild}
+
+	childWS := swftest.MustWorkSet(t, child)
+	parentWS := swftest.MustWorkSet(t, parent)
+	built := toyHarness.New(t, childWS, parentWS)
+	defer built.Shutdown(t)
+	parent.engine = built.Engine
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	parentKey, err := built.Engine.StartJob(ctx, swf.StartJob{
+		TenantId: "tenant-await-failed-child-run-output",
+		JobType:  parent.Name(),
+		JobID:    "parent-await-failed-child-run-output",
+		Data:     swftest.NumberTaskData(1),
+	})
+	if err != nil {
+		t.Fatalf("start parent: %v", err)
+	}
+
+	select {
+	case <-childStarted:
+	case <-ctx.Done():
+		t.Fatalf("child did not start: %v", ctx.Err())
+	}
+
+	swftest.WaitForEngineStatus(t, ctx, built.Engine, parentKey, swf.JobStatusPendingJobs)
+	close(releaseChild)
+	swftest.WaitForEngineStatus(t, ctx, built.Engine, parentKey, swf.JobStatusCompleted)
+
+	_, err = built.Engine.GetJobResult(ctx, parentKey)
+	if err == nil {
+		t.Fatal("expected parent result to fail")
+	}
+	if !strings.Contains(err.Error(), "child failed") {
+		t.Fatalf("unexpected parent error %v", err)
+	}
+
+	_, replayErr := built.Engine.ReplayJobRun(ctx, swf.ReplayRunRequest{JobKey: parentKey})
+	if replayErr == nil {
+		t.Fatal("expected replay to surface child failure")
+	}
+	if errors.Is(replayErr, swf.ErrWorkflowNotDeterministic) || strings.Contains(replayErr.Error(), "workflow was not deterministic") {
+		t.Fatalf("unexpected replay determinism error: %v", replayErr)
+	}
+	if !strings.Contains(replayErr.Error(), "child failed") {
+		t.Fatalf("unexpected replay error %v", replayErr)
 	}
 }
