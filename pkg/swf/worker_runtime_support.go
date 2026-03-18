@@ -191,6 +191,9 @@ func storedChapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch StoredCh
 		if err := json.Unmarshal(ch.Data, &p); err != nil {
 			return td, err
 		}
+		if jobFailedErr, ok := decodeJobFailedAppError(p); ok {
+			return td, jobFailedErr
+		}
 		return td, AppError{Payload: p}
 	case payloadKindSystemError:
 		var p SystemErrorPayload

@@ -15,13 +15,13 @@ func (r GetJobRunResponse) GetOutput(engine SWFEngine, tenantId string) (JobData
 	}
 	latest := latestJobAttempt(r.Attempts)
 	if latest.Outcome.Status == TaskOutcomeStatusFailed || latest.Outcome.Error != nil {
-		if latest.Outcome.Error != nil && latest.Outcome.Error.Message != "" {
-			return nil, fmt.Errorf("%w: %s", ErrJobFailed, latest.Outcome.Error.Message)
-		}
-		return nil, ErrJobFailed
+		return nil, jobFailedErrorFromOutcome(latest.Outcome)
 	}
 	if latest.Output == nil {
-		return nil, fmt.Errorf("%w: missing output", ErrJobFailed)
+		return nil, JobFailedError{Cause: AppError{Payload: AppErrorPayload{
+			Message: "missing output",
+			Level:   "error",
+		}}}
 	}
 
 	data := append([]byte(nil), latest.Output.Data...)

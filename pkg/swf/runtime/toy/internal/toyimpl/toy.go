@@ -3,6 +3,7 @@ package toyimpl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -253,6 +254,7 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 	status := record.status
 	finished := record.finished
 	result := record.result
+	jobErr := record.err
 	record.mu.Unlock()
 
 	startSet := false
@@ -300,7 +302,7 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 
 	for _, ord := range ordinals {
 		chap := chapters[ord]
-		if chap == nil || chap.Output == nil {
+		if chap == nil || (chap.Output == nil && chap.Err == nil) {
 			continue
 		}
 
@@ -313,16 +315,23 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 			return swf.GetJobRunResponse{}, err
 		}
 
+		state := swf.TaskAttemptStateSucceeded
+		outcome := swf.TaskOutcome{
+			Status:      swf.TaskOutcomeStatusSucceeded,
+			PayloadKind: "App",
+		}
+		if chap.Err != nil {
+			state = swf.TaskAttemptStateFailed
+			outcome = toyTaskOutcomeFromError(chap.Err)
+		}
+
 		attempt := swf.TaskAttempt{
 			Ordinal: ord,
 			Attempt: 1,
 			Input:   input,
 			Output:  output,
-			State:   swf.TaskAttemptStateSucceeded,
-			Outcome: swf.TaskOutcome{
-				Status:      swf.TaskOutcomeStatusSucceeded,
-				PayloadKind: "App",
-			},
+			State:   state,
+			Outcome: outcome,
 		}
 
 		idx := ensureAttempt(1)
@@ -338,7 +347,7 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 		lastOrdinal = ordinals[len(ordinals)-1]
 	}
 
-	if status == swf.JobStatusCompleted && (result != nil || record.err != nil) {
+	if status == swf.JobStatusCompleted && (result != nil || jobErr != nil) {
 		output, err := buildToyTaskIO(ctx, result, req.JobKey.JobId, lastOrdinal+1, true, includeArtifacts)
 		if err != nil {
 			return swf.GetJobRunResponse{}, err
@@ -347,13 +356,8 @@ func (e *ToyEngine) GetJobRun(ctx context.Context, req swf.GetJobRunRequest) (sw
 			Status:      swf.TaskOutcomeStatusSucceeded,
 			PayloadKind: "App",
 		}
-		if record.err != nil {
-			outcome.Status = swf.TaskOutcomeStatusFailed
-			outcome.PayloadKind = "AppError"
-			outcome.Error = &swf.TaskError{
-				Kind:    swf.TaskErrorKindApp,
-				Message: record.err.Error(),
-			}
+		if jobErr != nil {
+			outcome = toyTaskOutcomeFromError(jobErr)
 		}
 		idx := ensureAttempt(1)
 		attempts[idx].Ordinal = lastOrdinal + 1
@@ -409,6 +413,76 @@ func normalizeToyJobRunOptions(req swf.GetJobRunRequest) (bool, bool, bool, bool
 	return req.IncludeInputs, req.IncludeOutputs, req.IncludeArtifacts, req.IncludeAttemptInputs
 }
 
+func toyTaskOutcomeFromError(err error) swf.TaskOutcome {
+	outcome := swf.TaskOutcome{
+		Status:      swf.TaskOutcomeStatusFailed,
+		PayloadKind: "AppError",
+		Error: &swf.TaskError{
+			Kind:    swf.TaskErrorKindApp,
+			Message: err.Error(),
+		},
+	}
+
+	var jobFailed swf.JobFailedError
+	if errors.As(err, &jobFailed) && jobFailed.Cause != nil {
+		err = jobFailed.Cause
+	}
+
+	var timeoutErr swf.TimeoutError
+	if errors.As(err, &timeoutErr) {
+		outcome.PayloadKind = "Timeout"
+		outcome.Error = &swf.TaskError{
+			Kind:      swf.TaskErrorKindTimeout,
+			Message:   timeoutErr.Payload.Message,
+			Retryable: boolPtr(timeoutErr.Payload.Retryable),
+			Scope:     timeoutErr.Payload.Scope,
+			After:     durationPtr(timeoutErr.Payload.After),
+			InputRef:  timeoutErr.Payload.InputRef,
+			Component: timeoutErr.Payload.Component,
+			Code:      timeoutErr.Payload.Code,
+		}
+		return outcome
+	}
+
+	var systemErr swf.SystemError
+	if errors.As(err, &systemErr) {
+		outcome.PayloadKind = "SystemError"
+		outcome.Error = &swf.TaskError{
+			Kind:       swf.TaskErrorKindSystem,
+			Message:    systemErr.Payload.Message,
+			Component:  systemErr.Payload.Component,
+			Code:       systemErr.Payload.Code,
+			Retryable:  boolPtr(systemErr.Payload.Retryable),
+			InputRef:   systemErr.Payload.InputRef,
+			Stacktrace: append([]string(nil), systemErr.Payload.Stacktrace...),
+		}
+		return outcome
+	}
+
+	var appErr swf.AppError
+	if errors.As(err, &appErr) {
+		outcome.Error = &swf.TaskError{
+			Kind:       swf.TaskErrorKindApp,
+			Message:    appErr.Payload.Message,
+			Level:      appErr.Payload.Level,
+			Attrs:      cloneToyAttrs(appErr.Payload.Attrs),
+			InputRef:   appErr.Payload.InputRef,
+			Stacktrace: append([]string(nil), appErr.Payload.Stacktrace...),
+		}
+		return outcome
+	}
+
+	return outcome
+}
+
+func boolPtr(v bool) *bool {
+	return &v
+}
+
+func durationPtr(v swf.Duration) *swf.Duration {
+	return &v
+}
+
 func buildToyTaskIO(ctx context.Context, data swf.TaskData, jobID string, ordinal int64, includeData bool, includeArtifacts bool) (*swf.TaskIO, error) {
 	if data == nil || (!includeData && !includeArtifacts) {
 		return nil, nil
@@ -436,6 +510,17 @@ func buildToyTaskIO(ctx context.Context, data swf.TaskData, jobID string, ordina
 		return nil, nil
 	}
 	return out, nil
+}
+
+func cloneToyAttrs(attrs map[string]interface{}) map[string]interface{} {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(attrs))
+	for key, value := range attrs {
+		out[key] = value
+	}
+	return out
 }
 
 func buildToyArtifactInfos(ctx context.Context, artifacts []swf.Artifact, jobID string, ordinal int64) ([]swf.ArtifactInfo, error) {

@@ -132,6 +132,10 @@ func computeInputHash(ctx context.Context, taskData TaskData) (string, error) {
 }
 
 func errorPayloadFromError(err error, inputRef *InputReference) (json.RawMessage, string, error) {
+	if raw, kind, tdErr, ok := encodeJobFailedError(err, inputRef); ok {
+		return raw, kind, tdErr
+	}
+
 	var timeoutErr TimeoutError
 	if errors.As(err, &timeoutErr) {
 		payload := timeoutErr.Payload
@@ -198,6 +202,9 @@ func envelopeToTaskData(env chapterEnvelope, artifacts []Artifact) (TaskData, er
 		var p AppErrorPayload
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return td, err
+		}
+		if jobFailedErr, ok := decodeJobFailedAppError(p); ok {
+			return td, jobFailedErr
 		}
 		return td, AppError{Payload: p}
 	case payloadKindSystemError:

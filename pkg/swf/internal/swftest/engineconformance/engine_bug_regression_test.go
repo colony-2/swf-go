@@ -2,8 +2,10 @@ package engineconformance_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,6 +98,121 @@ func (j *awaitFailedChildViaRunOutputJob) Run(ctx swf.JobContext, data swf.JobDa
 		return nil, err
 	}
 	return run.GetOutput(j.engine, childKey.TenantId)
+}
+
+type childRunOutputRetryParentJob struct {
+	branchRuns *atomic.Int32
+}
+
+func (childRunOutputRetryParentJob) Name() string { return "child-run-output-retry-parent" }
+
+func (j childRunOutputRetryParentJob) Run(ctx swf.JobContext, data swf.JobData) (swf.JobData, error) {
+	started, err := ctx.DoTask(swf.RunPolicy{}, "child-run-output-start", data)
+	if err != nil {
+		return nil, err
+	}
+	_, err = ctx.DoTask(swf.RunPolicy{
+		Retry: swf.RetryPolicy{
+			MaximumAttempts:    1,
+			BackoffCoefficient: 1,
+		},
+	}, "child-run-output-finish", started)
+	if err != nil {
+		if errors.Is(err, swf.ErrJobFailed) {
+			return nil, err
+		}
+		if j.branchRuns != nil {
+			j.branchRuns.Add(1)
+		}
+		return ctx.DoTask(swf.RunPolicy{}, "child-run-output-unexpected-branch", data)
+	}
+	return data, nil
+}
+
+type childRunOutputStartTask struct {
+	engine *swf.SWFEngine
+}
+
+func (childRunOutputStartTask) Name() string { return "child-run-output-start" }
+
+func (t childRunOutputStartTask) Run(ctx swf.TaskContext, data swf.TaskData) (swf.TaskData, error) {
+	if t.engine == nil || *t.engine == nil {
+		return nil, errors.New("engine not configured")
+	}
+	childKey, err := (*t.engine).StartJob(context.Background(), swf.StartJob{
+		TenantId:  ctx.JobKey.TenantId,
+		JobType:   "child-run-output-failing-child",
+		Data:      data,
+		RunPolicy: swf.DefaultRunPolicy(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return swf.NewTaskDataOrPanic(map[string]string{"job_id": childKey.JobId}), nil
+}
+
+type childRunOutputFinishTask struct {
+	engine *swf.SWFEngine
+}
+
+func (childRunOutputFinishTask) Name() string { return "child-run-output-finish" }
+
+func (t childRunOutputFinishTask) Run(ctx swf.TaskContext, data swf.TaskData) (swf.TaskData, error) {
+	if t.engine == nil || *t.engine == nil {
+		return nil, errors.New("engine not configured")
+	}
+	raw, err := data.GetData()
+	if err != nil {
+		return nil, err
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	childID := payload["job_id"]
+	if err := ctx.AwaitJobs(childID); err != nil {
+		return nil, err
+	}
+	childKey := swf.JobKey{TenantId: ctx.JobKey.TenantId, JobId: childID}
+	run, err := (*t.engine).GetJobRun(context.Background(), swf.GetJobRunRequest{
+		JobKey:           childKey,
+		IncludeOutputs:   true,
+		IncludeArtifacts: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return run.GetOutput(*t.engine, childKey.TenantId)
+}
+
+type childRunOutputUnexpectedBranchTask struct{}
+
+func (childRunOutputUnexpectedBranchTask) Name() string { return "child-run-output-unexpected-branch" }
+
+func (childRunOutputUnexpectedBranchTask) Run(_ swf.TaskContext, data swf.TaskData) (swf.TaskData, error) {
+	return data, nil
+}
+
+type childRunOutputFailingChildJob struct{}
+
+func (childRunOutputFailingChildJob) Name() string { return "child-run-output-failing-child" }
+
+func (childRunOutputFailingChildJob) Run(ctx swf.JobContext, data swf.JobData) (swf.JobData, error) {
+	return ctx.DoTask(swf.RunPolicy{
+		Retry: swf.RetryPolicy{
+			MaximumAttempts:    1,
+			BackoffCoefficient: 1,
+		},
+	}, "child-run-output-fail-task", data)
+}
+
+type childRunOutputFailTask struct{}
+
+func (childRunOutputFailTask) Name() string { return "child-run-output-fail-task" }
+
+func (childRunOutputFailTask) Run(_ swf.TaskContext, _ swf.TaskData) (swf.TaskData, error) {
+	time.Sleep(150 * time.Millisecond)
+	return nil, swf.AppError{Payload: swf.AppErrorPayload{Message: "child failed", Level: "error"}}
 }
 
 func TestArtifactPassthroughAcrossBuiltInRuntimes(t *testing.T) {
@@ -289,5 +406,119 @@ func TestToyAwaitFailedChildViaGetJobRunOutputCompletes(t *testing.T) {
 	}
 	if !strings.Contains(replayErr.Error(), "child failed") {
 		t.Fatalf("unexpected replay error %v", replayErr)
+	}
+}
+
+func TestGetJobRunOutputErrorShapeStableAcrossBuiltInRuntimes(t *testing.T) {
+	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
+		harness := harness
+		t.Run(harness.Name, func(t *testing.T) {
+			branchRuns := &atomic.Int32{}
+			parent := childRunOutputRetryParentJob{branchRuns: branchRuns}
+			var engineRef swf.SWFEngine
+			parentWS := swftest.MustWorkSet(t, parent, childRunOutputStartTask{engine: &engineRef}, childRunOutputFinishTask{engine: &engineRef}, childRunOutputUnexpectedBranchTask{})
+			childWS := swftest.MustWorkSet(t, childRunOutputFailingChildJob{}, childRunOutputFailTask{})
+
+			built := harness.New(t, parentWS, childWS)
+			defer built.Shutdown(t)
+			engineRef = built.Engine
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			jobKey, err := built.Engine.StartJob(ctx, swf.StartJob{
+				TenantId:  "tenant-job-run-output-shape-" + harness.Name,
+				JobType:   parent.Name(),
+				Data:      swftest.NumberTaskData(1),
+				RunPolicy: swf.DefaultRunPolicy(),
+			})
+			if err != nil {
+				t.Fatalf("start parent: %v", err)
+			}
+
+			swftest.WaitForEngineStatus(t, ctx, built.Engine, jobKey, swf.JobStatusCompleted)
+
+			if branchRuns.Load() != 0 {
+				t.Fatalf("unexpected replay branch executed %d times", branchRuns.Load())
+			}
+
+			_, err = built.Engine.GetJobResult(ctx, jobKey)
+			if err == nil {
+				t.Fatal("expected parent result to fail")
+			}
+			if !errors.Is(err, swf.ErrJobFailed) && !strings.Contains(err.Error(), "child failed") {
+				t.Fatalf("unexpected parent error %v", err)
+			}
+		})
+	}
+}
+
+func TestToyGetJobRunIncludesFailedTaskAttemptForChildOutputFailure(t *testing.T) {
+	var toyHarness swftest.RuntimeHarness
+	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
+		if harness.Name == "toy" {
+			toyHarness = harness
+			break
+		}
+	}
+	if toyHarness.Name == "" {
+		t.Fatal("toy runtime harness not found")
+	}
+
+	branchRuns := &atomic.Int32{}
+	parent := childRunOutputRetryParentJob{branchRuns: branchRuns}
+	var engineRef swf.SWFEngine
+	parentWS := swftest.MustWorkSet(t, parent, childRunOutputStartTask{engine: &engineRef}, childRunOutputFinishTask{engine: &engineRef}, childRunOutputUnexpectedBranchTask{})
+	childWS := swftest.MustWorkSet(t, childRunOutputFailingChildJob{}, childRunOutputFailTask{})
+
+	built := toyHarness.New(t, parentWS, childWS)
+	defer built.Shutdown(t)
+	engineRef = built.Engine
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	jobKey, err := built.Engine.StartJob(ctx, swf.StartJob{
+		TenantId:  "tenant-toy-run-projection",
+		JobType:   parent.Name(),
+		Data:      swftest.NumberTaskData(1),
+		RunPolicy: swf.DefaultRunPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("start parent: %v", err)
+	}
+	swftest.WaitForEngineStatus(t, ctx, built.Engine, jobKey, swf.JobStatusCompleted)
+
+	run, err := built.Engine.GetJobRun(ctx, swf.GetJobRunRequest{
+		JobKey:           jobKey,
+		IncludeInputs:    true,
+		IncludeOutputs:   true,
+		IncludeArtifacts: true,
+	})
+	if err != nil {
+		t.Fatalf("get job run: %v", err)
+	}
+
+	var found bool
+	for _, attempt := range run.Attempts {
+		for _, task := range attempt.Tasks {
+			if task.TaskType != "child-run-output-finish" {
+				continue
+			}
+			for _, taskAttempt := range task.Attempts {
+				if taskAttempt.Outcome.Status == swf.TaskOutcomeStatusFailed {
+					found = true
+					if taskAttempt.Outcome.PayloadKind != "AppError" {
+						t.Fatalf("unexpected payload kind %q", taskAttempt.Outcome.PayloadKind)
+					}
+					if taskAttempt.Outcome.Error == nil || !strings.Contains(taskAttempt.Outcome.Error.Message, "child failed") {
+						t.Fatalf("unexpected task error %+v", taskAttempt.Outcome.Error)
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected failed finish task attempt in toy job run")
 	}
 }

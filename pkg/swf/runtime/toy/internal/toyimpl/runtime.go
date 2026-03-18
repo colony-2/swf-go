@@ -414,10 +414,8 @@ func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) err
 		return nil
 	}
 	td, err := r.taskDataFromStoredChapter(req.Ref.JobKey, req.Chapter)
-	if err != nil {
-		if req.Chapter.ChapterType != "JobAttemptOutcome" {
-			return err
-		}
+	if err != nil && req.Chapter.ChapterType != "JobAttemptOutcome" && td == nil {
+		return err
 	}
 	meta, _ := extractAttemptFromMetadata(req.Chapter.Metadata)
 	record.mu.Lock()
@@ -428,6 +426,7 @@ func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) err
 			Input:     td,
 			Output:    td,
 			Attempt:   meta,
+			Err:       err,
 		}
 	}
 	if req.Chapter.ChapterType == "JobAttemptOutcome" {
@@ -600,6 +599,12 @@ func (r *Runtime) taskDataFromStoredChapter(jobKey swf.JobKey, chapter swf.Store
 		var payload swf.AppErrorPayload
 		if err := json.Unmarshal(chapter.Data, &payload); err != nil {
 			return nil, err
+		}
+		if jobFailedErr, ok := decodeToyJobFailedAppError(payload); ok {
+			return &swf.EnvelopedTaskData{
+				SimpleTaskData: swf.SimpleTaskData{Data: append([]byte(nil), chapter.Data...), Artifacts: artifacts},
+				Kind:           chapter.PayloadKind,
+			}, jobFailedErr
 		}
 		return &swf.EnvelopedTaskData{
 			SimpleTaskData: swf.SimpleTaskData{Data: append([]byte(nil), chapter.Data...), Artifacts: artifacts},
@@ -940,4 +945,90 @@ func cloneJSON(raw json.RawMessage) json.RawMessage {
 	out := make([]byte, len(raw))
 	copy(out, raw)
 	return out
+}
+
+func decodeToyJobFailedAppError(payload swf.AppErrorPayload) (error, bool) {
+	attrs := payload.Attrs
+	if len(attrs) == 0 {
+		return nil, false
+	}
+	raw, ok := attrs["_swf_job_failed"]
+	if !ok {
+		return nil, false
+	}
+	marked, ok := raw.(bool)
+	if !ok || !marked {
+		return nil, false
+	}
+
+	switch kind, _ := attrs["_swf_job_failed_kind"].(string); kind {
+	case swf.TaskErrorKindTimeout:
+		return swf.JobFailedError{Cause: swf.TimeoutError{Payload: swf.TimeoutPayload{
+			Scope:     toyAttrString(attrs, "_swf_job_failed_scope"),
+			After:     toyAttrDuration(attrs, "_swf_job_failed_after"),
+			Retryable: toyAttrBool(attrs, "_swf_job_failed_retryable"),
+			InputRef:  payload.InputRef,
+			Component: toyAttrString(attrs, "_swf_job_failed_component"),
+			Code:      toyAttrString(attrs, "_swf_job_failed_code"),
+			Message:   payload.Message,
+		}}}, true
+	case swf.TaskErrorKindSystem:
+		return swf.JobFailedError{Cause: swf.SystemError{Payload: swf.SystemErrorPayload{
+			Message:    payload.Message,
+			Component:  toyAttrString(attrs, "_swf_job_failed_component"),
+			Code:       toyAttrString(attrs, "_swf_job_failed_code"),
+			Retryable:  toyAttrBool(attrs, "_swf_job_failed_retryable"),
+			InputRef:   payload.InputRef,
+			Stacktrace: append([]string(nil), payload.Stacktrace...),
+		}}}, true
+	default:
+		return swf.JobFailedError{Cause: swf.AppError{Payload: swf.AppErrorPayload{
+			Message:    payload.Message,
+			Level:      payload.Level,
+			Attrs:      toyStripJobFailedAttrs(attrs),
+			InputRef:   payload.InputRef,
+			Stacktrace: append([]string(nil), payload.Stacktrace...),
+		}}}, true
+	}
+}
+
+func toyStripJobFailedAttrs(attrs map[string]interface{}) map[string]interface{} {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]interface{}, len(attrs))
+	for key, value := range attrs {
+		switch key {
+		case "_swf_job_failed", "_swf_job_failed_kind", "_swf_job_failed_code", "_swf_job_failed_component", "_swf_job_failed_retryable", "_swf_job_failed_scope", "_swf_job_failed_after":
+			continue
+		default:
+			out[key] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toyAttrString(attrs map[string]interface{}, key string) string {
+	value, _ := attrs[key].(string)
+	return value
+}
+
+func toyAttrBool(attrs map[string]interface{}, key string) bool {
+	value, _ := attrs[key].(bool)
+	return value
+}
+
+func toyAttrDuration(attrs map[string]interface{}, key string) swf.Duration {
+	value, _ := attrs[key].(string)
+	if value == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0
+	}
+	return swf.Duration(d)
 }
