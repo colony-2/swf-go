@@ -18,6 +18,7 @@ type WorkflowRuntime interface {
 
 	// Worker loop
 	PollWork(ctx context.Context, req PollWorkRequest) ([]ExecutionLease, error)
+	GetJobLease(ctx context.Context, req GetJobLeaseRequest) (ExecutionLease, error)
 	CompleteTaskIfWaiting(ctx context.Context, req CompleteTaskIfWaitingRequest) error
 
 	// Read APIs
@@ -46,7 +47,8 @@ type JobHandle struct {
 	JobKey JobKey
 }
 
-// ExecutionLease represents a leased unit of work returned by PollWork.
+// ExecutionLease represents a leased unit of work returned by PollWork or
+// GetJobLease.
 type ExecutionLease interface {
 	Job() JobHandle
 	Capability() string
@@ -76,10 +78,19 @@ type CancelJobRequest struct {
 }
 
 type PollWorkRequest struct {
+	WorkerID       string
+	Capabilities   []string
+	Limit          int
+	LongPollUntil  *time.Time
+	LeaseDuration  time.Duration
+	MetadataEquals []MetadataPredicate
+}
+
+type GetJobLeaseRequest struct {
+	JobKey        JobKey
 	WorkerID      string
 	Capabilities  []string
-	Limit         int
-	LongPollUntil *time.Time
+	LeaseDuration time.Duration
 }
 
 type CompleteTaskIfWaitingRequest struct {

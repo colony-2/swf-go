@@ -258,10 +258,16 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	if limit <= 0 {
 		limit = 1
 	}
+	opts := pgwf.GetWorkOptions{
+		MetadataEquals: concreteMetadataPredicatesToPgwf(req.MetadataEquals),
+	}
+	if req.LeaseDuration != 0 {
+		opts.LeaseSeconds = durationToLeaseSeconds(req.LeaseDuration)
+	}
 
 	out := make([]swf.ExecutionLease, 0, limit)
 	for i := 0; i < limit; i++ {
-		lease, err := pgwf.GetWork(ctx, r.udb, pgwf.WorkerID(r.requestWorkerID(req.WorkerID)), caps, nil)
+		lease, err := pgwf.GetWorkWithOptions(ctx, r.udb, pgwf.WorkerID(r.requestWorkerID(req.WorkerID)), caps, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -271,6 +277,41 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 		out = append(out, &executionLease{lease: lease, udb: r.udb})
 	}
 	return out, nil
+}
+
+func (r *Runtime) GetJobLease(ctx context.Context, req swf.GetJobLeaseRequest) (swf.ExecutionLease, error) {
+	if err := r.validate(); err != nil {
+		return nil, err
+	}
+	caps := make([]pgwf.Capability, 0, len(req.Capabilities))
+	for _, capName := range req.Capabilities {
+		if capName == "" {
+			continue
+		}
+		caps = append(caps, pgwf.Capability(capName))
+	}
+
+	opts := pgwf.GetJobLeaseOptions{}
+	if req.LeaseDuration != 0 {
+		opts.LeaseSeconds = durationToLeaseSeconds(req.LeaseDuration)
+	}
+
+	lease, err := pgwf.GetJobLeaseWithOptions(
+		ctx,
+		r.udb,
+		pgwf.TenantID(req.JobKey.TenantId),
+		pgwf.JobID(req.JobKey.JobId),
+		pgwf.WorkerID(r.requestWorkerID(req.WorkerID)),
+		caps,
+		opts,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if lease == nil {
+		return nil, nil
+	}
+	return &executionLease{lease: lease, udb: r.udb}, nil
 }
 
 type jobInfoTaskData struct {

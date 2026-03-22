@@ -5,6 +5,7 @@ import (
 	"io"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	strata "github.com/colony-2/strata-go/pkg/client/artifact"
@@ -48,6 +49,35 @@ func metadataPredicatesToPgwf(filter swf.MetadataFilter) ([]pgwf.MetadataPredica
 		})
 	}
 	return out, nil
+}
+
+func concreteMetadataPredicatesToPgwf(predicates []swf.MetadataPredicate) []pgwf.MetadataPredicate {
+	if len(predicates) == 0 {
+		return nil
+	}
+	out := make([]pgwf.MetadataPredicate, 0, len(predicates))
+	for _, predicate := range predicates {
+		values := append([]any(nil), predicate.Values...)
+		out = append(out, pgwf.MetadataPredicate{
+			Path:   append([]string(nil), predicate.Path...),
+			Values: values,
+		})
+	}
+	return out
+}
+
+func durationToLeaseSeconds(d time.Duration) int {
+	if d == 0 {
+		return 0
+	}
+	if d < 0 {
+		return -1
+	}
+	seconds := int((d + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
 }
 
 func fromStrataArtifact(strataArt strata.Artifact) swf.Artifact {

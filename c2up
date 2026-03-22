@@ -1,0 +1,2 @@
+#!/bin/bash
+go get github.com/colony-2/pgwf-go@latest github.com/colony-2/pgwf@latest

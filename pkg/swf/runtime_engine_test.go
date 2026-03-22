@@ -48,6 +48,10 @@ func (r *fakeWorkflowRuntime) PollWork(ctx context.Context, req PollWorkRequest)
 	return nil, nil
 }
 
+func (r *fakeWorkflowRuntime) GetJobLease(ctx context.Context, req GetJobLeaseRequest) (ExecutionLease, error) {
+	return nil, nil
+}
+
 func (r *fakeWorkflowRuntime) CompleteTaskIfWaiting(ctx context.Context, req CompleteTaskIfWaitingRequest) error {
 	r.completeReq = req
 	return nil

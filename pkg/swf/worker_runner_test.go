@@ -84,6 +84,10 @@ func (r *runnerTestRuntime) PollWork(context.Context, PollWorkRequest) ([]Execut
 	return nil, nil
 }
 
+func (r *runnerTestRuntime) GetJobLease(context.Context, GetJobLeaseRequest) (ExecutionLease, error) {
+	return nil, errors.New("unexpected GetJobLease call")
+}
+
 func (r *runnerTestRuntime) CompleteTaskIfWaiting(context.Context, CompleteTaskIfWaitingRequest) error {
 	return errors.New("unexpected CompleteTaskIfWaiting call")
 }

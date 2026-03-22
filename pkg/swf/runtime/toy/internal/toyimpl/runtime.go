@@ -311,6 +311,14 @@ func (r *Runtime) CancelJob(ctx context.Context, req swf.CancelJobRequest) error
 }
 
 func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.ExecutionLease, error) {
+	if req.LeaseDuration < 0 {
+		return nil, fmt.Errorf("lease duration must be >= 0")
+	}
+	metadataPredicates, err := normalizeMetadataPredicates(req.MetadataEquals)
+	if err != nil {
+		return nil, err
+	}
+
 	r.engine.mu.Lock()
 	defer r.engine.mu.Unlock()
 
@@ -337,6 +345,17 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 			record.mu.Unlock()
 			continue
 		}
+		if len(metadataPredicates) > 0 {
+			match, err := metadataMatches(record.metadata, metadataPredicates)
+			if err != nil {
+				record.mu.Unlock()
+				return nil, err
+			}
+			if !match {
+				record.mu.Unlock()
+				continue
+			}
+		}
 		record.leased = true
 		record.status = swf.JobStatusActive
 		record.leaseID = ksuid.New().String()
@@ -354,6 +373,52 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 		}
 	}
 	return out, nil
+}
+
+func (r *Runtime) GetJobLease(ctx context.Context, req swf.GetJobLeaseRequest) (swf.ExecutionLease, error) {
+	if req.LeaseDuration < 0 {
+		return nil, fmt.Errorf("lease duration must be >= 0")
+	}
+
+	capSet := make(map[string]struct{}, len(req.Capabilities))
+	for _, capability := range req.Capabilities {
+		if capability != "" {
+			capSet[capability] = struct{}{}
+		}
+	}
+	if len(capSet) == 0 {
+		return nil, fmt.Errorf("at least one capability is required")
+	}
+
+	r.engine.mu.Lock()
+	defer r.engine.mu.Unlock()
+
+	record := r.engine.jobRecords[req.JobKey]
+	if record == nil {
+		return nil, nil
+	}
+
+	now := time.Now().UTC()
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	r.advanceRecordStateLocked(req.JobKey.TenantId, now, record)
+	if record.leased || record.status != swf.JobStatusReady {
+		return nil, nil
+	}
+	if _, ok := capSet[record.capability]; !ok {
+		return nil, nil
+	}
+
+	record.leased = true
+	record.status = swf.JobStatusActive
+	record.leaseID = ksuid.New().String()
+	return &runtimeLease{
+		runtime:    r,
+		jobKey:     req.JobKey,
+		leaseID:    record.leaseID,
+		capability: record.capability,
+		payload:    cloneJSON(record.payload),
+	}, nil
 }
 
 type jobInfoTaskData struct {

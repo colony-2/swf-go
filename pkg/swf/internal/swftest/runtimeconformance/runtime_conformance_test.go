@@ -348,3 +348,155 @@ func TestWorkflowRuntimeLeaseOperationsOnSupportingRuntimes(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowRuntimePollWorkMetadataFilteringAcrossBuiltInRuntimes(t *testing.T) {
+	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
+		harness := harness
+		t.Run(harness.Name, func(t *testing.T) {
+			built := harness.New(t)
+			defer built.Shutdown(t)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			matching, err := built.Runtime.SubmitJob(ctx, swf.SubmitJobRequest{
+				Job: swf.SubmitJob{
+					TenantId: "tenant-metadata-" + harness.Name,
+					JobID:    "metadata-blue-" + harness.Name,
+					JobType:  "metadata-job",
+					Data:     swftest.NumberTaskData(11),
+					Metadata: json.RawMessage(`{"queue":"blue"}`),
+				},
+				RequestTime: time.Now().UTC(),
+			})
+			if err != nil {
+				t.Fatalf("submit matching job: %v", err)
+			}
+			if _, err := built.Runtime.SubmitJob(ctx, swf.SubmitJobRequest{
+				Job: swf.SubmitJob{
+					TenantId: "tenant-metadata-" + harness.Name,
+					JobID:    "metadata-green-" + harness.Name,
+					JobType:  "metadata-job",
+					Data:     swftest.NumberTaskData(13),
+					Metadata: json.RawMessage(`{"queue":"green"}`),
+				},
+				RequestTime: time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("submit non-matching job: %v", err)
+			}
+
+			leases, err := built.Runtime.PollWork(ctx, swf.PollWorkRequest{
+				WorkerID:      "metadata-worker",
+				Capabilities:  []string{"metadata-job"},
+				Limit:         1,
+				LeaseDuration: 1500 * time.Millisecond,
+				MetadataEquals: []swf.MetadataPredicate{{
+					Path:   []string{"queue"},
+					Values: []any{"blue"},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("poll work with metadata filter: %v", err)
+			}
+			if len(leases) != 1 {
+				t.Fatalf("expected 1 metadata-filtered lease, got %d", len(leases))
+			}
+			if leases[0].Job().JobKey != matching.JobKey {
+				t.Fatalf("unexpected metadata-filtered lease job %+v", leases[0].Job().JobKey)
+			}
+			if err := leases[0].Complete(ctx, swf.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
+				t.Fatalf("complete metadata-filtered lease: %v", err)
+			}
+
+			misses, err := built.Runtime.PollWork(ctx, swf.PollWorkRequest{
+				WorkerID:     "metadata-worker",
+				Capabilities: []string{"metadata-job"},
+				Limit:        1,
+				MetadataEquals: []swf.MetadataPredicate{{
+					Path:   []string{"queue"},
+					Values: []any{"red"},
+				}},
+			})
+			if err != nil {
+				t.Fatalf("poll work with metadata miss filter: %v", err)
+			}
+			if len(misses) != 0 {
+				t.Fatalf("expected no metadata-filtered lease miss, got %d", len(misses))
+			}
+		})
+	}
+}
+
+func TestWorkflowRuntimeGetJobLeaseAcrossBuiltInRuntimes(t *testing.T) {
+	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
+		harness := harness
+		t.Run(harness.Name, func(t *testing.T) {
+			built := harness.New(t)
+			defer built.Shutdown(t)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
+			handle, err := built.Runtime.SubmitJob(ctx, swf.SubmitJobRequest{
+				Job: swf.SubmitJob{
+					TenantId: "tenant-targeted-" + harness.Name,
+					JobID:    "targeted-job-" + harness.Name,
+					JobType:  "targeted-job",
+					Data:     swftest.NumberTaskData(5),
+				},
+				RequestTime: time.Now().UTC(),
+			})
+			if err != nil {
+				t.Fatalf("submit targeted lease job: %v", err)
+			}
+
+			lease, err := built.Runtime.GetJobLease(ctx, swf.GetJobLeaseRequest{
+				JobKey:        handle.JobKey,
+				WorkerID:      "targeted-worker-a",
+				Capabilities:  []string{"targeted-job"},
+				LeaseDuration: 2 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("get job lease: %v", err)
+			}
+			if lease == nil {
+				t.Fatal("expected targeted job lease")
+			}
+			if lease.Job().JobKey != handle.JobKey {
+				t.Fatalf("unexpected targeted lease job %+v", lease.Job().JobKey)
+			}
+			if lease.Capability() != "targeted-job" {
+				t.Fatalf("unexpected targeted lease capability %q", lease.Capability())
+			}
+
+			miss, err := built.Runtime.GetJobLease(ctx, swf.GetJobLeaseRequest{
+				JobKey:       handle.JobKey,
+				WorkerID:     "targeted-worker-b",
+				Capabilities: []string{"targeted-job"},
+			})
+			if err != nil {
+				t.Fatalf("get job lease while leased: %v", err)
+			}
+			if miss != nil {
+				t.Fatalf("expected nil lease while job is already leased, got %+v", miss.Job().JobKey)
+			}
+
+			if err := lease.Complete(ctx, swf.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
+				t.Fatalf("complete targeted lease: %v", err)
+			}
+			swftest.WaitForRuntimeStatus(t, ctx, built.Runtime, handle.JobKey, swf.JobStatusCompleted)
+
+			miss, err = built.Runtime.GetJobLease(ctx, swf.GetJobLeaseRequest{
+				JobKey:       handle.JobKey,
+				WorkerID:     "targeted-worker-c",
+				Capabilities: []string{"targeted-job"},
+			})
+			if err != nil {
+				t.Fatalf("get job lease after completion: %v", err)
+			}
+			if miss != nil {
+				t.Fatalf("expected nil lease after completion, got %+v", miss.Job().JobKey)
+			}
+		})
+	}
+}
