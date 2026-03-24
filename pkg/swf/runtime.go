@@ -50,6 +50,7 @@ type JobHandle struct {
 // ExecutionLease represents a leased unit of work returned by PollWork or
 // GetJobLease.
 type ExecutionLease interface {
+	LeaseID() string
 	Job() JobHandle
 	Capability() string
 	Payload() json.RawMessage
@@ -78,6 +79,7 @@ type CancelJobRequest struct {
 }
 
 type PollWorkRequest struct {
+	TenantIds      []string
 	WorkerID       string
 	Capabilities   []string
 	Limit          int
@@ -135,6 +137,7 @@ type StoredChapter struct {
 }
 
 type PutChapterRequest struct {
+	LeaseID         string
 	Ref             ChapterRef
 	Chapter         StoredChapter
 	ArtifactUploads []ArtifactUpload

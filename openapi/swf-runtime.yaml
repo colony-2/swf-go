@@ -1,4 +1,4 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
   title: SWF Runtime API
   version: 0.1.0
@@ -94,13 +94,11 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListJobsResponse'
-  /v1/tenants/{tenantId}/jobs/poll:
+  /v1/jobs/poll:
     post:
       tags: [leases]
       operationId: pollWork
       summary: Poll work
-      parameters:
-        - $ref: '#/components/parameters/TenantId'
       requestBody:
         required: true
         content:
@@ -521,6 +519,13 @@ components:
       additionalProperties: false
       required: [workerId, capabilities, limit]
       properties:
+        tenantIds:
+          type: array
+          description: Optional single-tenant filter for polling. When omitted, polling spans all tenants visible to the runtime.
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
         workerId:
           type: string
         capabilities:
@@ -563,9 +568,9 @@ components:
       required: [lease]
       properties:
         lease:
-          anyOf:
+          allOf:
             - $ref: '#/components/schemas/ExecutionLease'
-            - type: 'null'
+          nullable: true
           description: Targeted lease when the job is currently leaseable; `null` otherwise.
     ExecutionLease:
       type: object
@@ -620,6 +625,10 @@ components:
           type: integer
           format: int64
           description: Optional guard for the input chapter ordinal.
+        outputOrdinal:
+          type: integer
+          format: int64
+          description: Optional guard for the output chapter ordinal; should match the path ordinal when provided.
         inputHash:
           type: string
           description: Optional guard for deterministic input matching.
@@ -717,8 +726,7 @@ components:
           format: int64
         contentBase64:
           type: string
-          contentEncoding: base64
-          contentMediaType: application/octet-stream
+          format: byte
     ArtifactWrite:
       allOf:
         - $ref: '#/components/schemas/ArtifactUpload'
@@ -758,9 +766,9 @@ components:
         status:
           $ref: '#/components/schemas/JobStatus'
         data:
-          anyOf:
+          allOf:
             - $ref: '#/components/schemas/StoredTaskData'
-            - type: 'null'
+          nullable: true
           description: |
             Terminal task data when materialized. A `null` value should be
             treated as a lazily unavailable `TaskData`, for example when the job
@@ -846,9 +854,11 @@ components:
         jobType:
           type: string
         nextNeed:
-          type: [string, 'null']
+          type: string
+          nullable: true
         singletonKey:
-          type: [string, 'null']
+          type: string
+          nullable: true
         waitFor:
           type: array
           items:
@@ -857,10 +867,12 @@ components:
           type: string
           format: date-time
         expiresAt:
-          type: [string, 'null']
+          type: string
+          nullable: true
           format: date-time
         leaseExpiresAt:
-          type: [string, 'null']
+          type: string
+          nullable: true
           format: date-time
         cancelRequested:
           type: boolean
@@ -868,22 +880,27 @@ components:
           type: string
           format: date-time
         archivedAt:
-          type: [string, 'null']
+          type: string
+          nullable: true
           format: date-time
         payload:
           description: Runtime payload snapshot used by higher-level read models.
         metadata:
           description: Arbitrary JSON metadata persisted with the job.
         taskWaitInput:
-          type: [integer, 'null']
+          type: integer
+          nullable: true
           format: int64
         taskWaitOutput:
-          type: [integer, 'null']
+          type: integer
+          nullable: true
           format: int64
         taskWaitInputHash:
-          type: [string, 'null']
+          type: string
+          nullable: true
         taskWaitNext:
-          type: [string, 'null']
+          type: string
+          nullable: true
     ListJobsResponse:
       type: object
       required: [jobs]

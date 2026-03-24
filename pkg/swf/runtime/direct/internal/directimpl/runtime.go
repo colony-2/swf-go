@@ -244,6 +244,12 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	if err := r.validate(); err != nil {
 		return nil, err
 	}
+	if len(req.TenantIds) > 1 {
+		return nil, fmt.Errorf("at most one tenant_id may be supplied for PollWork")
+	}
+	if len(req.TenantIds) == 1 && req.TenantIds[0] == "" {
+		return nil, fmt.Errorf("tenant_id must be non-empty when supplied for PollWork")
+	}
 	caps := make([]pgwf.Capability, 0, len(req.Capabilities))
 	for _, capName := range req.Capabilities {
 		if capName == "" {
@@ -260,6 +266,9 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	}
 	opts := pgwf.GetWorkOptions{
 		MetadataEquals: concreteMetadataPredicatesToPgwf(req.MetadataEquals),
+	}
+	if len(req.TenantIds) == 1 {
+		opts.TenantIDs = []pgwf.TenantID{pgwf.TenantID(req.TenantIds[0])}
 	}
 	if req.LeaseDuration != 0 {
 		opts.LeaseSeconds = durationToLeaseSeconds(req.LeaseDuration)
@@ -597,6 +606,19 @@ func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) err
 	if err := r.validate(); err != nil {
 		return err
 	}
+	if req.LeaseID == "" {
+		return fmt.Errorf("lease id is required for PutChapter")
+	}
+	job, err := pgwf.GetJob(ctx, r.pgwfDB(ctx), pgwf.TenantID(req.Ref.JobKey.TenantId), pgwf.JobID(req.Ref.JobKey.JobId), pgwf.GetJobOptions{})
+	if err != nil {
+		if errors.Is(err, pgwf.ErrJobNotFound) {
+			return swf.ErrJobNotFound
+		}
+		return err
+	}
+	if job.LeaseID == nil || *job.LeaseID != req.LeaseID {
+		return swf.ErrExecutionLeaseLost
+	}
 	chapter, attached, err := r.prepareChapterWrite(ctx, req)
 	if err != nil {
 		return err
@@ -783,6 +805,10 @@ func (a artifactReader) Name() string                 { return a.art.Name() }
 type executionLease struct {
 	lease *pgwf.Lease
 	udb   *sql.DB
+}
+
+func (l *executionLease) LeaseID() string {
+	return l.lease.LeaseID()
 }
 
 func (l *executionLease) Job() swf.JobHandle {

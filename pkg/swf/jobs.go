@@ -209,6 +209,7 @@ func (b *EngineBuilder) BuildEngine() (SWFEngine, error) {
 	if b.runtime == nil {
 		return nil, fmt.Errorf("workflow runtime is required")
 	}
+	runtime := b.runtime
 
 	ws := make([]WorkSet, len(b.workers))
 	i := 0
@@ -217,7 +218,7 @@ func (b *EngineBuilder) BuildEngine() (SWFEngine, error) {
 		i++
 	}
 
-	workerEngine, err := newWorkerEngine(b.runtime, ws, RuntimeBuildOptions{
+	workerEngine, err := newWorkerEngine(runtime, ws, RuntimeBuildOptions{
 		Logger:                b.logger,
 		MaxActive:             b.maxActive,
 		AwaitRecycleThreshold: b.awaitRecycle,
@@ -225,5 +226,5 @@ func (b *EngineBuilder) BuildEngine() (SWFEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newRuntimeEngine(b.runtime, workerEngine), nil
+	return newRuntimeEngine(runtime, workerEngine), nil
 }

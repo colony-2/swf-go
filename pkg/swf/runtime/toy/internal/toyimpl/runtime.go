@@ -314,6 +314,12 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	if req.LeaseDuration < 0 {
 		return nil, fmt.Errorf("lease duration must be >= 0")
 	}
+	if len(req.TenantIds) > 1 {
+		return nil, fmt.Errorf("at most one tenant_id may be supplied for PollWork")
+	}
+	if len(req.TenantIds) == 1 && req.TenantIds[0] == "" {
+		return nil, fmt.Errorf("tenant_id must be non-empty when supplied for PollWork")
+	}
 	metadataPredicates, err := normalizeMetadataPredicates(req.MetadataEquals)
 	if err != nil {
 		return nil, err
@@ -334,7 +340,14 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	}
 	now := time.Now().UTC()
 	out := make([]swf.ExecutionLease, 0, limit)
+	tenantFilter := ""
+	if len(req.TenantIds) == 1 {
+		tenantFilter = req.TenantIds[0]
+	}
 	for key, record := range r.engine.jobRecords {
+		if tenantFilter != "" && key.TenantId != tenantFilter {
+			continue
+		}
 		record.mu.Lock()
 		r.advanceRecordStateLocked(key.TenantId, now, record)
 		if record.leased || record.status != swf.JobStatusReady {
@@ -527,29 +540,47 @@ func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest)
 }
 
 func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) error {
+	if req.LeaseID == "" {
+		return fmt.Errorf("lease id is required for PutChapter")
+	}
+	record := r.engine.getJobRecord(req.Ref.JobKey)
+	if record == nil {
+		return swf.ErrJobNotFound
+	}
+	record.mu.Lock()
+	if record.leaseID != req.LeaseID {
+		record.mu.Unlock()
+		return swf.ErrExecutionLeaseLost
+	}
+	record.mu.Unlock()
+
 	chapter, err := r.prepareChapterWrite(ctx, req)
 	if err != nil {
 		return err
 	}
+	return r.storeRuntimeChapter(req.Ref.JobKey, req.Ref.Ordinal, chapter)
+}
+
+func (r *Runtime) storeRuntimeChapter(jobKey swf.JobKey, ordinal int64, chapter swf.StoredChapter) error {
 	r.engine.mu.Lock()
-	if r.engine.runtimeChapters[req.Ref.JobKey] == nil {
-		r.engine.runtimeChapters[req.Ref.JobKey] = make(map[int64]swf.StoredChapter)
+	if r.engine.runtimeChapters[jobKey] == nil {
+		r.engine.runtimeChapters[jobKey] = make(map[int64]swf.StoredChapter)
 	}
-	r.engine.runtimeChapters[req.Ref.JobKey][req.Ref.Ordinal] = cloneStoredChapter(chapter)
-	record := r.engine.jobRecords[req.Ref.JobKey]
+	r.engine.runtimeChapters[jobKey][ordinal] = cloneStoredChapter(chapter)
+	record := r.engine.jobRecords[jobKey]
 	r.engine.mu.Unlock()
 
 	if record == nil {
 		return nil
 	}
-	td, err := r.taskDataFromStoredChapter(req.Ref.JobKey, chapter)
+	td, err := r.taskDataFromStoredChapter(jobKey, chapter)
 	if err != nil && chapter.ChapterType != "JobAttemptOutcome" && td == nil {
 		return err
 	}
 	meta, _ := extractAttemptFromMetadata(chapter.Metadata)
 	record.mu.Lock()
 	if chapter.ChapterType != "JobAttemptOutcome" {
-		record.chapters[req.Ref.Ordinal] = &toyChapter{
+		record.chapters[ordinal] = &toyChapter{
 			TaskType:  chapter.TaskType,
 			CreatedAt: chapter.CreatedAt,
 			Input:     td,
@@ -568,7 +599,7 @@ func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) err
 				Kind: chapter.PayloadKind,
 			}
 		}
-		_, resultErr := r.taskDataFromStoredChapter(req.Ref.JobKey, chapter)
+		_, resultErr := r.taskDataFromStoredChapter(jobKey, chapter)
 		record.err = resultErr
 	}
 	record.mu.Unlock()
@@ -926,6 +957,7 @@ type runtimeLease struct {
 	payload    json.RawMessage
 }
 
+func (l *runtimeLease) LeaseID() string          { return l.leaseID }
 func (l *runtimeLease) Job() swf.JobHandle       { return swf.JobHandle{JobKey: l.jobKey} }
 func (l *runtimeLease) Capability() string       { return l.capability }
 func (l *runtimeLease) Payload() json.RawMessage { return append(json.RawMessage(nil), l.payload...) }
@@ -1037,19 +1069,16 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTas
 	if taskType == "" || taskType == currentCapability {
 		return fmt.Errorf("task type not found in capability")
 	}
-	if err := r.PutChapter(ctx, swf.PutChapterRequest{
-		Ref: swf.ChapterRef{JobKey: req.JobKey, Ordinal: wait.OutputStep},
-		Chapter: swf.StoredChapter{
-			Ordinal:     wait.OutputStep,
-			TaskType:    taskType,
-			ChapterType: "TaskAttemptOutcome",
-			PayloadKind: "App",
-			InputHash:   wait.InputHash,
-			CreatedAt:   time.Now().UTC(),
-			Metadata:    metaJSON,
-			Data:        append(json.RawMessage(nil), dataPayload...),
-			Artifacts:   storedArtifacts,
-		},
+	if err := r.storeRuntimeChapter(req.JobKey, wait.OutputStep, swf.StoredChapter{
+		Ordinal:     wait.OutputStep,
+		TaskType:    taskType,
+		ChapterType: "TaskAttemptOutcome",
+		PayloadKind: "App",
+		InputHash:   wait.InputHash,
+		CreatedAt:   time.Now().UTC(),
+		Metadata:    metaJSON,
+		Data:        append(json.RawMessage(nil), dataPayload...),
+		Artifacts:   storedArtifacts,
 	}); err != nil {
 		return err
 	}

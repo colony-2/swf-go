@@ -201,7 +201,7 @@ func storedChapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch StoredCh
 	}
 }
 
-func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, ref ChapterRef, taskType string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMeta, payload json.RawMessage, artifacts []Artifact) (TaskData, error) {
+func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, leaseID string, ref ChapterRef, taskType string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMeta, payload json.RawMessage, artifacts []Artifact) (TaskData, error) {
 	uploads, storedArtifacts, err := artifactUploadsForChapterWrite(ctx, artifacts)
 	if err != nil {
 		return nil, err
@@ -233,6 +233,7 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, ref Ch
 		Artifacts:   storedArtifacts,
 	}
 	if err := runtime.PutChapter(ctx, PutChapterRequest{
+		LeaseID:         leaseID,
 		Ref:             ref,
 		Chapter:         chapter,
 		ArtifactUploads: uploads,

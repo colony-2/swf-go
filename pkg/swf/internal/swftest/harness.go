@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
+	remoteruntime "github.com/colony-2/swf-go/pkg/swf/runtime/remote"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 )
 
@@ -67,6 +69,25 @@ func BuiltInRuntimeHarnesses() []RuntimeHarness {
 			SupportsRuntimeStorage: true,
 			StartsWorkerLoop:       true,
 			New:                    newDirectHarness,
+		},
+	}
+}
+
+func RemoteRuntimeHarnesses() []RuntimeHarness {
+	return []RuntimeHarness{
+		{
+			Name:                   "remote-toy",
+			SupportsLeases:         false,
+			SupportsRuntimeStorage: true,
+			StartsWorkerLoop:       true,
+			New:                    newRemoteToyHarness,
+		},
+		{
+			Name:                   "remote-direct",
+			SupportsLeases:         true,
+			SupportsRuntimeStorage: true,
+			StartsWorkerLoop:       true,
+			New:                    newRemoteDirectHarness,
 		},
 	}
 }
@@ -279,6 +300,38 @@ func newDirectHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness
 		t.Fatalf("start embedded direct runtime: %v", err)
 	}
 	return buildHarness(t, "direct", embedded.Runtime, true, embedded.Shutdown, workers...)
+}
+
+func newRemoteToyHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {
+	t.Helper()
+	underlying := toyruntime.New()
+	server := httptest.NewServer(remoteruntime.NewServer(underlying))
+	runtime, err := remoteruntime.New(server.URL, server.Client())
+	if err != nil {
+		server.Close()
+		t.Fatalf("build remote toy runtime: %v", err)
+	}
+	return buildHarness(t, "remote-toy", runtime, true, server.Close, workers...)
+}
+
+func newRemoteDirectHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {
+	t.Helper()
+	embedded, err := directruntime.StartEmbeddedRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("start embedded direct runtime: %v", err)
+	}
+	server := httptest.NewServer(remoteruntime.NewServer(embedded.Runtime))
+	runtime, err := remoteruntime.New(server.URL, server.Client())
+	if err != nil {
+		server.Close()
+		embedded.Shutdown()
+		t.Fatalf("build remote direct runtime: %v", err)
+	}
+	shutdown := func() {
+		server.Close()
+		embedded.Shutdown()
+	}
+	return buildHarness(t, "remote-direct", runtime, true, shutdown, workers...)
 }
 
 func buildHarness(t *testing.T, name string, runtime swf.WorkflowRuntime, startLoop bool, shutdown func(), workers ...swf.WorkSet) *BuiltRuntimeHarness {

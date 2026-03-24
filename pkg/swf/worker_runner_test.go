@@ -286,6 +286,7 @@ func (r runnerTestArtifactReader) Size() int64  { return int64(len(r.data)) }
 func (r runnerTestArtifactReader) Name() string { return r.name }
 
 type fakeExecutionLease struct {
+	leaseID    string
 	job        JobHandle
 	capability string
 	payload    json.RawMessage
@@ -299,6 +300,7 @@ type fakeExecutionLease struct {
 	rescheduleErr      error
 }
 
+func (l *fakeExecutionLease) LeaseID() string { return l.leaseID }
 func (l *fakeExecutionLease) Job() JobHandle     { return l.job }
 func (l *fakeExecutionLease) Capability() string { return l.capability }
 func (l *fakeExecutionLease) Payload() json.RawMessage {

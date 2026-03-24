@@ -107,12 +107,6 @@ func TestWorkflowRuntimeLifecycleAcrossBuiltInRuntimes(t *testing.T) {
 }
 
 func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *testing.T) {
-	ws := swftest.MustWorkSet(t,
-		swftest.SequenceJob{Steps: []string{swftest.AddOneTaskName, swftest.DoubleTaskName}},
-		swftest.AddOneTask{},
-		swftest.DoubleTask{},
-	)
-
 	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
 		harness := harness
 		t.Run(harness.Name, func(t *testing.T) {
@@ -120,7 +114,7 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 				t.Skip("runtime does not support chapter/artifact storage")
 			}
 
-			built := harness.New(t, ws)
+			built := harness.New(t)
 			defer built.Shutdown(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -129,7 +123,7 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 			handle, err := built.Runtime.SubmitJob(ctx, swf.SubmitJobRequest{
 				Job: swf.SubmitJob{
 					TenantId: "tenant-artifacts-" + harness.Name,
-					JobType:  swftest.SequenceJobName,
+					JobType:  "manual-storage",
 					Data:     swftest.NumberTaskData(1),
 				},
 				RequestTime: time.Now().UTC(),
@@ -137,16 +131,29 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 			if err != nil {
 				t.Fatalf("start job for chapter storage: %v", err)
 			}
-			swftest.WaitForRuntimeStatus(t, ctx, built.Runtime, handle.JobKey, swf.JobStatusCompleted)
+
+			lease, err := built.Runtime.GetJobLease(ctx, swf.GetJobLeaseRequest{
+				JobKey:        handle.JobKey,
+				WorkerID:      "runtime-storage-test",
+				Capabilities:  []string{"manual-storage"},
+				LeaseDuration: 2 * time.Second,
+			})
+			if err != nil {
+				t.Fatalf("get job lease: %v", err)
+			}
+			if lease == nil {
+				t.Fatal("expected lease for chapter storage test")
+			}
 
 			artifactBytes := []byte("hello runtime")
 			req := swf.PutChapterRequest{
+				LeaseID: lease.LeaseID(),
 				Ref: swf.ChapterRef{
 					JobKey:  handle.JobKey,
-					Ordinal: 50,
+					Ordinal: 1,
 				},
 				Chapter: swf.StoredChapter{
-					Ordinal:     50,
+					Ordinal:     1,
 					TaskType:    "manual",
 					ChapterType: "Manual",
 					PayloadKind: "App",
@@ -172,7 +179,7 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 			if err != nil {
 				t.Fatalf("get chapter: %v", err)
 			}
-			if storedChapter.Ordinal != 50 || storedChapter.TaskType != "manual" {
+			if storedChapter.Ordinal != 1 || storedChapter.TaskType != "manual" {
 				t.Fatalf("unexpected stored chapter %+v", storedChapter)
 			}
 			if string(storedChapter.Data) != `{"n":99}` {
@@ -183,7 +190,7 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 			}
 			reader, err := built.Runtime.OpenArtifact(ctx, swf.ArtifactRef{
 				JobKey:  handle.JobKey,
-				Ordinal: 50,
+				Ordinal: 1,
 				Name:    storedChapter.Artifacts[0].Name,
 				Digest:  storedChapter.Artifacts[0].Digest,
 			})
@@ -201,6 +208,10 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 			}
 			if string(data) != string(artifactBytes) {
 				t.Fatalf("unexpected artifact bytes %q", string(data))
+			}
+
+			if err := lease.Complete(ctx, swf.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
+				t.Fatalf("complete lease: %v", err)
 			}
 		})
 	}

@@ -51,9 +51,42 @@ type storedChapterObservation struct {
 	StoredRef swf.StoredArtifact      `json:"storedRef"`
 }
 
-func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
-	ws := swftest.MustWorkSet(t, passthroughJob{name: "artifact-job"})
+func startManualStorageJob(
+	t *testing.T,
+	ctx context.Context,
+	submit func(context.Context, swf.SubmitJob) (swf.JobKey, error),
+	runtime swf.WorkflowRuntime,
+	tenantID string,
+	jobID string,
+) (swf.JobKey, swf.ExecutionLease) {
+	t.Helper()
 
+	jobKey, err := submit(ctx, swf.SubmitJob{
+		TenantId: tenantID,
+		JobType:  "manual-storage",
+		JobID:    jobID,
+		Data:     swftest.NumberTaskData(1),
+	})
+	if err != nil {
+		t.Fatalf("start manual storage job: %v", err)
+	}
+
+	lease, err := runtime.GetJobLease(ctx, swf.GetJobLeaseRequest{
+		JobKey:        jobKey,
+		WorkerID:      "usage-parity-manual-storage",
+		Capabilities:  []string{"manual-storage"},
+		LeaseDuration: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("get manual storage lease: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("expected manual storage lease")
+	}
+	return jobKey, lease
+}
+
+func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
 		harness := harness
 		t.Run(harness.Name, func(t *testing.T) {
@@ -61,30 +94,28 @@ func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 				t.Skip("runtime does not support artifact storage")
 			}
 
-			built := harness.New(t, ws)
+			built := harness.New(t)
 			defer built.Shutdown(t)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			handle, err := built.Runtime.SubmitJob(ctx, swf.SubmitJobRequest{
-				Job: swf.SubmitJob{
-					TenantId: "tenant-artifact-" + harness.Name,
-					JobType:  ws.JobWorker.Name(),
-					JobID:    "artifact-roundtrip",
-					Data:     swftest.NumberTaskData(1),
-				},
-				RequestTime: time.Now().UTC(),
-			})
-			if err != nil {
-				t.Fatalf("start job via runtime: %v", err)
-			}
-			swftest.WaitForRuntimeStatus(t, ctx, built.Runtime, handle.JobKey, swf.JobStatusCompleted)
+			jobKey, lease := startManualStorageJob(t, ctx, func(ctx context.Context, start swf.SubmitJob) (swf.JobKey, error) {
+				handle, err := built.Runtime.SubmitJob(ctx, swf.SubmitJobRequest{
+					Job:         start,
+					RequestTime: time.Now().UTC(),
+				})
+				if err != nil {
+					return swf.JobKey{}, err
+				}
+				return handle.JobKey, nil
+			}, built.Runtime, "tenant-artifact-"+harness.Name, "artifact-roundtrip")
 
 			artifactBytes := []byte("hello parity artifact")
 			chapterReq := swf.PutChapterRequest{
+				LeaseID: lease.LeaseID(),
 				Ref: swf.ChapterRef{
-					JobKey:  handle.JobKey,
+					JobKey:  jobKey,
 					Ordinal: 50,
 				},
 				Chapter: swf.StoredChapter{
@@ -120,13 +151,13 @@ func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 			stored := chapter.Artifacts
 
 			runtimeArtifact := mustReadRuntimeArtifactBytes(t, ctx, built.Runtime, swf.ArtifactRef{
-				JobKey:  handle.JobKey,
+				JobKey:  jobKey,
 				Ordinal: 50,
 				Name:    stored[0].Name,
 				Digest:  stored[0].Digest,
 			})
-			engineArtifact := mustReadEngineArtifactBytes(t, ctx, built.Engine, handle.JobKey.TenantId, swf.ArtifactKey{
-				JobId:       handle.JobKey.JobId,
+			engineArtifact := mustReadEngineArtifactBytes(t, ctx, built.Engine, jobKey.TenantId, swf.ArtifactKey{
+				JobId:       jobKey.JobId,
 				TaskOrdinal: 50,
 				Name:        stored[0].Name,
 				SizeBytes:   stored[0].Size,
@@ -153,26 +184,15 @@ func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 }
 
 func TestStoredChapterRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
-	ws := swftest.MustWorkSet(t, passthroughJob{name: "chapter-roundtrip-job"})
-
 	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
 		harness := harness
 		t.Run(harness.Name, func(t *testing.T) {
-			compareAcrossModes(t, harness, []swf.WorkSet{ws}, func(t *testing.T, ctx context.Context, subject scenarioSubject) storedChapterObservation {
-				jobKey, err := subject.SubmitJob(ctx, swf.SubmitJob{
-					TenantId: "tenant-chapter-roundtrip-" + harness.Name,
-					JobType:  ws.JobWorker.Name(),
-					JobID:    "chapter-roundtrip",
-					Data:     swftest.NumberTaskData(1),
-				})
-				if err != nil {
-					t.Fatalf("start chapter roundtrip via %s: %v", subject.mode, err)
-				}
-				subject.WaitForStatus(t, ctx, jobKey, swf.JobStatusCompleted)
-
+			compareAcrossModes(t, harness, nil, func(t *testing.T, ctx context.Context, subject scenarioSubject) storedChapterObservation {
+				jobKey, lease := startManualStorageJob(t, ctx, subject.SubmitJob, subject.Runtime(), "tenant-chapter-roundtrip-"+harness.Name, "chapter-roundtrip")
 				artifactBytes := []byte("chapter roundtrip artifact")
 				req := swf.PutChapterRequest{
-					Ref: swf.ChapterRef{JobKey: jobKey, Ordinal: 50},
+					LeaseID: lease.LeaseID(),
+					Ref:     swf.ChapterRef{JobKey: jobKey, Ordinal: 50},
 					Chapter: swf.StoredChapter{
 						Ordinal:     50,
 						TaskType:    "manual",
@@ -230,25 +250,14 @@ func TestStoredChapterRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 }
 
 func TestChapterMetadataRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
-	ws := swftest.MustWorkSet(t, passthroughJob{name: "chapter-metadata-job"})
-
 	for _, harness := range swftest.BuiltInRuntimeHarnesses() {
 		harness := harness
 		t.Run(harness.Name, func(t *testing.T) {
-			compareAcrossModes(t, harness, []swf.WorkSet{ws}, func(t *testing.T, ctx context.Context, subject scenarioSubject) normalizedStoredChapter {
-				jobKey, err := subject.SubmitJob(ctx, swf.SubmitJob{
-					TenantId: "tenant-chapter-metadata-" + harness.Name,
-					JobType:  ws.JobWorker.Name(),
-					JobID:    "chapter-metadata",
-					Data:     swftest.NumberTaskData(1),
-				})
-				if err != nil {
-					t.Fatalf("start chapter metadata via %s: %v", subject.mode, err)
-				}
-				subject.WaitForStatus(t, ctx, jobKey, swf.JobStatusCompleted)
-
+			compareAcrossModes(t, harness, nil, func(t *testing.T, ctx context.Context, subject scenarioSubject) normalizedStoredChapter {
+				jobKey, lease := startManualStorageJob(t, ctx, subject.SubmitJob, subject.Runtime(), "tenant-chapter-metadata-"+harness.Name, "chapter-metadata")
 				req := swf.PutChapterRequest{
-					Ref: swf.ChapterRef{JobKey: jobKey, Ordinal: 77},
+					LeaseID: lease.LeaseID(),
+					Ref:     swf.ChapterRef{JobKey: jobKey, Ordinal: 77},
 					Chapter: swf.StoredChapter{
 						Ordinal:     77,
 						TaskType:    "manual",
