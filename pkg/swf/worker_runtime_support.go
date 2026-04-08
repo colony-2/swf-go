@@ -201,10 +201,13 @@ func storedChapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch StoredCh
 	}
 }
 
-func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, leaseID string, ref ChapterRef, taskType string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMeta, payload json.RawMessage, artifacts []Artifact) (TaskData, error) {
+func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease ExecutionLease, ref ChapterRef, taskType string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMeta, payload json.RawMessage, artifacts []Artifact) (TaskData, error) {
 	uploads, storedArtifacts, err := artifactUploadsForChapterWrite(ctx, artifacts)
 	if err != nil {
 		return nil, err
+	}
+	if lease == nil {
+		return nil, fmt.Errorf("lease is required")
 	}
 
 	meta.Version = envelopeVersion
@@ -233,7 +236,8 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, leaseI
 		Artifacts:   storedArtifacts,
 	}
 	if err := runtime.PutChapter(ctx, PutChapterRequest{
-		LeaseID:         leaseID,
+		LeaseID:         lease.LeaseID(),
+		LeaseToken:      executionLeaseToken(lease),
 		Ref:             ref,
 		Chapter:         chapter,
 		ArtifactUploads: uploads,
@@ -257,6 +261,13 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, leaseI
 		return nil, nil
 	}
 	return storedChapterToTaskData(runtime, ref.JobKey, chapter)
+}
+
+func executionLeaseToken(lease ExecutionLease) string {
+	if tokenLease, ok := lease.(interface{ LeaseToken() string }); ok {
+		return tokenLease.LeaseToken()
+	}
+	return ""
 }
 
 func artifactUploadsForChapterWrite(ctx context.Context, artifacts []Artifact) ([]ArtifactUpload, []StoredArtifact, error) {

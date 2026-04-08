@@ -138,6 +138,7 @@ type StoredChapter struct {
 
 type PutChapterRequest struct {
 	LeaseID         string
+	LeaseToken      string
 	Ref             ChapterRef
 	Chapter         StoredChapter
 	ArtifactUploads []ArtifactUpload

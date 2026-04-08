@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -14,56 +13,23 @@ import (
 	"github.com/colony-2/swf-go/pkg/swf/internal/runtimeapi"
 )
 
-type leaseRegistry struct {
-	mu     sync.Mutex
-	leases map[string]swf.ExecutionLease
-}
-
-func newLeaseRegistry() *leaseRegistry {
-	return &leaseRegistry{leases: make(map[string]swf.ExecutionLease)}
-}
-
-func (r *leaseRegistry) store(lease swf.ExecutionLease) {
-	if lease == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.leases[leaseRegistryKey(lease.Job().JobKey, lease.LeaseID())] = lease
-}
-
-func (r *leaseRegistry) load(jobKey swf.JobKey, leaseID string) (swf.ExecutionLease, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	lease, ok := r.leases[leaseRegistryKey(jobKey, leaseID)]
-	return lease, ok
-}
-
-func (r *leaseRegistry) delete(jobKey swf.JobKey, leaseID string) {
-	r.mu.Lock()
-	lease, ok := r.leases[leaseRegistryKey(jobKey, leaseID)]
-	if ok {
-		delete(r.leases, leaseRegistryKey(jobKey, leaseID))
-	}
-	r.mu.Unlock()
-	if ok {
-		lease.StopKeepAlive()
-	}
-}
-
-func leaseRegistryKey(jobKey swf.JobKey, leaseID string) string {
-	return jobKey.TenantId + "\x00" + jobKey.JobId + "\x00" + leaseID
+type leaseOperationRuntime interface {
+	KeepAliveLeaseByID(ctx context.Context, jobKey swf.JobKey, leaseID string, workerID string, leaseDuration time.Duration) error
+	CompleteJobWithLeaseByID(ctx context.Context, jobKey swf.JobKey, leaseID string, workerID string, req swf.CompleteExecutionRequest) error
+	RescheduleJobWithLeaseByID(ctx context.Context, jobKey swf.JobKey, leaseID string, workerID string, req swf.RescheduleExecutionRequest) error
 }
 
 type proxyServer struct {
-	runtime swf.WorkflowRuntime
-	leases  *leaseRegistry
+	runtime  swf.WorkflowRuntime
+	leaseOps leaseOperationRuntime
+	tokens   *leaseTokenSigner
 }
 
 func NewServer(runtime swf.WorkflowRuntime) http.Handler {
 	server := &proxyServer{
-		runtime: runtime,
-		leases:  newLeaseRegistry(),
+		runtime:  runtime,
+		leaseOps: runtimeLeaseOps(runtime),
+		tokens:   newLeaseTokenSigner(),
 	}
 	strict := runtimeapi.NewStrictHandlerWithOptions(server, nil, runtimeapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -124,8 +90,7 @@ func (s *proxyServer) PollWork(ctx context.Context, request runtimeapi.PollWorkR
 	}
 	out := make([]runtimeapi.ExecutionLease, 0, len(leases))
 	for _, lease := range leases {
-		s.leases.store(lease)
-		model, err := toAPIExecutionLease(lease)
+		model, err := s.toAPIExecutionLease(lease, req.LeaseDuration)
 		if err != nil {
 			return nil, err
 		}
@@ -489,8 +454,7 @@ func (s *proxyServer) GetJobLease(ctx context.Context, request runtimeapi.GetJob
 	}
 	out := runtimeapi.GetJobLeaseResponse{}
 	if lease != nil {
-		s.leases.store(lease)
-		converted, err := toAPIExecutionLease(lease)
+		converted, err := s.toAPIExecutionLease(lease, leaseDuration)
 		if err != nil {
 			return nil, err
 		}
@@ -503,6 +467,10 @@ func (s *proxyServer) AddChapterWithLease(ctx context.Context, request runtimeap
 	if request.Body == nil {
 		return nil, badRequest("add chapter body is required")
 	}
+	jobKey := swf.JobKey{TenantId: request.TenantId, JobId: request.JobId}
+	if _, err := s.validatedLeaseClaims(request.Params.XSWFLeaseToken, jobKey, request.LeaseId); err != nil {
+		return nil, err
+	}
 	chapter, uploads, err := writableChapterToRuntimeChapter(request.Body.Chapter)
 	if err != nil {
 		return nil, badRequest(err.Error())
@@ -511,12 +479,10 @@ func (s *proxyServer) AddChapterWithLease(ctx context.Context, request runtimeap
 		return nil, badRequest("chapter ordinal must be >= 0")
 	}
 	err = s.runtime.PutChapter(ctx, swf.PutChapterRequest{
-		LeaseID: request.LeaseId,
+		LeaseID:    request.LeaseId,
+		LeaseToken: request.Params.XSWFLeaseToken,
 		Ref: swf.ChapterRef{
-			JobKey: swf.JobKey{
-				TenantId: request.TenantId,
-				JobId:    request.JobId,
-			},
+			JobKey:  jobKey,
 			Ordinal: chapter.Ordinal,
 		},
 		Chapter:         chapter,
@@ -533,37 +499,44 @@ func (s *proxyServer) CompleteJobWithLease(ctx context.Context, request runtimea
 		return nil, badRequest("complete job body is required")
 	}
 	jobKey := swf.JobKey{TenantId: request.TenantId, JobId: request.JobId}
-	lease, ok := s.leases.load(jobKey, request.LeaseId)
-	if !ok {
-		return nil, swf.ErrExecutionLeaseLost
+	claims, err := s.validatedLeaseClaims(request.Params.XSWFLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
+		return nil, err
 	}
-	err := lease.Complete(ctx, swf.CompleteExecutionRequest{
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	err = ops.CompleteJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, swf.CompleteExecutionRequest{
 		Status: request.Body.Status,
 		Detail: stringValue(request.Body.Detail),
 	})
 	if err != nil {
-		if errors.Is(err, swf.ErrExecutionLeaseLost) {
-			s.leases.delete(jobKey, request.LeaseId)
-		}
 		return nil, err
 	}
-	s.leases.delete(jobKey, request.LeaseId)
 	return runtimeapi.CompleteJobWithLease204Response{}, nil
 }
 
 func (s *proxyServer) KeepAliveLease(ctx context.Context, request runtimeapi.KeepAliveLeaseRequestObject) (runtimeapi.KeepAliveLeaseResponseObject, error) {
 	jobKey := swf.JobKey{TenantId: request.TenantId, JobId: request.JobId}
-	lease, ok := s.leases.load(jobKey, request.LeaseId)
-	if !ok {
-		return nil, swf.ErrExecutionLeaseLost
-	}
-	if err := lease.KeepAlive(ctx); err != nil {
-		if errors.Is(err, swf.ErrExecutionLeaseLost) {
-			s.leases.delete(jobKey, request.LeaseId)
-		}
+	claims, err := s.validatedLeaseClaims(request.Params.XSWFLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
 		return nil, err
 	}
-	return runtimeapi.KeepAliveLease204Response{}, nil
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	if err := ops.KeepAliveLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, claims.leaseDuration()); err != nil {
+		return nil, err
+	}
+	token, err := s.tokens.mint(jobKey, request.LeaseId, claims.WorkerID, claims.leaseDuration())
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.KeepAliveLease200JSONResponse{
+		LeaseToken: token,
+	}, nil
 }
 
 func (s *proxyServer) RescheduleJobWithLease(ctx context.Context, request runtimeapi.RescheduleJobWithLeaseRequestObject) (runtimeapi.RescheduleJobWithLeaseResponseObject, error) {
@@ -579,11 +552,15 @@ func (s *proxyServer) RescheduleJobWithLease(ctx context.Context, request runtim
 		return nil, badRequest(err.Error())
 	}
 	jobKey := swf.JobKey{TenantId: request.TenantId, JobId: request.JobId}
-	lease, ok := s.leases.load(jobKey, request.LeaseId)
-	if !ok {
-		return nil, swf.ErrExecutionLeaseLost
+	claims, err := s.validatedLeaseClaims(request.Params.XSWFLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
+		return nil, err
 	}
-	err = lease.Reschedule(ctx, swf.RescheduleExecutionRequest{
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	err = ops.RescheduleJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, swf.RescheduleExecutionRequest{
 		AlternateAfter: alternateAfter,
 		AlternateNeed:  stringValue(request.Body.AlternateNeed),
 		NextNeed:       stringValue(request.Body.NextNeed),
@@ -592,17 +569,17 @@ func (s *proxyServer) RescheduleJobWithLease(ctx context.Context, request runtim
 		WaitForJobIDs:  cloneStringSlice(request.Body.WaitForJobIds),
 	})
 	if err != nil {
-		if errors.Is(err, swf.ErrExecutionLeaseLost) {
-			s.leases.delete(jobKey, request.LeaseId)
-		}
 		return nil, err
 	}
-	s.leases.delete(jobKey, request.LeaseId)
 	return runtimeapi.RescheduleJobWithLease204Response{}, nil
 }
 
-func toAPIExecutionLease(lease swf.ExecutionLease) (runtimeapi.ExecutionLease, error) {
+func (s *proxyServer) toAPIExecutionLease(lease swf.ExecutionLease, requestedDuration time.Duration) (runtimeapi.ExecutionLease, error) {
 	payload, err := marshalJSONValueOptional(lease.Payload())
+	if err != nil {
+		return runtimeapi.ExecutionLease{}, err
+	}
+	token, err := s.tokens.mintForLease(lease, leaseTokenTTL(requestedDuration))
 	if err != nil {
 		return runtimeapi.ExecutionLease{}, err
 	}
@@ -610,6 +587,7 @@ func toAPIExecutionLease(lease swf.ExecutionLease) (runtimeapi.ExecutionLease, e
 		Capability: lease.Capability(),
 		Job:        toAPIJobHandle(lease.Job()),
 		LeaseId:    lease.LeaseID(),
+		LeaseToken: token,
 		Payload:    payload,
 	}, nil
 }
@@ -663,6 +641,29 @@ func badRequest(message string) error {
 		status: http.StatusBadRequest,
 		err:    errors.New(message),
 	}
+}
+
+func runtimeLeaseOps(runtime swf.WorkflowRuntime) leaseOperationRuntime {
+	if runtime == nil {
+		return nil
+	}
+	ops, _ := runtime.(leaseOperationRuntime)
+	return ops
+}
+
+func (s *proxyServer) requireLeaseOps() (leaseOperationRuntime, error) {
+	if s == nil || s.leaseOps == nil {
+		return nil, errors.New("runtime does not support tokenized lease operations")
+	}
+	return s.leaseOps, nil
+}
+
+func (s *proxyServer) validatedLeaseClaims(token string, jobKey swf.JobKey, leaseID string) (leaseTokenClaims, error) {
+	claims, err := s.tokens.validateAndParse(token, jobKey, leaseID, time.Now().UTC())
+	if err != nil {
+		return leaseTokenClaims{}, leaseTokenValidationError(err)
+	}
+	return claims, nil
 }
 
 func writeAPIError(w http.ResponseWriter, status int, payload runtimeapi.ErrorResponse) {

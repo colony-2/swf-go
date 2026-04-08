@@ -400,11 +400,12 @@ func (a *customArtifact) Sha256(ctx context.Context) (string, error) {
 	if h := a.hash.Load(); h != nil {
 		return *h, nil
 	}
-	rc, _, err := a.opener()
+	rc, size, err := a.opener()
 	if err != nil {
 		return "", err
 	}
 	defer rc.Close()
+	a.size = size
 	h, err := computeSha256(rc)
 	if err != nil {
 		return "", err

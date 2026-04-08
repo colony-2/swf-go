@@ -291,15 +291,16 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	}
 
 	out := make([]swf.ExecutionLease, 0, limit)
+	workerID := r.requestWorkerID(req.WorkerID)
 	for i := 0; i < limit; i++ {
-		lease, err := pgwf.GetWorkWithOptions(ctx, r.udb, pgwf.WorkerID(r.requestWorkerID(req.WorkerID)), caps, opts)
+		lease, err := pgwf.GetWorkWithOptions(ctx, r.udb, pgwf.WorkerID(workerID), caps, opts)
 		if err != nil {
 			return nil, err
 		}
 		if lease == nil {
 			break
 		}
-		out = append(out, &executionLease{lease: lease, udb: r.udb})
+		out = append(out, &executionLease{lease: lease, udb: r.udb, workerID: workerID})
 	}
 	return out, nil
 }
@@ -336,7 +337,7 @@ func (r *Runtime) GetJobLease(ctx context.Context, req swf.GetJobLeaseRequest) (
 	if lease == nil {
 		return nil, nil
 	}
-	return &executionLease{lease: lease, udb: r.udb}, nil
+	return &executionLease{lease: lease, udb: r.udb, workerID: r.requestWorkerID(req.WorkerID)}, nil
 }
 
 type jobInfoTaskData struct {
@@ -859,8 +860,9 @@ func (a artifactReader) Size() int64                  { return a.art.Size() }
 func (a artifactReader) Name() string                 { return a.art.Name() }
 
 type executionLease struct {
-	lease *pgwf.Lease
-	udb   *sql.DB
+	lease    *pgwf.Lease
+	udb      *sql.DB
+	workerID string
 }
 
 func (l *executionLease) LeaseID() string {
@@ -882,6 +884,10 @@ func (l *executionLease) Capability() string {
 
 func (l *executionLease) Payload() json.RawMessage {
 	return l.lease.Payload()
+}
+
+func (l *executionLease) LeaseWorkerID() string {
+	return l.workerID
 }
 
 func (l *executionLease) KeepAlive(ctx context.Context) error {

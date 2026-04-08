@@ -244,6 +244,24 @@ func TestNewArtifact_NilCleanup(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestNewArtifact_Sha256PopulatesSize(t *testing.T) {
+	data := []byte("size via sha")
+	art := swf.NewArtifact(
+		"sha-size.txt",
+		func() (io.ReadCloser, int64, error) {
+			return io.NopCloser(bytes.NewReader(data)), int64(len(data)), nil
+		},
+		nil,
+	)
+
+	assert.Equal(t, int64(0), art.Size())
+
+	digest, err := art.Sha256(context.Background())
+	require.NoError(t, err)
+	assert.NotEmpty(t, digest)
+	assert.Equal(t, int64(len(data)), art.Size())
+}
+
 func TestArtifactFromFile_NonExistent(t *testing.T) {
 	art, err := swf.NewArtifactFromFile("test.txt", "/nonexistent/path/file.txt")
 	assert.Error(t, err)

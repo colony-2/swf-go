@@ -14,6 +14,13 @@ import (
 	swftest "github.com/colony-2/swf-go/pkg/swf/internal/swftest"
 )
 
+func leaseTokenForTest(lease swf.ExecutionLease) string {
+	if leaseWithToken, ok := lease.(interface{ LeaseToken() string }); ok {
+		return leaseWithToken.LeaseToken()
+	}
+	return ""
+}
+
 type artifactRoundTripObservation struct {
 	Chapter   swf.StoredChapter  `json:"chapter"`
 	Runtime   normalizedArtifact `json:"runtime"`
@@ -113,7 +120,8 @@ func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 
 			artifactBytes := []byte("hello parity artifact")
 			chapterReq := swf.PutChapterRequest{
-				LeaseID: lease.LeaseID(),
+				LeaseID:    lease.LeaseID(),
+				LeaseToken: leaseTokenForTest(lease),
 				Ref: swf.ChapterRef{
 					JobKey:  jobKey,
 					Ordinal: 1,
@@ -191,8 +199,9 @@ func TestStoredChapterRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 				jobKey, lease := startManualStorageJob(t, ctx, subject.SubmitJob, subject.Runtime(), "tenant-chapter-roundtrip-"+harness.Name, "chapter-roundtrip")
 				artifactBytes := []byte("chapter roundtrip artifact")
 				req := swf.PutChapterRequest{
-					LeaseID: lease.LeaseID(),
-					Ref:     swf.ChapterRef{JobKey: jobKey, Ordinal: 1},
+					LeaseID:    lease.LeaseID(),
+					LeaseToken: leaseTokenForTest(lease),
+					Ref:        swf.ChapterRef{JobKey: jobKey, Ordinal: 1},
 					Chapter: swf.StoredChapter{
 						Ordinal:     1,
 						TaskType:    "manual",
@@ -256,8 +265,9 @@ func TestChapterMetadataRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 			compareAcrossModes(t, harness, nil, func(t *testing.T, ctx context.Context, subject scenarioSubject) normalizedStoredChapter {
 				jobKey, lease := startManualStorageJob(t, ctx, subject.SubmitJob, subject.Runtime(), "tenant-chapter-metadata-"+harness.Name, "chapter-metadata")
 				req := swf.PutChapterRequest{
-					LeaseID: lease.LeaseID(),
-					Ref:     swf.ChapterRef{JobKey: jobKey, Ordinal: 1},
+					LeaseID:    lease.LeaseID(),
+					LeaseToken: leaseTokenForTest(lease),
+					Ref:        swf.ChapterRef{JobKey: jobKey, Ordinal: 1},
 					Chapter: swf.StoredChapter{
 						Ordinal:     1,
 						TaskType:    "manual",

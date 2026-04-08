@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +37,8 @@ type BuiltRuntimeHarness struct {
 	shutdown func()
 }
 
+var externalHarnessSeq atomic.Uint64
+
 func (h *BuiltRuntimeHarness) Shutdown(t *testing.T) {
 	t.Helper()
 	if h == nil {
@@ -55,7 +60,7 @@ func (h *BuiltRuntimeHarness) Shutdown(t *testing.T) {
 }
 
 func BuiltInRuntimeHarnesses() []RuntimeHarness {
-	return []RuntimeHarness{
+	harnesses := []RuntimeHarness{
 		{
 			Name:                   "toy",
 			SupportsLeases:         false,
@@ -71,10 +76,17 @@ func BuiltInRuntimeHarnesses() []RuntimeHarness {
 			New:                    newDirectHarness,
 		},
 	}
+	if external, ok := externalRemoteRuntimeHarness(); ok {
+		if externalOnlyHarnessesEnabled() {
+			return []RuntimeHarness{external}
+		}
+		harnesses = append(harnesses, external)
+	}
+	return harnesses
 }
 
 func RemoteRuntimeHarnesses() []RuntimeHarness {
-	return []RuntimeHarness{
+	harnesses := []RuntimeHarness{
 		{
 			Name:                   "remote-toy",
 			SupportsLeases:         false,
@@ -90,6 +102,13 @@ func RemoteRuntimeHarnesses() []RuntimeHarness {
 			New:                    newRemoteDirectHarness,
 		},
 	}
+	if external, ok := externalRemoteRuntimeHarness(); ok {
+		if externalOnlyHarnessesEnabled() {
+			return []RuntimeHarness{external}
+		}
+		harnesses = append(harnesses, external)
+	}
+	return harnesses
 }
 
 func MustWorkSet(t *testing.T, job swf.JobWorker, tasks ...swf.TaskWorker) swf.WorkSet {
@@ -334,6 +353,17 @@ func newRemoteDirectHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeH
 	return buildHarness(t, "remote-direct", runtime, true, shutdown, workers...)
 }
 
+func newExternalRemoteHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {
+	t.Helper()
+	baseURL, name := externalRemoteRuntimeConfig()
+	runtime, err := remoteruntime.New(baseURL, &http.Client{Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("build %s runtime: %v", name, err)
+	}
+	prefix := fmt.Sprintf("__swftest_external_%d__", externalHarnessSeq.Add(1))
+	return buildHarness(t, name, newTenantNamespacedRuntime(runtime, prefix), true, func() {}, workers...)
+}
+
 func buildHarness(t *testing.T, name string, runtime swf.WorkflowRuntime, startLoop bool, shutdown func(), workers ...swf.WorkSet) *BuiltRuntimeHarness {
 	t.Helper()
 	builder := swf.NewEngineBuilder().WithRuntime(runtime)
@@ -388,4 +418,209 @@ func numberFromTaskData(data swf.TaskData) (int, error) {
 		return 0, err
 	}
 	return payload["n"], nil
+}
+
+func externalRemoteRuntimeHarness() (RuntimeHarness, bool) {
+	baseURL, name := externalRemoteRuntimeConfig()
+	if baseURL == "" {
+		return RuntimeHarness{}, false
+	}
+	return RuntimeHarness{
+		Name:                   name,
+		SupportsLeases:         true,
+		SupportsRuntimeStorage: true,
+		StartsWorkerLoop:       true,
+		New:                    newExternalRemoteHarness,
+	}, true
+}
+
+func externalRemoteRuntimeConfig() (baseURL string, name string) {
+	baseURL = strings.TrimSpace(os.Getenv("SWF_EXTERNAL_REMOTE_BASE_URL"))
+	name = strings.TrimSpace(os.Getenv("SWF_EXTERNAL_REMOTE_NAME"))
+	if name == "" {
+		name = "remote-worker"
+	}
+	return baseURL, name
+}
+
+func externalOnlyHarnessesEnabled() bool {
+	switch strings.TrimSpace(strings.ToLower(os.Getenv("SWF_EXTERNAL_REMOTE_ONLY"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+type tenantNamespacedRuntime struct {
+	runtime swf.WorkflowRuntime
+	prefix  string
+}
+
+func newTenantNamespacedRuntime(runtime swf.WorkflowRuntime, prefix string) swf.WorkflowRuntime {
+	return &tenantNamespacedRuntime{runtime: runtime, prefix: prefix}
+}
+
+func (r *tenantNamespacedRuntime) SubmitJob(ctx context.Context, req swf.SubmitJobRequest) (swf.JobHandle, error) {
+	req.Job.TenantId = r.prefixTenant(req.Job.TenantId)
+	handle, err := r.runtime.SubmitJob(ctx, req)
+	if err != nil {
+		return swf.JobHandle{}, err
+	}
+	handle.JobKey = r.stripJobKey(handle.JobKey)
+	return handle, nil
+}
+
+func (r *tenantNamespacedRuntime) SubmitRestartJob(ctx context.Context, req swf.SubmitRestartJobRequest) (swf.JobHandle, error) {
+	req.Job.PriorJobKey = r.prefixJobKey(req.Job.PriorJobKey)
+	handle, err := r.runtime.SubmitRestartJob(ctx, req)
+	if err != nil {
+		return swf.JobHandle{}, err
+	}
+	handle.JobKey = r.stripJobKey(handle.JobKey)
+	return handle, nil
+}
+
+func (r *tenantNamespacedRuntime) CancelJob(ctx context.Context, req swf.CancelJobRequest) error {
+	req.JobKey = r.prefixJobKey(req.JobKey)
+	return r.runtime.CancelJob(ctx, req)
+}
+
+func (r *tenantNamespacedRuntime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.ExecutionLease, error) {
+	if len(req.TenantIds) > 0 {
+		req.TenantIds = r.prefixTenantIDs(req.TenantIds)
+	}
+	leases, err := r.runtime.PollWork(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return r.wrapLeases(leases), nil
+}
+
+func (r *tenantNamespacedRuntime) GetJobLease(ctx context.Context, req swf.GetJobLeaseRequest) (swf.ExecutionLease, error) {
+	req.JobKey = r.prefixJobKey(req.JobKey)
+	lease, err := r.runtime.GetJobLease(ctx, req)
+	if err != nil || lease == nil {
+		return lease, err
+	}
+	return &tenantNamespacedLease{lease: lease, runtime: r}, nil
+}
+
+func (r *tenantNamespacedRuntime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTaskIfWaitingRequest) error {
+	req.JobKey = r.prefixJobKey(req.JobKey)
+	return r.runtime.CompleteTaskIfWaiting(ctx, req)
+}
+
+func (r *tenantNamespacedRuntime) GetJob(ctx context.Context, jobKey swf.JobKey) (swf.JobInfo, error) {
+	return r.runtime.GetJob(ctx, r.prefixJobKey(jobKey))
+}
+
+func (r *tenantNamespacedRuntime) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.ListJobsResponse, error) {
+	req.TenantIds = r.prefixTenantIDs(req.TenantIds)
+	if len(req.JobKeys) > 0 {
+		jobKeys := make([]swf.JobKey, 0, len(req.JobKeys))
+		for _, jobKey := range req.JobKeys {
+			jobKeys = append(jobKeys, r.prefixJobKey(jobKey))
+		}
+		req.JobKeys = jobKeys
+	}
+	resp, err := r.runtime.ListJobs(ctx, req)
+	if err != nil {
+		return swf.ListJobsResponse{}, err
+	}
+	for i := range resp.Jobs {
+		resp.Jobs[i].JobKey = r.stripJobKey(resp.Jobs[i].JobKey)
+	}
+	return resp, nil
+}
+
+func (r *tenantNamespacedRuntime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.StoredChapter, error) {
+	ref.JobKey = r.prefixJobKey(ref.JobKey)
+	return r.runtime.GetChapter(ctx, ref)
+}
+
+func (r *tenantNamespacedRuntime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.StoredChapter, error) {
+	req.JobKey = r.prefixJobKey(req.JobKey)
+	return r.runtime.ListChapters(ctx, req)
+}
+
+func (r *tenantNamespacedRuntime) PutChapter(ctx context.Context, req swf.PutChapterRequest) error {
+	req.Ref.JobKey = r.prefixJobKey(req.Ref.JobKey)
+	return r.runtime.PutChapter(ctx, req)
+}
+
+func (r *tenantNamespacedRuntime) OpenArtifact(ctx context.Context, ref swf.ArtifactRef) (swf.ArtifactReader, error) {
+	ref.JobKey = r.prefixJobKey(ref.JobKey)
+	return r.runtime.OpenArtifact(ctx, ref)
+}
+
+func (r *tenantNamespacedRuntime) wrapLeases(leases []swf.ExecutionLease) []swf.ExecutionLease {
+	if len(leases) == 0 {
+		return leases
+	}
+	wrapped := make([]swf.ExecutionLease, 0, len(leases))
+	for _, lease := range leases {
+		wrapped = append(wrapped, &tenantNamespacedLease{lease: lease, runtime: r})
+	}
+	return wrapped
+}
+
+func (r *tenantNamespacedRuntime) prefixTenantIDs(tenantIDs []string) []string {
+	if len(tenantIDs) == 0 {
+		return tenantIDs
+	}
+	out := make([]string, 0, len(tenantIDs))
+	for _, tenantID := range tenantIDs {
+		out = append(out, r.prefixTenant(tenantID))
+	}
+	return out
+}
+
+func (r *tenantNamespacedRuntime) prefixJobKey(jobKey swf.JobKey) swf.JobKey {
+	jobKey.TenantId = r.prefixTenant(jobKey.TenantId)
+	return jobKey
+}
+
+func (r *tenantNamespacedRuntime) stripJobKey(jobKey swf.JobKey) swf.JobKey {
+	jobKey.TenantId = r.stripTenant(jobKey.TenantId)
+	return jobKey
+}
+
+func (r *tenantNamespacedRuntime) prefixTenant(tenantID string) string {
+	if tenantID == "" {
+		return ""
+	}
+	return r.prefix + tenantID
+}
+
+func (r *tenantNamespacedRuntime) stripTenant(tenantID string) string {
+	return strings.TrimPrefix(tenantID, r.prefix)
+}
+
+type tenantNamespacedLease struct {
+	lease   swf.ExecutionLease
+	runtime *tenantNamespacedRuntime
+}
+
+func (l *tenantNamespacedLease) LeaseID() string          { return l.lease.LeaseID() }
+func (l *tenantNamespacedLease) Capability() string       { return l.lease.Capability() }
+func (l *tenantNamespacedLease) Payload() json.RawMessage { return l.lease.Payload() }
+func (l *tenantNamespacedLease) LeaseToken() string {
+	if tokenLease, ok := l.lease.(interface{ LeaseToken() string }); ok {
+		return tokenLease.LeaseToken()
+	}
+	return ""
+}
+func (l *tenantNamespacedLease) KeepAlive(ctx context.Context) error { return l.lease.KeepAlive(ctx) }
+func (l *tenantNamespacedLease) StopKeepAlive()                      { l.lease.StopKeepAlive() }
+func (l *tenantNamespacedLease) Complete(ctx context.Context, req swf.CompleteExecutionRequest) error {
+	return l.lease.Complete(ctx, req)
+}
+func (l *tenantNamespacedLease) Reschedule(ctx context.Context, req swf.RescheduleExecutionRequest) error {
+	return l.lease.Reschedule(ctx, req)
+}
+func (l *tenantNamespacedLease) Job() swf.JobHandle {
+	handle := l.lease.Job()
+	handle.JobKey = l.runtime.stripJobKey(handle.JobKey)
+	return handle
 }

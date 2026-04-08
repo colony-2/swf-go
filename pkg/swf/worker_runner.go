@@ -577,7 +577,7 @@ func (r *workerRunner) persistJobOutcome(ctx context.Context, ordinal int64, pay
 		StartedAt:  startedAt,
 		FinishedAt: finishedAt,
 	}
-	return persistTaskDataChapter(ctx, r.runtime, r.currentLeaseID(), ChapterRef{
+	return persistTaskDataChapter(ctx, r.runtime, r.lease, ChapterRef{
 		JobKey:  r.GetJobKey(),
 		Ordinal: ordinal,
 	}, r.worker.JobWorker.Name(), chapterTypeJobAttemptOutcome, payloadKind, inputHash, time.Now().UTC(), meta, payload, artifacts)
@@ -956,7 +956,7 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 			StartedAt:  &attemptStartAt,
 			FinishedAt: &finishedAt,
 		}
-		persistedOutput, err := persistTaskDataChapter(context.TODO(), r.runtime, r.currentLeaseID(), ChapterRef{
+		persistedOutput, err := persistTaskDataChapter(context.TODO(), r.runtime, r.lease, ChapterRef{
 			JobKey:  r.GetJobKey(),
 			Ordinal: ordinal,
 		}, taskType, chapterTypeTaskAttemptOutcome, payloadKind, inputHash, time.Now().UTC(), meta, payload, artifacts)

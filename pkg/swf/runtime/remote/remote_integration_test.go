@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,13 @@ import (
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 )
+
+func leaseTokenForTest(lease swf.ExecutionLease) string {
+	if leaseWithToken, ok := lease.(interface{ LeaseToken() string }); ok {
+		return leaseWithToken.LeaseToken()
+	}
+	return ""
+}
 
 func TestRemoteRuntimeLeaseAndMetadataRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
@@ -194,6 +203,38 @@ func TestRemoteRuntimePollWorkWithoutTenantFilter(t *testing.T) {
 	}
 }
 
+func TestRemoteRuntimePollWorkWithoutKnownTenantsIsLocalNoop(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	runtime, err := New(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("new remote runtime: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	leases, err := runtime.PollWork(ctx, swf.PollWorkRequest{
+		WorkerID:     "worker-startup",
+		Capabilities: []string{"startup-job"},
+		Limit:        1,
+	})
+	if err != nil {
+		t.Fatalf("poll work without known tenants: %v", err)
+	}
+	if len(leases) != 0 {
+		t.Fatalf("expected no leases, got %d", len(leases))
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("expected no server requests, got %d", got)
+	}
+}
+
 func TestRemoteRuntimeChapterAndArtifactRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -269,7 +310,8 @@ func TestRemoteRuntimeChapterAndArtifactRoundTrip(t *testing.T) {
 				Data:        json.RawMessage(`{"ok":true}`),
 			}
 			if err := runtime.PutChapter(ctx, swf.PutChapterRequest{
-				LeaseID: lease.LeaseID(),
+				LeaseID:    lease.LeaseID(),
+				LeaseToken: leaseTokenForTest(lease),
 				Ref: swf.ChapterRef{
 					JobKey:  handle.JobKey,
 					Ordinal: 1,

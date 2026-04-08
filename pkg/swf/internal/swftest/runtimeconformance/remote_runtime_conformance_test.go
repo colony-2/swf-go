@@ -13,6 +13,13 @@ import (
 	swftest "github.com/colony-2/swf-go/pkg/swf/internal/swftest"
 )
 
+func remoteLeaseTokenForTest(lease swf.ExecutionLease) string {
+	if leaseWithToken, ok := lease.(interface{ LeaseToken() string }); ok {
+		return leaseWithToken.LeaseToken()
+	}
+	return ""
+}
+
 func TestRemoteRuntimesConstructAndExecuteThroughBuilder(t *testing.T) {
 	ws := swftest.MustWorkSet(t,
 		swftest.SequenceJob{Steps: []string{swftest.AddOneTaskName, swftest.DoubleTaskName}},
@@ -92,7 +99,8 @@ func TestRemoteRuntimeChapterAndArtifactRoundTripAcrossExistingRuntimes(t *testi
 
 			artifactBytes := []byte("hello runtime")
 			req := swf.PutChapterRequest{
-				LeaseID: lease.LeaseID(),
+				LeaseID:    lease.LeaseID(),
+				LeaseToken: remoteLeaseTokenForTest(lease),
 				Ref: swf.ChapterRef{
 					JobKey:  handle.JobKey,
 					Ordinal: 1,
@@ -280,7 +288,8 @@ func TestRemoteRuntimeConflictBehaviorAcrossExistingRuntimes(t *testing.T) {
 
 				put := func(ordinal int64) error {
 					return built.Runtime.PutChapter(ctx, swf.PutChapterRequest{
-						LeaseID: lease.LeaseID(),
+						LeaseID:    lease.LeaseID(),
+						LeaseToken: remoteLeaseTokenForTest(lease),
 						Ref: swf.ChapterRef{
 							JobKey:  handle.JobKey,
 							Ordinal: ordinal,

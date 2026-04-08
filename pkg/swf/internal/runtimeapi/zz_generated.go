@@ -131,6 +131,7 @@ type ExecutionLease struct {
 	Capability string    `json:"capability"`
 	Job        JobHandle `json:"job"`
 	LeaseId    string    `json:"leaseId"`
+	LeaseToken string    `json:"leaseToken"`
 
 	// Payload Opaque JSON payload returned by the runtime for this lease.
 	Payload interface{} `json:"payload,omitempty"`
@@ -215,6 +216,11 @@ type JobSummary struct {
 type JobTaskFilter struct {
 	JobType  string `json:"jobType"`
 	TaskType string `json:"taskType"`
+}
+
+// KeepAliveLeaseResponse defines model for KeepAliveLeaseResponse.
+type KeepAliveLeaseResponse struct {
+	LeaseToken string `json:"leaseToken"`
 }
 
 // ListChaptersResponse defines model for ListChaptersResponse.
@@ -398,6 +404,9 @@ type JobId = string
 // LeaseId defines model for LeaseId.
 type LeaseId = string
 
+// LeaseTokenHeader defines model for LeaseTokenHeader.
+type LeaseTokenHeader = string
+
 // Ordinal defines model for Ordinal.
 type Ordinal = int64
 
@@ -411,6 +420,26 @@ type TenantId = string
 type ListChaptersParams struct {
 	StartOrdinal StartOrdinal `form:"startOrdinal" json:"startOrdinal"`
 	EndOrdinal   *EndOrdinal  `form:"endOrdinal,omitempty" json:"endOrdinal,omitempty"`
+}
+
+// AddChapterWithLeaseParams defines parameters for AddChapterWithLease.
+type AddChapterWithLeaseParams struct {
+	XSWFLeaseToken LeaseTokenHeader `json:"X-SWF-Lease-Token"`
+}
+
+// CompleteJobWithLeaseParams defines parameters for CompleteJobWithLease.
+type CompleteJobWithLeaseParams struct {
+	XSWFLeaseToken LeaseTokenHeader `json:"X-SWF-Lease-Token"`
+}
+
+// KeepAliveLeaseParams defines parameters for KeepAliveLease.
+type KeepAliveLeaseParams struct {
+	XSWFLeaseToken LeaseTokenHeader `json:"X-SWF-Lease-Token"`
+}
+
+// RescheduleJobWithLeaseParams defines parameters for RescheduleJobWithLease.
+type RescheduleJobWithLeaseParams struct {
+	XSWFLeaseToken LeaseTokenHeader `json:"X-SWF-Lease-Token"`
 }
 
 // PollWorkJSONRequestBody defines body for PollWork for application/json ContentType.
@@ -575,22 +604,22 @@ type ClientInterface interface {
 	GetJobLease(ctx context.Context, tenantId TenantId, jobId JobId, body GetJobLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// AddChapterWithLeaseWithBody request with any body
-	AddChapterWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	AddChapterWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	AddChapterWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	AddChapterWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CompleteJobWithLeaseWithBody request with any body
-	CompleteJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	CompleteJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	CompleteJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	CompleteJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// KeepAliveLease request
-	KeepAliveLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	KeepAliveLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *KeepAliveLeaseParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RescheduleJobWithLeaseWithBody request with any body
-	RescheduleJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+	RescheduleJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	RescheduleJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+	RescheduleJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PutRestartJobWithBody request with any body
 	PutRestartJobWithBody(ctx context.Context, tenantId TenantId, jobId JobId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -838,8 +867,8 @@ func (c *Client) GetJobLease(ctx context.Context, tenantId TenantId, jobId JobId
 	return c.Client.Do(req)
 }
 
-func (c *Client) AddChapterWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewAddChapterWithLeaseRequestWithBody(c.Server, tenantId, jobId, leaseId, contentType, body)
+func (c *Client) AddChapterWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddChapterWithLeaseRequestWithBody(c.Server, tenantId, jobId, leaseId, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -850,8 +879,8 @@ func (c *Client) AddChapterWithLeaseWithBody(ctx context.Context, tenantId Tenan
 	return c.Client.Do(req)
 }
 
-func (c *Client) AddChapterWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewAddChapterWithLeaseRequest(c.Server, tenantId, jobId, leaseId, body)
+func (c *Client) AddChapterWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewAddChapterWithLeaseRequest(c.Server, tenantId, jobId, leaseId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -862,8 +891,8 @@ func (c *Client) AddChapterWithLease(ctx context.Context, tenantId TenantId, job
 	return c.Client.Do(req)
 }
 
-func (c *Client) CompleteJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCompleteJobWithLeaseRequestWithBody(c.Server, tenantId, jobId, leaseId, contentType, body)
+func (c *Client) CompleteJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCompleteJobWithLeaseRequestWithBody(c.Server, tenantId, jobId, leaseId, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -874,8 +903,8 @@ func (c *Client) CompleteJobWithLeaseWithBody(ctx context.Context, tenantId Tena
 	return c.Client.Do(req)
 }
 
-func (c *Client) CompleteJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCompleteJobWithLeaseRequest(c.Server, tenantId, jobId, leaseId, body)
+func (c *Client) CompleteJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCompleteJobWithLeaseRequest(c.Server, tenantId, jobId, leaseId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -886,8 +915,8 @@ func (c *Client) CompleteJobWithLease(ctx context.Context, tenantId TenantId, jo
 	return c.Client.Do(req)
 }
 
-func (c *Client) KeepAliveLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewKeepAliveLeaseRequest(c.Server, tenantId, jobId, leaseId)
+func (c *Client) KeepAliveLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *KeepAliveLeaseParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewKeepAliveLeaseRequest(c.Server, tenantId, jobId, leaseId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -898,8 +927,8 @@ func (c *Client) KeepAliveLease(ctx context.Context, tenantId TenantId, jobId Jo
 	return c.Client.Do(req)
 }
 
-func (c *Client) RescheduleJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewRescheduleJobWithLeaseRequestWithBody(c.Server, tenantId, jobId, leaseId, contentType, body)
+func (c *Client) RescheduleJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRescheduleJobWithLeaseRequestWithBody(c.Server, tenantId, jobId, leaseId, params, contentType, body)
 	if err != nil {
 		return nil, err
 	}
@@ -910,8 +939,8 @@ func (c *Client) RescheduleJobWithLeaseWithBody(ctx context.Context, tenantId Te
 	return c.Client.Do(req)
 }
 
-func (c *Client) RescheduleJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewRescheduleJobWithLeaseRequest(c.Server, tenantId, jobId, leaseId, body)
+func (c *Client) RescheduleJobWithLease(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRescheduleJobWithLeaseRequest(c.Server, tenantId, jobId, leaseId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1570,18 +1599,18 @@ func NewGetJobLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId
 }
 
 // NewAddChapterWithLeaseRequest calls the generic AddChapterWithLease builder with application/json body
-func NewAddChapterWithLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, body AddChapterWithLeaseJSONRequestBody) (*http.Request, error) {
+func NewAddChapterWithLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, body AddChapterWithLeaseJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewAddChapterWithLeaseRequestWithBody(server, tenantId, jobId, leaseId, "application/json", bodyReader)
+	return NewAddChapterWithLeaseRequestWithBody(server, tenantId, jobId, leaseId, params, "application/json", bodyReader)
 }
 
 // NewAddChapterWithLeaseRequestWithBody generates requests for AddChapterWithLease with any type of body
-func NewAddChapterWithLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader) (*http.Request, error) {
+func NewAddChapterWithLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1627,22 +1656,35 @@ func NewAddChapterWithLeaseRequestWithBody(server string, tenantId TenantId, job
 
 	req.Header.Add("Content-Type", contentType)
 
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-SWF-Lease-Token", runtime.ParamLocationHeader, params.XSWFLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-SWF-Lease-Token", headerParam0)
+
+	}
+
 	return req, nil
 }
 
 // NewCompleteJobWithLeaseRequest calls the generic CompleteJobWithLease builder with application/json body
-func NewCompleteJobWithLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, body CompleteJobWithLeaseJSONRequestBody) (*http.Request, error) {
+func NewCompleteJobWithLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, body CompleteJobWithLeaseJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewCompleteJobWithLeaseRequestWithBody(server, tenantId, jobId, leaseId, "application/json", bodyReader)
+	return NewCompleteJobWithLeaseRequestWithBody(server, tenantId, jobId, leaseId, params, "application/json", bodyReader)
 }
 
 // NewCompleteJobWithLeaseRequestWithBody generates requests for CompleteJobWithLease with any type of body
-func NewCompleteJobWithLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader) (*http.Request, error) {
+func NewCompleteJobWithLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1688,11 +1730,24 @@ func NewCompleteJobWithLeaseRequestWithBody(server string, tenantId TenantId, jo
 
 	req.Header.Add("Content-Type", contentType)
 
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-SWF-Lease-Token", runtime.ParamLocationHeader, params.XSWFLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-SWF-Lease-Token", headerParam0)
+
+	}
+
 	return req, nil
 }
 
 // NewKeepAliveLeaseRequest generates requests for KeepAliveLease
-func NewKeepAliveLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId) (*http.Request, error) {
+func NewKeepAliveLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *KeepAliveLeaseParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1736,22 +1791,35 @@ func NewKeepAliveLeaseRequest(server string, tenantId TenantId, jobId JobId, lea
 		return nil, err
 	}
 
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-SWF-Lease-Token", runtime.ParamLocationHeader, params.XSWFLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-SWF-Lease-Token", headerParam0)
+
+	}
+
 	return req, nil
 }
 
 // NewRescheduleJobWithLeaseRequest calls the generic RescheduleJobWithLease builder with application/json body
-func NewRescheduleJobWithLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, body RescheduleJobWithLeaseJSONRequestBody) (*http.Request, error) {
+func NewRescheduleJobWithLeaseRequest(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, body RescheduleJobWithLeaseJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
 	bodyReader = bytes.NewReader(buf)
-	return NewRescheduleJobWithLeaseRequestWithBody(server, tenantId, jobId, leaseId, "application/json", bodyReader)
+	return NewRescheduleJobWithLeaseRequestWithBody(server, tenantId, jobId, leaseId, params, "application/json", bodyReader)
 }
 
 // NewRescheduleJobWithLeaseRequestWithBody generates requests for RescheduleJobWithLease with any type of body
-func NewRescheduleJobWithLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader) (*http.Request, error) {
+func NewRescheduleJobWithLeaseRequestWithBody(server string, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -1796,6 +1864,19 @@ func NewRescheduleJobWithLeaseRequestWithBody(server string, tenantId TenantId, 
 	}
 
 	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-SWF-Lease-Token", runtime.ParamLocationHeader, params.XSWFLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-SWF-Lease-Token", headerParam0)
+
+	}
 
 	return req, nil
 }
@@ -1950,22 +2031,22 @@ type ClientWithResponsesInterface interface {
 	GetJobLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, body GetJobLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*GetJobLeaseHTTPResponse, error)
 
 	// AddChapterWithLeaseWithBodyWithResponse request with any body
-	AddChapterWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error)
+	AddChapterWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error)
 
-	AddChapterWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error)
+	AddChapterWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error)
 
 	// CompleteJobWithLeaseWithBodyWithResponse request with any body
-	CompleteJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error)
+	CompleteJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error)
 
-	CompleteJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error)
+	CompleteJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error)
 
 	// KeepAliveLeaseWithResponse request
-	KeepAliveLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, reqEditors ...RequestEditorFn) (*KeepAliveLeaseHTTPResponse, error)
+	KeepAliveLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *KeepAliveLeaseParams, reqEditors ...RequestEditorFn) (*KeepAliveLeaseHTTPResponse, error)
 
 	// RescheduleJobWithLeaseWithBodyWithResponse request with any body
-	RescheduleJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error)
+	RescheduleJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error)
 
-	RescheduleJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error)
+	RescheduleJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error)
 
 	// PutRestartJobWithBodyWithResponse request with any body
 	PutRestartJobWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutRestartJobHTTPResponse, error)
@@ -2282,6 +2363,7 @@ func (r CompleteJobWithLeaseHTTPResponse) StatusCode() int {
 type KeepAliveLeaseHTTPResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
+	JSON200      *KeepAliveLeaseResponse
 }
 
 // Status returns HTTPResponse.Status
@@ -2517,16 +2599,16 @@ func (c *ClientWithResponses) GetJobLeaseWithResponse(ctx context.Context, tenan
 }
 
 // AddChapterWithLeaseWithBodyWithResponse request with arbitrary body returning *AddChapterWithLeaseHTTPResponse
-func (c *ClientWithResponses) AddChapterWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error) {
-	rsp, err := c.AddChapterWithLeaseWithBody(ctx, tenantId, jobId, leaseId, contentType, body, reqEditors...)
+func (c *ClientWithResponses) AddChapterWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error) {
+	rsp, err := c.AddChapterWithLeaseWithBody(ctx, tenantId, jobId, leaseId, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseAddChapterWithLeaseHTTPResponse(rsp)
 }
 
-func (c *ClientWithResponses) AddChapterWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error) {
-	rsp, err := c.AddChapterWithLease(ctx, tenantId, jobId, leaseId, body, reqEditors...)
+func (c *ClientWithResponses) AddChapterWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *AddChapterWithLeaseParams, body AddChapterWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*AddChapterWithLeaseHTTPResponse, error) {
+	rsp, err := c.AddChapterWithLease(ctx, tenantId, jobId, leaseId, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -2534,16 +2616,16 @@ func (c *ClientWithResponses) AddChapterWithLeaseWithResponse(ctx context.Contex
 }
 
 // CompleteJobWithLeaseWithBodyWithResponse request with arbitrary body returning *CompleteJobWithLeaseHTTPResponse
-func (c *ClientWithResponses) CompleteJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error) {
-	rsp, err := c.CompleteJobWithLeaseWithBody(ctx, tenantId, jobId, leaseId, contentType, body, reqEditors...)
+func (c *ClientWithResponses) CompleteJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.CompleteJobWithLeaseWithBody(ctx, tenantId, jobId, leaseId, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseCompleteJobWithLeaseHTTPResponse(rsp)
 }
 
-func (c *ClientWithResponses) CompleteJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error) {
-	rsp, err := c.CompleteJobWithLease(ctx, tenantId, jobId, leaseId, body, reqEditors...)
+func (c *ClientWithResponses) CompleteJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *CompleteJobWithLeaseParams, body CompleteJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*CompleteJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.CompleteJobWithLease(ctx, tenantId, jobId, leaseId, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -2551,8 +2633,8 @@ func (c *ClientWithResponses) CompleteJobWithLeaseWithResponse(ctx context.Conte
 }
 
 // KeepAliveLeaseWithResponse request returning *KeepAliveLeaseHTTPResponse
-func (c *ClientWithResponses) KeepAliveLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, reqEditors ...RequestEditorFn) (*KeepAliveLeaseHTTPResponse, error) {
-	rsp, err := c.KeepAliveLease(ctx, tenantId, jobId, leaseId, reqEditors...)
+func (c *ClientWithResponses) KeepAliveLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *KeepAliveLeaseParams, reqEditors ...RequestEditorFn) (*KeepAliveLeaseHTTPResponse, error) {
+	rsp, err := c.KeepAliveLease(ctx, tenantId, jobId, leaseId, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -2560,16 +2642,16 @@ func (c *ClientWithResponses) KeepAliveLeaseWithResponse(ctx context.Context, te
 }
 
 // RescheduleJobWithLeaseWithBodyWithResponse request with arbitrary body returning *RescheduleJobWithLeaseHTTPResponse
-func (c *ClientWithResponses) RescheduleJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error) {
-	rsp, err := c.RescheduleJobWithLeaseWithBody(ctx, tenantId, jobId, leaseId, contentType, body, reqEditors...)
+func (c *ClientWithResponses) RescheduleJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.RescheduleJobWithLeaseWithBody(ctx, tenantId, jobId, leaseId, params, contentType, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseRescheduleJobWithLeaseHTTPResponse(rsp)
 }
 
-func (c *ClientWithResponses) RescheduleJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error) {
-	rsp, err := c.RescheduleJobWithLease(ctx, tenantId, jobId, leaseId, body, reqEditors...)
+func (c *ClientWithResponses) RescheduleJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, leaseId LeaseId, params *RescheduleJobWithLeaseParams, body RescheduleJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*RescheduleJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.RescheduleJobWithLease(ctx, tenantId, jobId, leaseId, params, body, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -2929,6 +3011,16 @@ func ParseKeepAliveLeaseHTTPResponse(rsp *http.Response) (*KeepAliveLeaseHTTPRes
 		HTTPResponse: rsp,
 	}
 
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest KeepAliveLeaseResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
 	return response, nil
 }
 
@@ -3021,16 +3113,16 @@ type ServerInterface interface {
 	GetJobLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId)
 	// Add chapter with lease
 	// (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/add_chapter)
-	AddChapterWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId)
+	AddChapterWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params AddChapterWithLeaseParams)
 	// Complete job with lease
 	// (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/complete)
-	CompleteJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId)
+	CompleteJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params CompleteJobWithLeaseParams)
 	// Keep lease alive
 	// (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/keepalive)
-	KeepAliveLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId)
+	KeepAliveLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params KeepAliveLeaseParams)
 	// Reschedule job with lease
 	// (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/reschedule)
-	RescheduleJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId)
+	RescheduleJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params RescheduleJobWithLeaseParams)
 	// Submit restart job with explicit job ID
 	// (PUT /v1/tenants/{tenantId}/jobs/{jobId}/restart)
 	PutRestartJob(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId)
@@ -3114,25 +3206,25 @@ func (_ Unimplemented) GetJobLease(w http.ResponseWriter, r *http.Request, tenan
 
 // Add chapter with lease
 // (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/add_chapter)
-func (_ Unimplemented) AddChapterWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (_ Unimplemented) AddChapterWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params AddChapterWithLeaseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Complete job with lease
 // (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/complete)
-func (_ Unimplemented) CompleteJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (_ Unimplemented) CompleteJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params CompleteJobWithLeaseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Keep lease alive
 // (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/keepalive)
-func (_ Unimplemented) KeepAliveLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (_ Unimplemented) KeepAliveLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params KeepAliveLeaseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Reschedule job with lease
 // (POST /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/reschedule)
-func (_ Unimplemented) RescheduleJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (_ Unimplemented) RescheduleJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params RescheduleJobWithLeaseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -3684,8 +3776,36 @@ func (siw *ServerInterfaceWrapper) AddChapterWithLease(w http.ResponseWriter, r 
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params AddChapterWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-SWF-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-SWF-Lease-Token")]; found {
+		var XSWFLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-SWF-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-SWF-Lease-Token", valueList[0], &XSWFLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-SWF-Lease-Token", Err: err})
+			return
+		}
+
+		params.XSWFLeaseToken = XSWFLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-SWF-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-SWF-Lease-Token", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.AddChapterWithLease(w, r, tenantId, jobId, leaseId)
+		siw.Handler.AddChapterWithLease(w, r, tenantId, jobId, leaseId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3733,8 +3853,36 @@ func (siw *ServerInterfaceWrapper) CompleteJobWithLease(w http.ResponseWriter, r
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CompleteJobWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-SWF-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-SWF-Lease-Token")]; found {
+		var XSWFLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-SWF-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-SWF-Lease-Token", valueList[0], &XSWFLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-SWF-Lease-Token", Err: err})
+			return
+		}
+
+		params.XSWFLeaseToken = XSWFLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-SWF-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-SWF-Lease-Token", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CompleteJobWithLease(w, r, tenantId, jobId, leaseId)
+		siw.Handler.CompleteJobWithLease(w, r, tenantId, jobId, leaseId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3782,8 +3930,36 @@ func (siw *ServerInterfaceWrapper) KeepAliveLease(w http.ResponseWriter, r *http
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params KeepAliveLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-SWF-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-SWF-Lease-Token")]; found {
+		var XSWFLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-SWF-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-SWF-Lease-Token", valueList[0], &XSWFLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-SWF-Lease-Token", Err: err})
+			return
+		}
+
+		params.XSWFLeaseToken = XSWFLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-SWF-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-SWF-Lease-Token", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.KeepAliveLease(w, r, tenantId, jobId, leaseId)
+		siw.Handler.KeepAliveLease(w, r, tenantId, jobId, leaseId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3831,8 +4007,36 @@ func (siw *ServerInterfaceWrapper) RescheduleJobWithLease(w http.ResponseWriter,
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RescheduleJobWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-SWF-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-SWF-Lease-Token")]; found {
+		var XSWFLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-SWF-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-SWF-Lease-Token", valueList[0], &XSWFLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-SWF-Lease-Token", Err: err})
+			return
+		}
+
+		params.XSWFLeaseToken = XSWFLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-SWF-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-SWF-Lease-Token", Err: err})
+		return
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.RescheduleJobWithLease(w, r, tenantId, jobId, leaseId)
+		siw.Handler.RescheduleJobWithLease(w, r, tenantId, jobId, leaseId, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4305,6 +4509,7 @@ type AddChapterWithLeaseRequestObject struct {
 	TenantId TenantId `json:"tenantId"`
 	JobId    JobId    `json:"jobId"`
 	LeaseId  LeaseId  `json:"leaseId"`
+	Params   AddChapterWithLeaseParams
 	Body     *AddChapterWithLeaseJSONRequestBody
 }
 
@@ -4332,6 +4537,7 @@ type CompleteJobWithLeaseRequestObject struct {
 	TenantId TenantId `json:"tenantId"`
 	JobId    JobId    `json:"jobId"`
 	LeaseId  LeaseId  `json:"leaseId"`
+	Params   CompleteJobWithLeaseParams
 	Body     *CompleteJobWithLeaseJSONRequestBody
 }
 
@@ -4351,24 +4557,27 @@ type KeepAliveLeaseRequestObject struct {
 	TenantId TenantId `json:"tenantId"`
 	JobId    JobId    `json:"jobId"`
 	LeaseId  LeaseId  `json:"leaseId"`
+	Params   KeepAliveLeaseParams
 }
 
 type KeepAliveLeaseResponseObject interface {
 	VisitKeepAliveLeaseResponse(w http.ResponseWriter) error
 }
 
-type KeepAliveLease204Response struct {
-}
+type KeepAliveLease200JSONResponse KeepAliveLeaseResponse
 
-func (response KeepAliveLease204Response) VisitKeepAliveLeaseResponse(w http.ResponseWriter) error {
-	w.WriteHeader(204)
-	return nil
+func (response KeepAliveLease200JSONResponse) VisitKeepAliveLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type RescheduleJobWithLeaseRequestObject struct {
 	TenantId TenantId `json:"tenantId"`
 	JobId    JobId    `json:"jobId"`
 	LeaseId  LeaseId  `json:"leaseId"`
+	Params   RescheduleJobWithLeaseParams
 	Body     *RescheduleJobWithLeaseJSONRequestBody
 }
 
@@ -4876,12 +5085,13 @@ func (sh *strictHandler) GetJobLease(w http.ResponseWriter, r *http.Request, ten
 }
 
 // AddChapterWithLease operation middleware
-func (sh *strictHandler) AddChapterWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (sh *strictHandler) AddChapterWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params AddChapterWithLeaseParams) {
 	var request AddChapterWithLeaseRequestObject
 
 	request.TenantId = tenantId
 	request.JobId = jobId
 	request.LeaseId = leaseId
+	request.Params = params
 
 	var body AddChapterWithLeaseJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -4911,12 +5121,13 @@ func (sh *strictHandler) AddChapterWithLease(w http.ResponseWriter, r *http.Requ
 }
 
 // CompleteJobWithLease operation middleware
-func (sh *strictHandler) CompleteJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (sh *strictHandler) CompleteJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params CompleteJobWithLeaseParams) {
 	var request CompleteJobWithLeaseRequestObject
 
 	request.TenantId = tenantId
 	request.JobId = jobId
 	request.LeaseId = leaseId
+	request.Params = params
 
 	var body CompleteJobWithLeaseJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -4946,12 +5157,13 @@ func (sh *strictHandler) CompleteJobWithLease(w http.ResponseWriter, r *http.Req
 }
 
 // KeepAliveLease operation middleware
-func (sh *strictHandler) KeepAliveLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (sh *strictHandler) KeepAliveLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params KeepAliveLeaseParams) {
 	var request KeepAliveLeaseRequestObject
 
 	request.TenantId = tenantId
 	request.JobId = jobId
 	request.LeaseId = leaseId
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.KeepAliveLease(ctx, request.(KeepAliveLeaseRequestObject))
@@ -4974,12 +5186,13 @@ func (sh *strictHandler) KeepAliveLease(w http.ResponseWriter, r *http.Request, 
 }
 
 // RescheduleJobWithLease operation middleware
-func (sh *strictHandler) RescheduleJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId) {
+func (sh *strictHandler) RescheduleJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId, leaseId LeaseId, params RescheduleJobWithLeaseParams) {
 	var request RescheduleJobWithLeaseRequestObject
 
 	request.TenantId = tenantId
 	request.JobId = jobId
 	request.LeaseId = leaseId
+	request.Params = params
 
 	var body RescheduleJobWithLeaseJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

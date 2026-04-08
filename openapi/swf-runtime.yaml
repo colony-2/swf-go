@@ -247,9 +247,14 @@ paths:
         - $ref: '#/components/parameters/TenantId'
         - $ref: '#/components/parameters/JobId'
         - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
       responses:
-        '204':
+        '200':
           description: Lease extended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeepAliveLeaseResponse'
   /v1/tenants/{tenantId}/jobs/{jobId}/leases/{leaseId}/complete:
     post:
       tags: [leases]
@@ -262,6 +267,7 @@ paths:
         - $ref: '#/components/parameters/TenantId'
         - $ref: '#/components/parameters/JobId'
         - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
       requestBody:
         required: true
         content:
@@ -282,6 +288,7 @@ paths:
         - $ref: '#/components/parameters/TenantId'
         - $ref: '#/components/parameters/JobId'
         - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
       requestBody:
         required: true
         content:
@@ -307,6 +314,7 @@ paths:
         - $ref: '#/components/parameters/TenantId'
         - $ref: '#/components/parameters/JobId'
         - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
       requestBody:
         required: true
         content:
@@ -470,6 +478,12 @@ components:
     LeaseId:
       name: leaseId
       in: path
+      required: true
+      schema:
+        type: string
+    LeaseTokenHeader:
+      name: X-SWF-Lease-Token
+      in: header
       required: true
       schema:
         type: string
@@ -664,11 +678,20 @@ components:
             - $ref: '#/components/schemas/ExecutionLease'
           nullable: true
           description: Targeted lease when the job is currently leaseable; `null` otherwise.
+    KeepAliveLeaseResponse:
+      type: object
+      additionalProperties: false
+      required: [leaseToken]
+      properties:
+        leaseToken:
+          type: string
     ExecutionLease:
       type: object
-      required: [leaseId, job, capability]
+      required: [leaseId, leaseToken, job, capability]
       properties:
         leaseId:
+          type: string
+        leaseToken:
           type: string
         job:
           $ref: '#/components/schemas/JobHandle'

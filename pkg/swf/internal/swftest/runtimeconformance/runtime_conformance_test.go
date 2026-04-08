@@ -14,6 +14,13 @@ import (
 	swftest "github.com/colony-2/swf-go/pkg/swf/internal/swftest"
 )
 
+func leaseTokenForTest(lease swf.ExecutionLease) string {
+	if leaseWithToken, ok := lease.(interface{ LeaseToken() string }); ok {
+		return leaseWithToken.LeaseToken()
+	}
+	return ""
+}
+
 type explicitIDEchoJob struct {
 	name string
 }
@@ -178,7 +185,8 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 
 			artifactBytes := []byte("hello runtime")
 			req := swf.PutChapterRequest{
-				LeaseID: lease.LeaseID(),
+				LeaseID:    lease.LeaseID(),
+				LeaseToken: leaseTokenForTest(lease),
 				Ref: swf.ChapterRef{
 					JobKey:  handle.JobKey,
 					Ordinal: 1,
@@ -433,7 +441,8 @@ func TestWorkflowRuntimeConflictBehaviorAcrossBuiltInRuntimes(t *testing.T) {
 
 				put := func(ordinal int64) error {
 					return built.Runtime.PutChapter(ctx, swf.PutChapterRequest{
-						LeaseID: lease.LeaseID(),
+						LeaseID:    lease.LeaseID(),
+						LeaseToken: leaseTokenForTest(lease),
 						Ref: swf.ChapterRef{
 							JobKey:  handle.JobKey,
 							Ordinal: ordinal,

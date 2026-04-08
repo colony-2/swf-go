@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
@@ -17,6 +19,10 @@ import (
 type Runtime struct {
 	raw    *runtimeapi.Client
 	client *runtimeapi.ClientWithResponses
+
+	mu           sync.Mutex
+	knownTenants map[string]struct{}
+	pollCursor   int
 }
 
 func New(baseURL string, httpClient *http.Client) (*Runtime, error) {
@@ -33,8 +39,9 @@ func New(baseURL string, httpClient *http.Client) (*Runtime, error) {
 		return nil, err
 	}
 	return &Runtime{
-		raw:    raw,
-		client: client,
+		raw:          raw,
+		client:       client,
+		knownTenants: make(map[string]struct{}),
 	}, nil
 }
 
@@ -73,7 +80,9 @@ func (r *Runtime) SubmitJob(ctx context.Context, req swf.SubmitJobRequest) (swf.
 		if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 			return swf.JobHandle{}, explicitJobCreateError("put job", resp.StatusCode(), resp.Body, resp.JSON409)
 		}
-		return fromAPIJobHandle(*resp.JSON200), nil
+		handle := fromAPIJobHandle(*resp.JSON200)
+		r.rememberTenant(handle.JobKey.TenantId)
+		return handle, nil
 	}
 	resp, err := r.client.SubmitJobWithResponse(ctx, req.Job.TenantId, body)
 	if err != nil {
@@ -82,7 +91,9 @@ func (r *Runtime) SubmitJob(ctx context.Context, req swf.SubmitJobRequest) (swf.
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 		return swf.JobHandle{}, responseError("submit job", resp.StatusCode(), resp.Body, nil)
 	}
-	return fromAPIJobHandle(*resp.JSON200), nil
+	handle := fromAPIJobHandle(*resp.JSON200)
+	r.rememberTenant(handle.JobKey.TenantId)
+	return handle, nil
 }
 
 func (r *Runtime) SubmitRestartJob(ctx context.Context, req swf.SubmitRestartJobRequest) (swf.JobHandle, error) {
@@ -120,7 +131,9 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req swf.SubmitRestartJob
 		if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 			return swf.JobHandle{}, explicitJobCreateError("put restart job", resp.StatusCode(), resp.Body, resp.JSON409)
 		}
-		return fromAPIJobHandle(*resp.JSON200), nil
+		handle := fromAPIJobHandle(*resp.JSON200)
+		r.rememberTenant(handle.JobKey.TenantId)
+		return handle, nil
 	}
 	resp, err := r.client.SubmitRestartJobWithResponse(ctx, req.Job.PriorJobKey.TenantId, body)
 	if err != nil {
@@ -129,7 +142,9 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req swf.SubmitRestartJob
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 		return swf.JobHandle{}, responseError("submit restart job", resp.StatusCode(), resp.Body, nil)
 	}
-	return fromAPIJobHandle(*resp.JSON200), nil
+	handle := fromAPIJobHandle(*resp.JSON200)
+	r.rememberTenant(handle.JobKey.TenantId)
+	return handle, nil
 }
 
 func (r *Runtime) CancelJob(ctx context.Context, req swf.CancelJobRequest) error {
@@ -153,6 +168,21 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	if len(req.TenantIds) == 1 && req.TenantIds[0] == "" {
 		return nil, fmt.Errorf("tenantId must be non-empty when supplied for PollWork")
 	}
+	if len(req.TenantIds) == 0 {
+		known := r.knownTenantOrder()
+		if len(known) == 0 {
+			// Some runtimes intentionally reject tenant-less polling. When the
+			// client has not yet observed any tenant IDs, treat that as "no work
+			// known yet" rather than sending an invalid request and triggering
+			// worker-loop backoff.
+			return nil, nil
+		}
+		return r.pollWorkKnownTenants(ctx, req, known)
+	}
+	return r.pollWorkOnce(ctx, req)
+}
+
+func (r *Runtime) pollWorkOnce(ctx context.Context, req swf.PollWorkRequest) ([]swf.ExecutionLease, error) {
 	metadataEquals, err := metadataPredicatesToAPI(predicatesFilter(req.MetadataEquals))
 	if err != nil {
 		return nil, err
@@ -187,6 +217,28 @@ func (r *Runtime) PollWork(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 	return out, nil
 }
 
+func (r *Runtime) pollWorkKnownTenants(ctx context.Context, req swf.PollWorkRequest, tenants []string) ([]swf.ExecutionLease, error) {
+	var firstErr error
+	for _, tenantID := range tenants {
+		pollReq := req
+		pollReq.TenantIds = []string{tenantID}
+		leases, err := r.pollWorkOnce(ctx, pollReq)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if len(leases) > 0 {
+			return leases, nil
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, nil
+}
+
 func (r *Runtime) GetJobLease(ctx context.Context, req swf.GetJobLeaseRequest) (swf.ExecutionLease, error) {
 	resp, err := r.client.GetJobLeaseWithResponse(ctx, req.JobKey.TenantId, req.JobKey.JobId, runtimeapi.GetJobLeaseRequest{
 		Capabilities:  append([]string(nil), req.Capabilities...),
@@ -202,7 +254,36 @@ func (r *Runtime) GetJobLease(ctx context.Context, req swf.GetJobLeaseRequest) (
 	if resp.JSON200.Lease == nil {
 		return nil, nil
 	}
+	r.rememberTenant(req.JobKey.TenantId)
 	return r.executionLeaseFromAPI(*resp.JSON200.Lease)
+}
+
+func (r *Runtime) rememberTenant(tenantID string) {
+	if tenantID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.knownTenants[tenantID] = struct{}{}
+}
+
+func (r *Runtime) knownTenantOrder() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.knownTenants) == 0 {
+		return nil
+	}
+	tenants := make([]string, 0, len(r.knownTenants))
+	for tenantID := range r.knownTenants {
+		tenants = append(tenants, tenantID)
+	}
+	sort.Strings(tenants)
+	if len(tenants) == 1 {
+		return tenants
+	}
+	start := r.pollCursor % len(tenants)
+	r.pollCursor = (r.pollCursor + 1) % len(tenants)
+	return append(append([]string(nil), tenants[start:]...), tenants[:start]...)
 }
 
 func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTaskIfWaitingRequest) error {
@@ -351,13 +432,21 @@ func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) err
 	if req.LeaseID == "" {
 		return fmt.Errorf("leaseId is required")
 	}
+	if req.LeaseToken == "" {
+		return fmt.Errorf("leaseToken is required")
+	}
 	chapter, err := runtimeChapterToWritable(ctx, req.Chapter, req.ArtifactUploads)
 	if err != nil {
 		return err
 	}
-	resp, err := r.client.AddChapterWithLeaseWithResponse(ctx, req.Ref.JobKey.TenantId, req.Ref.JobKey.JobId, req.LeaseID, runtimeapi.AddChapterRequest{
-		Chapter: chapter,
-	})
+	resp, err := r.client.AddChapterWithLeaseWithResponse(
+		ctx,
+		req.Ref.JobKey.TenantId,
+		req.Ref.JobKey.JobId,
+		req.LeaseID,
+		&runtimeapi.AddChapterWithLeaseParams{XSWFLeaseToken: req.LeaseToken},
+		runtimeapi.AddChapterRequest{Chapter: chapter},
+	)
 	if err != nil {
 		return err
 	}
@@ -394,21 +483,37 @@ type remoteExecutionLease struct {
 	jobKey      swf.JobKey
 	capability  string
 	payloadJSON json.RawMessage
+	mu          sync.RWMutex
+	leaseToken  string
 }
 
 func (l *remoteExecutionLease) LeaseID() string    { return l.leaseID }
 func (l *remoteExecutionLease) Job() swf.JobHandle { return swf.JobHandle{JobKey: l.jobKey} }
 func (l *remoteExecutionLease) Capability() string { return l.capability }
 func (l *remoteExecutionLease) StopKeepAlive()     {}
+func (l *remoteExecutionLease) LeaseToken() string {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.leaseToken
+}
 func (l *remoteExecutionLease) Payload() json.RawMessage {
 	return append(json.RawMessage(nil), l.payloadJSON...)
 }
 func (l *remoteExecutionLease) KeepAlive(ctx context.Context) error {
-	resp, err := l.runtime.client.KeepAliveLeaseWithResponse(ctx, l.jobKey.TenantId, l.jobKey.JobId, l.leaseID)
+	resp, err := l.runtime.client.KeepAliveLeaseWithResponse(
+		ctx,
+		l.jobKey.TenantId,
+		l.jobKey.JobId,
+		l.leaseID,
+		&runtimeapi.KeepAliveLeaseParams{XSWFLeaseToken: l.LeaseToken()},
+	)
 	if err != nil {
 		return err
 	}
-	if resp.StatusCode() == http.StatusNoContent {
+	if resp.StatusCode() == http.StatusOK && resp.JSON200 != nil {
+		l.mu.Lock()
+		l.leaseToken = resp.JSON200.LeaseToken
+		l.mu.Unlock()
 		return nil
 	}
 	return responseError("keep lease alive", resp.StatusCode(), resp.Body, swf.ErrExecutionLeaseLost)
@@ -419,7 +524,14 @@ func (l *remoteExecutionLease) Complete(ctx context.Context, req swf.CompleteExe
 		Status: req.Status,
 		Detail: stringPtrOrNil(req.Detail),
 	}
-	resp, err := l.runtime.client.CompleteJobWithLeaseWithResponse(ctx, l.jobKey.TenantId, l.jobKey.JobId, l.leaseID, body)
+	resp, err := l.runtime.client.CompleteJobWithLeaseWithResponse(
+		ctx,
+		l.jobKey.TenantId,
+		l.jobKey.JobId,
+		l.leaseID,
+		&runtimeapi.CompleteJobWithLeaseParams{XSWFLeaseToken: l.LeaseToken()},
+		body,
+	)
 	if err != nil {
 		return err
 	}
@@ -449,7 +561,14 @@ func (l *remoteExecutionLease) Reschedule(ctx context.Context, req swf.Reschedul
 		waitFor := append([]string(nil), req.WaitForJobIDs...)
 		body.WaitForJobIds = &waitFor
 	}
-	resp, err := l.runtime.client.RescheduleJobWithLeaseWithResponse(ctx, l.jobKey.TenantId, l.jobKey.JobId, l.leaseID, body)
+	resp, err := l.runtime.client.RescheduleJobWithLeaseWithResponse(
+		ctx,
+		l.jobKey.TenantId,
+		l.jobKey.JobId,
+		l.leaseID,
+		&runtimeapi.RescheduleJobWithLeaseParams{XSWFLeaseToken: l.LeaseToken()},
+		body,
+	)
 	if err != nil {
 		return err
 	}
@@ -470,6 +589,7 @@ func (r *Runtime) executionLeaseFromAPI(lease runtimeapi.ExecutionLease) (swf.Ex
 		jobKey:      fromAPIJobKey(lease.Job.JobKey),
 		capability:  lease.Capability,
 		payloadJSON: payload,
+		leaseToken:  lease.LeaseToken,
 	}, nil
 }
 
@@ -557,7 +677,7 @@ func explicitJobCreateError(operation string, status int, body []byte, conflict 
 		return fmt.Errorf("%s: %s", operation, message)
 	case http.StatusConflict:
 		if conflict != nil && conflict.Code == runtimeapi.ExistingJobMismatch {
-			return fmt.Errorf("%w: %s", swf.ErrExistingJobMismatch, message)
+			return swf.NewExistingJobMismatchError(message)
 		}
 		return fmt.Errorf("%w: %s", swf.ErrConflict, message)
 	default:
