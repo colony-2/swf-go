@@ -107,6 +107,12 @@ func (r *workerRunner) ManipulateStepForTest(newStep int64) {
 	r.storyCounter = newStep
 }
 
+func (r *workerRunner) markStoryOrdinalConsumed(ordinal int64) {
+	if ordinal >= r.storyCounter {
+		r.storyCounter = ordinal + 1
+	}
+}
+
 func (r *workerRunner) observerOrNoop() ReplayObserver {
 	if r.observer != nil {
 		return r.observer
@@ -552,7 +558,6 @@ func (r *workerRunner) failJobPrerequisites(ctx context.Context, inputData JobDa
 	r.emitJobStart(attempt, inputData, startAt)
 
 	ordinal := r.storyCounter
-	r.storyCounter++
 
 	payload, artifacts, payloadKind, prepErr := r.prepareJobResultPayload(nil, err, config.inputRef)
 	if prepErr != nil {
@@ -561,6 +566,7 @@ func (r *workerRunner) failJobPrerequisites(ctx context.Context, inputData JobDa
 	if _, saveErr := r.persistJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &startAt, &startAt); saveErr != nil {
 		return nil, saveErr
 	}
+	r.markStoryOrdinalConsumed(ordinal)
 	cleanupArtifacts(artifacts, r.logger)
 	if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
 		cleanupArtifacts(inputArtifacts, r.logger)
@@ -682,7 +688,6 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 			nextAttemptStartAt = nil
 		}
 		ordinal := r.storyCounter
-		r.storyCounter++
 
 		inputRef := &InputReference{Ordinal: ordinal - 1, Hash: inputHash}
 		if inputRef.Ordinal < 0 {
@@ -696,6 +701,7 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 
 		chapter, meta, err := r.getChapter(ctx, ordinal)
 		if err == nil {
+			r.markStoryOrdinalConsumed(ordinal)
 			if chapter.ChapterType != chapterTypeTaskAttemptOutcome && chapter.ChapterType != chapterTypeRestartExtra {
 				return nil, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, chapter.ChapterType, ordinal)
 			}
@@ -961,8 +967,14 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 			Ordinal: ordinal,
 		}, taskType, chapterTypeTaskAttemptOutcome, payloadKind, inputHash, time.Now().UTC(), meta, payload, artifacts)
 		if err != nil {
-			return nil, err
+			return nil, NewSystemError(SystemErrorPayload{
+				Message:   fmt.Sprintf("persist task outcome chapter %d for %s: %v", ordinal, taskType, err),
+				Component: "swf.worker_runner",
+				Code:      "task_outcome_persist_failed",
+				InputRef:  inputRef,
+			})
 		}
+		r.markStoryOrdinalConsumed(ordinal)
 		cleanupArtifacts(artifacts, r.logger)
 
 		if originalErr == nil {
@@ -1047,10 +1059,10 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 				return nil, prepErr
 			}
 			ordinal := r.storyCounter
-			r.storyCounter++
 			if _, saveErr := r.persistJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, nil, nil); saveErr != nil {
 				return nil, saveErr
 			}
+			r.markStoryOrdinalConsumed(ordinal)
 			cleanupArtifacts(artifacts, r.logger)
 			if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
 				cleanupArtifacts(inputArtifacts, r.logger)
@@ -1072,7 +1084,9 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 		)
 		if cachedChapter, _, err := r.getChapter(ctx, r.storyCounter); err == nil {
 			if cachedChapter.ChapterType == chapterTypeJobAttemptOutcome {
-				outputCached, nextAttempt, cached, terminal, priorErr, cachedErr, cachedEndAt, nextStartAt = r.checkCachedJobResult(ctx, r.storyCounter, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)
+				ordinal := r.storyCounter
+				r.markStoryOrdinalConsumed(ordinal)
+				outputCached, nextAttempt, cached, terminal, priorErr, cachedErr, cachedEndAt, nextStartAt = r.checkCachedJobResult(ctx, ordinal, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)
 				if cachedErr != nil {
 					return nil, cachedErr
 				}
@@ -1114,12 +1128,12 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 		}
 
 		ordinal := r.storyCounter
-		r.storyCounter++
 		outputCached, nextAttempt, cached, terminal, priorErr, cachedErr, cachedEndAt, nextStartAt = r.checkCachedJobResult(ctx, ordinal, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)
 		if cachedErr != nil {
 			return nil, cachedErr
 		}
 		if cached {
+			r.markStoryOrdinalConsumed(ordinal)
 			if terminal {
 				r.completeLease(ctx, priorErr)
 				at := attemptFinishedAt
@@ -1149,6 +1163,7 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 		if _, err := r.persistJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &attemptStartAt, &attemptFinishedAt); err != nil {
 			return nil, err
 		}
+		r.markStoryOrdinalConsumed(ordinal)
 		cleanupArtifacts(artifacts, r.logger)
 
 		if jobErr == nil {

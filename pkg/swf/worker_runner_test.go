@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -300,7 +301,7 @@ type fakeExecutionLease struct {
 	rescheduleErr      error
 }
 
-func (l *fakeExecutionLease) LeaseID() string { return l.leaseID }
+func (l *fakeExecutionLease) LeaseID() string    { return l.leaseID }
 func (l *fakeExecutionLease) Job() JobHandle     { return l.job }
 func (l *fakeExecutionLease) Capability() string { return l.capability }
 func (l *fakeExecutionLease) Payload() json.RawMessage {
@@ -546,6 +547,22 @@ func (j taskTimeoutJob) Run(ctx JobContext, data JobData) (JobData, error) {
 	return ctx.DoTask(j.policy, j.taskType, data)
 }
 
+type twoTaskJob struct {
+	name   string
+	first  string
+	second string
+}
+
+func (j twoTaskJob) Name() string { return j.name }
+
+func (j twoTaskJob) Run(ctx JobContext, data JobData) (JobData, error) {
+	out, err := ctx.DoTask(RunPolicy{}, j.first, data)
+	if err != nil {
+		return nil, err
+	}
+	return ctx.DoTask(RunPolicy{}, j.second, out)
+}
+
 type replayObserverRecorder struct {
 	jobStarts  []JobStartEvent
 	jobEnds    []JobEndEvent
@@ -626,6 +643,45 @@ func TestWorkerRunnerTaskRestartUsesCache(t *testing.T) {
 	}
 }
 
+func TestWorkerRunnerSequentialTaskInputRefsUsePreviousOrdinal(t *testing.T) {
+	runtime := newRunnerTestRuntime()
+	jobKey := JobKey{TenantId: "tenant", JobId: "sequential-input-refs"}
+	task1 := countingTaskWorker{name: "first", counter: &atomic.Int32{}}
+	task2 := countingTaskWorker{name: "second", counter: &atomic.Int32{}}
+	job := twoTaskJob{name: "sequential-input-refs", first: task1.Name(), second: task2.Name()}
+	ws := mustWorkSetForRunnerTest(t, job, task1, task2)
+	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
+
+	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
+	if _, err := runner.DoJob(context.Background()); err != nil {
+		t.Fatalf("do job: %v", err)
+	}
+
+	ch1, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 1})
+	if err != nil {
+		t.Fatalf("chapter 1: %v", err)
+	}
+	ch2, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 2})
+	if err != nil {
+		t.Fatalf("chapter 2: %v", err)
+	}
+	meta1, err := storedChapterMeta(ch1)
+	if err != nil {
+		t.Fatalf("chapter 1 meta: %v", err)
+	}
+	meta2, err := storedChapterMeta(ch2)
+	if err != nil {
+		t.Fatalf("chapter 2 meta: %v", err)
+	}
+	if meta1.InputRef == nil || meta1.InputRef.Ordinal != 0 {
+		t.Fatalf("expected first task input ref ordinal 0, got %+v", meta1.InputRef)
+	}
+	if meta2.InputRef == nil || meta2.InputRef.Ordinal != 1 {
+		t.Fatalf("expected second task input ref ordinal 1, got %+v", meta2.InputRef)
+	}
+}
+
 func TestWorkerRunnerJobRetryWithFailures(t *testing.T) {
 	runtime := newRunnerTestRuntime()
 	jobKey := JobKey{TenantId: "tenant", JobId: "job-retry"}
@@ -697,6 +753,20 @@ func TestWorkerRunnerTaskRetryWithFailures(t *testing.T) {
 	}
 	if ch2.PayloadKind != payloadKindApp {
 		t.Fatalf("expected success chapter, got %s", ch2.PayloadKind)
+	}
+	meta1, err := storedChapterMeta(ch1)
+	if err != nil {
+		t.Fatalf("chapter 1 meta: %v", err)
+	}
+	meta2, err := storedChapterMeta(ch2)
+	if err != nil {
+		t.Fatalf("chapter 2 meta: %v", err)
+	}
+	if meta1.InputRef == nil || meta1.InputRef.Ordinal != 0 {
+		t.Fatalf("expected first task attempt input ref ordinal 0, got %+v", meta1.InputRef)
+	}
+	if meta2.InputRef == nil || meta2.InputRef.Ordinal != 1 {
+		t.Fatalf("expected second task attempt input ref ordinal 1, got %+v", meta2.InputRef)
 	}
 }
 
@@ -935,6 +1005,76 @@ func TestWorkerRunnerDoesNotCompleteLeaseOnPersistFailure(t *testing.T) {
 	_, _, completeCalls, _ := lease.snapshot()
 	if len(completeCalls) != 0 {
 		t.Fatalf("expected no complete calls, got %d", len(completeCalls))
+	}
+}
+
+func TestWorkerRunnerTaskPersistFailureWritesJobFailureAtSameOrdinal(t *testing.T) {
+	runtime := newRunnerTestRuntime()
+	taskPersistErr := errors.New("task outcome persist failed")
+	type putCall struct {
+		ordinal     int64
+		chapterType string
+	}
+	var calls []putCall
+	runtime.putChapterHook = func(req PutChapterRequest) error {
+		calls = append(calls, putCall{ordinal: req.Ref.Ordinal, chapterType: req.Chapter.ChapterType})
+		if req.Chapter.ChapterType == chapterTypeTaskAttemptOutcome {
+			return taskPersistErr
+		}
+		return nil
+	}
+
+	jobKey := JobKey{TenantId: "tenant", JobId: "task-persist-failure"}
+	var taskRuns atomic.Int32
+	task := failThenSucceedTask{name: "failing-task", counter: &taskRuns, failAttempts: 1}
+	job := singleTaskJob{name: "task-persist-failure", taskType: task.Name()}
+	ws := mustWorkSetForRunnerTest(t, job, task)
+	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
+
+	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
+	_, err := runner.DoJob(context.Background())
+	if err == nil {
+		t.Fatal("expected task persistence system error")
+	}
+	if !IsSystemError(err) {
+		t.Fatalf("expected system error, got %T %v", err, err)
+	}
+	if !strings.Contains(err.Error(), taskPersistErr.Error()) {
+		t.Fatalf("expected original persistence message in error, got %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 PutChapter calls, got %+v", calls)
+	}
+	if calls[0] != (putCall{ordinal: 1, chapterType: chapterTypeTaskAttemptOutcome}) {
+		t.Fatalf("unexpected task outcome write call: %+v", calls[0])
+	}
+	if calls[1] != (putCall{ordinal: 1, chapterType: chapterTypeJobAttemptOutcome}) {
+		t.Fatalf("unexpected job outcome write call: %+v", calls[1])
+	}
+
+	chapter, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 1})
+	if err != nil {
+		t.Fatalf("expected job failure chapter at ordinal 1: %v", err)
+	}
+	if chapter.ChapterType != chapterTypeJobAttemptOutcome {
+		t.Fatalf("expected job outcome chapter, got %s", chapter.ChapterType)
+	}
+	if chapter.PayloadKind != payloadKindSystemError {
+		t.Fatalf("expected system error payload, got %s", chapter.PayloadKind)
+	}
+	if !strings.Contains(string(chapter.Data), taskPersistErr.Error()) {
+		t.Fatalf("expected persisted payload to mention persistence error, got %s", chapter.Data)
+	}
+	if _, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 2}); !errors.Is(err, ErrChapterNotFound) {
+		t.Fatalf("expected no skipped ordinal 2 chapter, got %v", err)
+	}
+	_, _, completeCalls, _ := lease.snapshot()
+	if len(completeCalls) != 1 {
+		t.Fatalf("expected 1 complete call, got %d", len(completeCalls))
+	}
+	if completeCalls[0].Status != "failed_system" {
+		t.Fatalf("expected failed_system completion, got %+v", completeCalls[0])
 	}
 }
 
