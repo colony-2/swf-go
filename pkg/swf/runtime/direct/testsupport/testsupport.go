@@ -40,7 +40,7 @@ func StartEmbeddedStrata() (*EmbeddedStrataHandle, error) {
 
 	cfg := daemon.Config{
 		ListenAddr:             "127.0.0.1:0",
-		RowStoreURI:            fmt.Sprintf("pebble://%s", filepath.ToSlash(rowDir)),
+		RowStoreURI:            fmt.Sprintf("sqlite://%s", filepath.ToSlash(filepath.Join(rowDir, "strata.db"))),
 		BlobStoreURI:           fmt.Sprintf("blobfs://%s", filepath.ToSlash(blobDir)),
 		MaxInlineArtifactBytes: daemon.DefaultMaxInlineArtifactBytes,
 	}

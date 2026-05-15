@@ -16,6 +16,7 @@ import (
 	"github.com/colony-2/strata-go/pkg/daemon"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
 	remoteruntime "github.com/colony-2/swf-go/pkg/swf/runtime/remote"
+	sqliteruntime "github.com/colony-2/swf-go/pkg/swf/runtime/sqlite"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 	"github.com/spf13/cobra"
 
@@ -25,6 +26,7 @@ import (
 const (
 	defaultListenAddr      = "127.0.0.1:9047"
 	postgresDSNEnvVar      = "SWF_POSTGRES_DSN"
+	sqliteDSNEnvVar        = "SWF_SQLITE_DSN"
 	embeddedStrataAPIKey   = "local-dev-token"
 	defaultSetupTimeout    = 45 * time.Second
 	defaultShutdownTimeout = 10 * time.Second
@@ -34,6 +36,9 @@ var serveHTTPFunc = serveHTTP
 
 func newRootCmd() *cobra.Command {
 	var listenAddr string
+	var dbPath string
+	var sqliteDSN string
+	var blobDir string
 
 	cmd := &cobra.Command{
 		Use:          "swfd",
@@ -41,16 +46,32 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runToy(cmd.Context(), listenAddr)
+			return runSQLite(cmd.Context(), listenAddr, sqliteConfigFromFlags(dbPath, sqliteDSN, blobDir))
 		},
 	}
 
 	cmd.AddCommand(
+		newSQLiteCmd(&listenAddr, &dbPath, &sqliteDSN, &blobDir),
 		newToyCmd(&listenAddr),
 		newDirectCmd(&listenAddr),
 	)
 	cmd.PersistentFlags().StringVar(&listenAddr, "listen", defaultListenAddr, "listen address for the HTTP API")
+	cmd.PersistentFlags().StringVar(&dbPath, "db", "swf.db", "SQLite database path for the default embedded runtime")
+	cmd.PersistentFlags().StringVar(&sqliteDSN, "sqlite-dsn", "", "SQLite DSN for the default embedded runtime (overrides --db and "+sqliteDSNEnvVar+")")
+	cmd.PersistentFlags().StringVar(&blobDir, "blob-dir", "", "blobfs directory for large artifacts (defaults to <db>.blobs)")
 
+	return cmd
+}
+
+func newSQLiteCmd(listenAddr *string, dbPath *string, sqliteDSN *string, blobDir *string) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sqlite",
+		Short: "Run a SQLite-backed embedded workflow runtime over HTTP",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runSQLite(cmd.Context(), *listenAddr, sqliteConfigFromFlags(*dbPath, *sqliteDSN, *blobDir))
+		},
+	}
 	return cmd
 }
 
@@ -114,6 +135,32 @@ func newDirectCmd(listenAddr *string) *cobra.Command {
 func runToy(ctx context.Context, listenAddr string) error {
 	runtime := toyruntime.New()
 	return serveHTTPFunc(ctx, listenAddr, remoteruntime.NewServer(runtime), nil)
+}
+
+func runSQLite(ctx context.Context, listenAddr string, cfg sqliteruntime.Config) error {
+	runtime, err := sqliteruntime.NewFromConfig(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("build SQLite runtime: %w", err)
+	}
+	log.Printf("using SQLite runtime")
+	return serveHTTPFunc(ctx, listenAddr, remoteruntime.NewServer(runtime), runtime.Close)
+}
+
+func sqliteConfigFromFlags(dbPath string, sqliteDSN string, blobDir string) sqliteruntime.Config {
+	cfg := sqliteruntime.Config{
+		DBPath:  dbPath,
+		BlobDir: blobDir,
+	}
+	if sqliteDSN != "" {
+		cfg.DSN = sqliteDSN
+		cfg.DBPath = ""
+		return cfg
+	}
+	if envValue := os.Getenv(sqliteDSNEnvVar); envValue != "" {
+		cfg.DSN = envValue
+		cfg.DBPath = ""
+	}
+	return cfg
 }
 
 func serveHTTP(ctx context.Context, listenAddr string, handler http.Handler, cleanup func(context.Context) error) error {
@@ -210,7 +257,7 @@ func startEmbeddedStrata(ctx context.Context) (*embeddedStrataHandle, error) {
 
 	cfg := daemon.Config{
 		ListenAddr:             "127.0.0.1:0",
-		RowStoreURI:            fmt.Sprintf("pebble://%s", filepath.ToSlash(rowDir)),
+		RowStoreURI:            fmt.Sprintf("sqlite://%s", filepath.ToSlash(filepath.Join(rowDir, "strata.db"))),
 		BlobStoreURI:           fmt.Sprintf("blobfs://%s", filepath.ToSlash(blobDir)),
 		MaxInlineArtifactBytes: daemon.DefaultMaxInlineArtifactBytes,
 	}

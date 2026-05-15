@@ -16,6 +16,7 @@ import (
 	"github.com/colony-2/swf-go/pkg/swf"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
 	remoteruntime "github.com/colony-2/swf-go/pkg/swf/runtime/remote"
+	sqliteruntime "github.com/colony-2/swf-go/pkg/swf/runtime/sqlite"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 )
 
@@ -69,6 +70,13 @@ func BuiltInRuntimeHarnesses() []RuntimeHarness {
 			New:                    newToyHarness,
 		},
 		{
+			Name:                   "sqlite",
+			SupportsLeases:         true,
+			SupportsRuntimeStorage: true,
+			StartsWorkerLoop:       true,
+			New:                    newSQLiteHarness,
+		},
+		{
 			Name:                   "direct",
 			SupportsLeases:         true,
 			SupportsRuntimeStorage: true,
@@ -93,6 +101,13 @@ func RemoteRuntimeHarnesses() []RuntimeHarness {
 			SupportsRuntimeStorage: true,
 			StartsWorkerLoop:       true,
 			New:                    newRemoteToyHarness,
+		},
+		{
+			Name:                   "remote-sqlite",
+			SupportsLeases:         true,
+			SupportsRuntimeStorage: true,
+			StartsWorkerLoop:       true,
+			New:                    newRemoteSQLiteHarness,
 		},
 		{
 			Name:                   "remote-direct",
@@ -321,6 +336,15 @@ func newDirectHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness
 	return buildHarness(t, "direct", embedded.Runtime, true, embedded.Shutdown, workers...)
 }
 
+func newSQLiteHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {
+	t.Helper()
+	embedded, err := sqliteruntime.StartEmbeddedRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("start embedded sqlite runtime: %v", err)
+	}
+	return buildHarness(t, "sqlite", embedded.Runtime, true, embedded.Shutdown, workers...)
+}
+
 func newRemoteToyHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {
 	t.Helper()
 	underlying := toyruntime.New()
@@ -351,6 +375,26 @@ func newRemoteDirectHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeH
 		embedded.Shutdown()
 	}
 	return buildHarness(t, "remote-direct", runtime, true, shutdown, workers...)
+}
+
+func newRemoteSQLiteHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {
+	t.Helper()
+	embedded, err := sqliteruntime.StartEmbeddedRuntime(context.Background())
+	if err != nil {
+		t.Fatalf("start embedded sqlite runtime: %v", err)
+	}
+	server := httptest.NewServer(remoteruntime.NewServer(embedded.Runtime))
+	runtime, err := remoteruntime.New(server.URL, server.Client())
+	if err != nil {
+		server.Close()
+		embedded.Shutdown()
+		t.Fatalf("build remote sqlite runtime: %v", err)
+	}
+	shutdown := func() {
+		server.Close()
+		embedded.Shutdown()
+	}
+	return buildHarness(t, "remote-sqlite", runtime, true, shutdown, workers...)
 }
 
 func newExternalRemoteHarness(t *testing.T, workers ...swf.WorkSet) *BuiltRuntimeHarness {

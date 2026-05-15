@@ -26,20 +26,21 @@ go get github.com/colony-2/swf-go
 
 The repo includes a Cobra-based local runtime server at `cmd/swfd`.
 
-Run the in-memory toy runtime. `swfd` with no subcommand defaults to `toy`:
+Run the default SQLite-backed embedded runtime:
 
 ```bash
-go run ./cmd/swfd --listen 127.0.0.1:9047
+go run ./cmd/swfd --listen 127.0.0.1:9047 --db swf.db
 ```
 
-Run the direct runtime with embedded Strata and postgres-backed pgwf state:
+Run the in-memory toy runtime explicitly:
 
 ```bash
-SWF_POSTGRES_DSN='postgres://user:pass@localhost/db?sslmode=disable' \
-go run ./cmd/swfd direct --listen 127.0.0.1:9047
+go run ./cmd/swfd toy --listen 127.0.0.1:9047
 ```
 
-You can also pass the postgres connection string with `--postgres-dsn`.
+For Go module migration details, including moving embedded direct-runtime users
+to SQLite, see
+[`docs/MIGRATION-SQLITE-EMBEDDED-RUNTIME.md`](docs/MIGRATION-SQLITE-EMBEDDED-RUNTIME.md).
 
 ## Quick Start
 

@@ -4,10 +4,11 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"path/filepath"
 	"testing"
 )
 
-func TestRootCommandDefaultsToToy(t *testing.T) {
+func TestRootCommandDefaultsToSQLite(t *testing.T) {
 	origServeHTTP := serveHTTPFunc
 	defer func() {
 		serveHTTPFunc = origServeHTTP
@@ -15,14 +16,22 @@ func TestRootCommandDefaultsToToy(t *testing.T) {
 
 	called := 0
 	var gotListenAddr string
-	serveHTTPFunc = func(_ context.Context, listenAddr string, _ http.Handler, _ func(context.Context) error) error {
+	serveHTTPFunc = func(ctx context.Context, listenAddr string, _ http.Handler, cleanup func(context.Context) error) error {
 		called++
 		gotListenAddr = listenAddr
+		if cleanup != nil {
+			if err := cleanup(ctx); err != nil {
+				t.Fatalf("cleanup returned error: %v", err)
+			}
+		}
 		return nil
 	}
 
 	cmd := newRootCmd()
-	cmd.SetArgs([]string{"--listen", "127.0.0.1:9999"})
+	cmd.SetArgs([]string{
+		"--listen", "127.0.0.1:9999",
+		"--db", filepath.Join(t.TempDir(), "swf.db"),
+	})
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 
