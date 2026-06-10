@@ -5,12 +5,20 @@ type AppError struct
   field Payload AppErrorPayload
 method AppError.As func(target any) bool
 method AppError.Error func() string
+type AppErrorOutcome struct
+  field Error AppErrorPayload
 type AppErrorPayload struct
   field Message string `json:"message"`
   field Level string `json:"level,omitempty"`
   field Attrs map[string]interface{} `json:"attrs,omitempty"`
   field InputRef *InputReference `json:"input_ref,omitempty"`
   field Stacktrace []string `json:"stacktrace,omitempty"`
+type ApplicationInputBytes struct
+  field Data []byte
+type ApplicationOutputBytes struct
+  field Data []byte
+type ApplicationOutputOutcome struct
+  field Output ApplicationOutputBytes
 type Artifact interface
   method ArtifactKey func() (ArtifactKey, error)
   method Bytes func(ctx context.Context) ([]byte, error)
@@ -59,6 +67,26 @@ type CancelJobRequest struct
   field JobKey JobKey
   field Reason string
   field WorkerID string
+type ChapterMetadata struct
+  field Fields map[string]ChapterMetadataValue
+method ChapterMetadata.JSON func() (encoding/json.RawMessage, error)
+const ChapterMetadataBool ChapterMetadataKind = "bool"
+const ChapterMetadataDouble ChapterMetadataKind = "double"
+func ChapterMetadataFromJSON func(raw encoding/json.RawMessage) (ChapterMetadata, error)
+const ChapterMetadataInt ChapterMetadataKind = "int"
+type ChapterMetadataKind string
+const ChapterMetadataList ChapterMetadataKind = "list"
+const ChapterMetadataMap ChapterMetadataKind = "map"
+const ChapterMetadataNull ChapterMetadataKind = "null"
+const ChapterMetadataString ChapterMetadataKind = "string"
+type ChapterMetadataValue struct
+  field Kind ChapterMetadataKind
+  field Bool bool
+  field Int int64
+  field Double float64
+  field String string
+  field List []ChapterMetadataValue
+  field Map map[string]ChapterMetadataValue
 type ChapterRef struct
   field JobKey JobKey
   field Ordinal int64
@@ -169,6 +197,8 @@ type JobAttempt struct
   field Output *TaskIO
   field Outcome TaskOutcome
   field Tasks []TaskRun
+type JobAttemptOutcomeChapter struct
+  field Outcome StructuredTaskOutcome
 type JobContext interface
   method AwaitDuration func(waitFor Duration) error
   method AwaitJobs func(jobIds ...string) error
@@ -243,6 +273,8 @@ type JobStart struct
   field WorkerID string
   field CreatedAt time.Time
   field Input *TaskIO
+type JobStartChapter struct
+  field Input ApplicationInputBytes
 type JobStartEvent struct
   field JobKey JobKey
   field AttemptNumber int
@@ -321,6 +353,7 @@ func NewArtifactFromFileNoCleanup func(name string, filePath string) (Artifact, 
 func NewArtifactFromReader func(name string, r io.Reader, size int64) Artifact
 func NewEngineBuilder func() *EngineBuilder
 func NewExistingJobMismatchError func(message string) error
+func NewStructuredWorkflowRuntime func(runtime WorkflowRuntime) StructuredWorkflowRuntime
 func NewSystemError func(payload SystemErrorPayload) error
 func NewTaskContext func(jobKey JobKey, step int64, logger *log/slog.Logger, await func(time.Time) error, awaitJobs func(...string) error) TaskContext
 func NewTaskData func(data any, artifacts ...Artifact) (TaskData, error)
@@ -342,6 +375,12 @@ type PutChapterRequest struct
   field LeaseToken string
   field Ref ChapterRef
   field Chapter StoredChapter
+  field ArtifactUploads []ArtifactUpload
+type PutStructuredChapterRequest struct
+  field LeaseID string
+  field LeaseToken string
+  field Ref ChapterRef
+  field Chapter StructuredChapterRecord
   field ArtifactUploads []ArtifactUpload
 const ReplayCacheMissAwaitJobsPending ReplayCacheMissReason = "await_jobs_pending"
 const ReplayCacheMissAwaitNotReady ReplayCacheMissReason = "await_not_ready"
@@ -371,6 +410,8 @@ type RescheduleExecutionRequest struct
   field Payload encoding/json.RawMessage
   field AlternateNeed string
   field AlternateAfter *time.Duration
+type RestartExtraChapter struct
+  field Output ApplicationOutputBytes
 type RetryPolicy struct
   field InitialInterval Duration `yaml:"initial_interval,omitempty"`
   field BackoffCoefficient float64 `yaml:"backoff_coefficient,omitempty"`
@@ -415,6 +456,22 @@ type StoredChapter struct
   field Metadata encoding/json.RawMessage
   field Data encoding/json.RawMessage
   field Artifacts []StoredArtifact
+func StoredChapterFromStructured func(chapter StructuredChapterRecord) (StoredChapter, error)
+type StructuredChapterBody interface
+func StructuredChapterFromStored func(chapter StoredChapter) (StructuredChapterRecord, error)
+type StructuredChapterRecord struct
+  field Ordinal int64
+  field TaskType string
+  field Body StructuredChapterBody
+  field InputHash string
+  field CreatedAt time.Time
+  field Metadata ChapterMetadata
+  field Artifacts []StoredArtifact
+type StructuredTaskOutcome interface
+type StructuredWorkflowRuntime interface
+  method GetStructuredChapter func(ctx context.Context, ref ChapterRef) (StructuredChapterRecord, error)
+  method ListStructuredChapters func(ctx context.Context, req ListChaptersRequest) ([]StructuredChapterRecord, error)
+  method PutStructuredChapter func(ctx context.Context, req PutStructuredChapterRequest) error
 type SubmitJob struct
   field TenantId string
   field JobType string
@@ -442,6 +499,8 @@ type SystemError struct
   field Payload SystemErrorPayload
 method SystemError.As func(target any) bool
 method SystemError.Error func() string
+type SystemErrorOutcome struct
+  field Error SystemErrorPayload
 type SystemErrorPayload struct
   field Message string `json:"message"`
   field Component string `json:"component,omitempty"`
@@ -466,6 +525,8 @@ type TaskAttempt struct
   field State string
   field Runtime *TaskRuntime
   field Outcome TaskOutcome
+type TaskAttemptOutcomeChapter struct
+  field Outcome StructuredTaskOutcome
 const TaskAttemptStateFailed untyped string = "FAILED"
 const TaskAttemptStateLeased untyped string = "LEASED"
 const TaskAttemptStateReady untyped string = "READY"
@@ -584,6 +645,8 @@ type TimeoutError struct
   field Payload TimeoutPayload
 method TimeoutError.As func(target any) bool
 method TimeoutError.Error func() string
+type TimeoutOutcome struct
+  field Timeout TimeoutPayload
 type TimeoutPayload struct
   field Scope string `json:"scope"`
   field After Duration `json:"after"`

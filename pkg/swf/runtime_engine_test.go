@@ -19,6 +19,7 @@ type fakeWorkflowRuntime struct {
 	jobReq        JobKey
 	listReq       ListJobsRequest
 	chapterRef    ChapterRef
+	putChapterReq PutChapterRequest
 	artifactRef   ArtifactRef
 	startHandle   JobHandle
 	restartHandle JobHandle
@@ -76,6 +77,7 @@ func (r *fakeWorkflowRuntime) GetChapter(ctx context.Context, ref ChapterRef) (S
 }
 
 func (r *fakeWorkflowRuntime) PutChapter(ctx context.Context, req PutChapterRequest) error {
+	r.putChapterReq = req
 	return nil
 }
 

@@ -26,8 +26,15 @@ type WorkflowRuntime interface {
 	ListJobs(ctx context.Context, req ListJobsRequest) (ListJobsResponse, error)
 
 	// Chapter / replay access
+	//
+	// Deprecated: use NewStructuredWorkflowRuntime(runtime).GetStructuredChapter
+	// for direct chapter access.
 	GetChapter(ctx context.Context, ref ChapterRef) (StoredChapter, error)
+	// Deprecated: use NewStructuredWorkflowRuntime(runtime).ListStructuredChapters
+	// for direct chapter access.
 	ListChapters(ctx context.Context, req ListChaptersRequest) ([]StoredChapter, error)
+	// Deprecated: use NewStructuredWorkflowRuntime(runtime).PutStructuredChapter
+	// for direct chapter access.
 	PutChapter(ctx context.Context, req PutChapterRequest) error
 
 	// Artifact access
@@ -125,6 +132,9 @@ type StoredArtifact struct {
 	Size   int64
 }
 
+// StoredChapter is the legacy stringly typed chapter representation.
+//
+// Deprecated: use StructuredChapterRecord for direct chapter access.
 type StoredChapter struct {
 	Ordinal     int64
 	TaskType    string
@@ -137,6 +147,9 @@ type StoredChapter struct {
 	Artifacts   []StoredArtifact
 }
 
+// PutChapterRequest stores a legacy stringly typed chapter.
+//
+// Deprecated: use PutStructuredChapterRequest for direct chapter writes.
 type PutChapterRequest struct {
 	LeaseID         string
 	LeaseToken      string
