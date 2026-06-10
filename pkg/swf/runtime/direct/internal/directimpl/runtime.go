@@ -240,10 +240,14 @@ func (r *Runtime) startJob(ctx context.Context, jobKey swf.JobKey, jobType strin
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	payloadJSON, err := encodeJobPayload(payload)
+	if err != nil {
+		return err
+	}
 	return pgwf.SubmitJob(ctx, r.pgwfDB(ctx), pgwf.TenantID(jobKey.TenantId), pgwf.JobID(jobKey.JobId), pgwf.JobDependencies{
 		NextNeed: pgwf.Capability(jobType),
 		WaitFor:  waitFor,
-	}, payload, metadata, pgwf.WorkerID(r.requestWorkerID(workerID)), time.Time{})
+	}, payloadJSON, metadata, pgwf.WorkerID(r.requestWorkerID(workerID)), time.Time{})
 }
 
 func (r *Runtime) CancelJob(ctx context.Context, req swf.CancelJobRequest) error {
@@ -465,7 +469,7 @@ func (r *Runtime) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.Li
 			if detailErr != nil {
 				return swf.ListJobsResponse{}, fmt.Errorf("failed to get job details: %w", detailErr)
 			}
-			summary.Payload = details.Payload
+			summary.Payload = jobPayloadVisibleJSON(details.Payload)
 			if tw, waitErr := extractTaskWaitFromRaw(details.Payload); waitErr == nil && tw != nil {
 				summary.TaskWaitInput = &tw.InputStep
 				summary.TaskWaitOutput = &tw.OutputStep
@@ -878,7 +882,7 @@ func (l *executionLease) Capability() string {
 }
 
 func (l *executionLease) Payload() json.RawMessage {
-	return l.lease.Payload()
+	return jobPayloadVisibleJSON(l.lease.Payload())
 }
 
 func (l *executionLease) LeaseWorkerID() string {
@@ -949,7 +953,15 @@ func (l *executionLease) Reschedule(ctx context.Context, req swf.RescheduleExecu
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
-	err := l.lease.Reschedule(ctx, l.udb, deps, payload)
+	storedPayload, err := jobPayloadFromVisibleJSON(payload)
+	if err != nil {
+		return err
+	}
+	payloadJSON, err := encodeJobPayload(storedPayload)
+	if err != nil {
+		return err
+	}
+	err = l.lease.Reschedule(ctx, l.udb, deps, payloadJSON)
 	if err != nil {
 		if errors.Is(err, pgwf.ErrLeaseMismatch) || errors.Is(err, pgwf.ErrLeaseExpired) {
 			return swf.ErrExecutionLeaseLost

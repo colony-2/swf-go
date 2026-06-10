@@ -11,21 +11,13 @@ import (
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-type jobPayload struct {
-	RunPolicy swf.RunPolicy `json:"run_policy,omitempty"`
-	TaskWait  *taskWait     `json:"task_wait,omitempty"`
-}
-
-type taskWait struct {
-	InputStep  int64  `json:"in"`
-	OutputStep int64  `json:"out"`
-	Next       string `json:"next"`
-	InputHash  string `json:"input_hash,omitempty"`
-}
+type jobPayload = runtimecodec.SchedulerPayload
+type taskWait = runtimecodec.TaskWait
 
 type chapterMetadata struct {
 	Attempt       int
@@ -307,15 +299,35 @@ func normalizePageSize(pageSize int) int {
 }
 
 func extractTaskWaitFromRaw(payloadJSON json.RawMessage) (*taskWait, error) {
-	var payload jobPayload
-	if err := json.Unmarshal(payloadJSON, &payload); err == nil && payload.TaskWait != nil {
-		return payload.TaskWait, nil
-	}
-	var legacy taskWait
-	if err := json.Unmarshal(payloadJSON, &legacy); err != nil {
+	payload, err := decodeJobPayload(payloadJSON)
+	if err != nil {
 		return nil, err
 	}
-	return &legacy, nil
+	return payload.TaskWait, nil
+}
+
+func encodeJobPayload(payload jobPayload) (json.RawMessage, error) {
+	return runtimecodec.EncodeSchedulerPayloadJSON(payload)
+}
+
+func decodeJobPayload(raw json.RawMessage) (jobPayload, error) {
+	return runtimecodec.DecodeSchedulerPayloadJSON(raw)
+}
+
+func jobPayloadFromVisibleJSON(raw json.RawMessage) (jobPayload, error) {
+	return runtimecodec.SchedulerPayloadFromJSONView(raw)
+}
+
+func jobPayloadVisibleJSON(raw json.RawMessage) json.RawMessage {
+	payload, err := decodeJobPayload(raw)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	view, err := runtimecodec.SchedulerPayloadJSONView(payload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return view
 }
 
 func taskTypeFromCapability(capability string) string {

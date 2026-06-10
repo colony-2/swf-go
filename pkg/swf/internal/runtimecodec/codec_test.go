@@ -169,3 +169,25 @@ func TestSchedulerPayloadRoundTripAndJSONView(t *testing.T) {
 		t.Fatalf("unexpected json view: %s", view)
 	}
 }
+
+func TestSchedulerPayloadPreservesVisibleJSONPayload(t *testing.T) {
+	payload, err := SchedulerPayloadFromJSONView(json.RawMessage(`{"kind":"rescheduled","n":2}`))
+	if err != nil {
+		t.Fatalf("from json view: %v", err)
+	}
+	raw, err := EncodeSchedulerPayload(payload)
+	if err != nil {
+		t.Fatalf("encode scheduler payload: %v", err)
+	}
+	got, err := DecodeSchedulerPayload(raw)
+	if err != nil {
+		t.Fatalf("decode scheduler payload: %v", err)
+	}
+	view, err := SchedulerPayloadJSONView(got)
+	if err != nil {
+		t.Fatalf("json view: %v", err)
+	}
+	if string(view) != `{"kind":"rescheduled","n":2}` {
+		t.Fatalf("visible payload mismatch: %s", view)
+	}
+}

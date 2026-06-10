@@ -143,6 +143,14 @@ func (r *Runtime) RescheduleJobWithLeaseByID(ctx context.Context, jobKey swf.Job
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
+	storedPayload, err := jobPayloadFromVisibleJSON(payload)
+	if err != nil {
+		return err
+	}
+	payloadJSON, err := encodeJobPayload(storedPayload)
+	if err != nil {
+		return err
+	}
 	altNeedArg, altAfterArg, altSet := remoteRescheduleAlternateArgs(deps)
 	row := r.pgwfDB(ctx).QueryRowContext(
 		ctx,
@@ -154,7 +162,7 @@ func (r *Runtime) RescheduleJobWithLeaseByID(ctx context.Context, jobKey swf.Job
 		string(deps.NextNeed),
 		pq.Array(jobIDsToStrings(deps.WaitFor)),
 		remoteOptionalTime(deps.AvailableAt),
-		payload,
+		payloadJSON,
 		altNeedArg,
 		altAfterArg,
 		altSet,

@@ -296,7 +296,7 @@ func (r *Runtime) pollOnce(ctx context.Context, req swf.PollWorkRequest) ([]swf.
 			if row.leaseID.Valid && row.leaseID.String != "" && row.leaseExpiresAtNS.Valid && timeFromNS(row.leaseExpiresAtNS.Int64).After(now) {
 				continue
 			}
-			waitFor, err := decodeWaitFor(row.waitForJSON)
+			waitFor, err := decodeWaitFor(row.waitForRaw)
 			if err != nil {
 				return err
 			}
@@ -353,7 +353,7 @@ WHERE tenant_id = ? AND job_id = ?`,
 				leaseID:    leaseID,
 				workerID:   workerID,
 				capability: nextNeed,
-				payload:    cloneJSON(row.payload),
+				payload:    cloneBytes(row.payload),
 				duration:   leaseDurationOrDefault(req.LeaseDuration),
 			})
 			if len(out) >= limit {
@@ -436,7 +436,7 @@ WHERE tenant_id = ? AND job_id = ?`,
 			leaseID:    leaseID,
 			workerID:   workerID,
 			capability: nextNeed,
-			payload:    cloneJSON(row.payload),
+			payload:    cloneBytes(row.payload),
 			duration:   leaseDurationOrDefault(req.LeaseDuration),
 		}
 		return nil
@@ -632,7 +632,7 @@ func (r *Runtime) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.Li
 				continue
 			}
 		}
-		waitFor, err := decodeWaitFor(row.waitForJSON)
+		waitFor, err := decodeWaitFor(row.waitForRaw)
 		if err != nil {
 			return swf.ListJobsResponse{}, err
 		}
@@ -648,7 +648,7 @@ func (r *Runtime) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.Li
 			CancelRequested: row.cancelRequested,
 			CreatedAt:       createdAt,
 			ArchivedAt:      nullTimeFromNS(row.archivedAtNS),
-			Payload:         cloneJSON(row.payload),
+			Payload:         jobPayloadVisibleJSON(row.payload),
 			Metadata:        cloneJSON(row.metadata),
 		}
 		if tw, waitErr := extractTaskWaitFromRaw(row.payload); waitErr == nil && tw != nil {
@@ -868,8 +868,10 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTas
 			return fmt.Errorf("failed to load input chapter: %w", err)
 		}
 	}
-	var payload jobPayload
-	_ = json.Unmarshal(row.payload, &payload)
+	payload, err := decodeJobPayload(row.payload)
+	if err != nil {
+		return err
+	}
 	meta := chapterMetadata{}
 	if inputChapter != nil {
 		if env, decErr := decodeChapterEnvelope(inputChapter.Body()); decErr == nil {
@@ -911,18 +913,22 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTas
 	if req.ResumeNeed != "" {
 		resumeNeed = req.ResumeNeed
 	}
-	resumePayload, err := json.Marshal(jobPayload{RunPolicy: payload.RunPolicy})
+	resumePayload, err := encodeJobPayload(jobPayload{RunPolicy: payload.RunPolicy})
+	if err != nil {
+		return err
+	}
+	waitFor, err := encodeWaitFor(nil)
 	if err != nil {
 		return err
 	}
 	now := time.Now().UTC()
 	result, err := r.db.ExecContext(ctx, `
 UPDATE swf_jobs
-SET next_need = ?, payload = ?, wait_for = '[]', available_at_ns = ?,
+SET next_need = ?, payload = ?, wait_for = ?, available_at_ns = ?,
 	lease_id = NULL, lease_worker_id = NULL, lease_expires_at_ns = NULL,
 	alternate_need = NULL, alternate_at_ns = NULL, updated_at_ns = ?
 WHERE tenant_id = ? AND job_id = ? AND archived_at_ns IS NULL AND next_need = ?`,
-		resumeNeed, resumePayload, timeToNS(now), timeToNS(now), jobKey.TenantId, jobKey.JobId, currentCapability)
+		resumeNeed, resumePayload, waitFor, timeToNS(now), timeToNS(now), jobKey.TenantId, jobKey.JobId, currentCapability)
 	if err != nil {
 		return err
 	}

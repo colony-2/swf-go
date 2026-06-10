@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 )
 
 const jobColumns = `
@@ -23,9 +23,9 @@ type jobRow struct {
 	jobID            string
 	jobType          string
 	nextNeed         string
-	payload          json.RawMessage
+	payload          []byte
 	metadata         json.RawMessage
-	waitForJSON      string
+	waitForRaw       []byte
 	availableAtNS    int64
 	createdAtNS      int64
 	updatedAtNS      int64
@@ -45,6 +45,7 @@ func scanJobRow(scanner interface{ Scan(dest ...any) error }) (jobRow, error) {
 	var cancelRequested int
 	var payload []byte
 	var metadata []byte
+	var waitFor []byte
 	if err := scanner.Scan(
 		&row.tenantID,
 		&row.jobID,
@@ -52,7 +53,7 @@ func scanJobRow(scanner interface{ Scan(dest ...any) error }) (jobRow, error) {
 		&row.nextNeed,
 		&payload,
 		&metadata,
-		&row.waitForJSON,
+		&waitFor,
 		&row.availableAtNS,
 		&row.createdAtNS,
 		&row.updatedAtNS,
@@ -68,15 +69,10 @@ func scanJobRow(scanner interface{ Scan(dest ...any) error }) (jobRow, error) {
 	); err != nil {
 		return jobRow{}, err
 	}
-	row.payload = append(json.RawMessage(nil), payload...)
+	row.payload = cloneBytes(payload)
 	row.metadata = append(json.RawMessage(nil), metadata...)
+	row.waitForRaw = cloneBytes(waitFor)
 	row.cancelRequested = cancelRequested != 0
-	if len(row.payload) == 0 {
-		row.payload = json.RawMessage(`{}`)
-	}
-	if strings.TrimSpace(row.waitForJSON) == "" {
-		row.waitForJSON = "[]"
-	}
 	return row, nil
 }
 
@@ -97,11 +93,11 @@ func (r *Runtime) loadJobRowTx(ctx context.Context, tx *sql.Tx, jobKey swf.JobKe
 }
 
 func (r *Runtime) insertJobRecord(ctx context.Context, jobKey swf.JobKey, jobType string, metadata json.RawMessage, waitFor []string, payload jobPayload, workerID string) error {
-	payloadJSON, err := json.Marshal(payload)
+	payloadBytes, err := encodeJobPayload(payload)
 	if err != nil {
 		return err
 	}
-	waitJSON, err := json.Marshal(waitFor)
+	waitBytes, err := encodeWaitFor(waitFor)
 	if err != nil {
 		return err
 	}
@@ -115,9 +111,9 @@ INSERT INTO swf_jobs (
 		jobKey.JobId,
 		jobType,
 		jobType,
-		payloadJSON,
+		payloadBytes,
 		cloneJSON(metadata),
-		string(waitJSON),
+		waitBytes,
 		timeToNS(now),
 		timeToNS(now),
 		timeToNS(now),
@@ -154,32 +150,12 @@ func (r *Runtime) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	return tx.Commit()
 }
 
-func decodeWaitFor(raw string) ([]string, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	var out []string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+func decodeWaitFor(raw []byte) ([]string, error) {
+	return runtimecodec.DecodeWaitForJobs(raw)
 }
 
-func encodeWaitFor(waitFor []string) (string, error) {
-	if len(waitFor) == 0 {
-		return "[]", nil
-	}
-	clean := make([]string, 0, len(waitFor))
-	for _, id := range waitFor {
-		if id != "" {
-			clean = append(clean, id)
-		}
-	}
-	raw, err := json.Marshal(clean)
-	if err != nil {
-		return "", err
-	}
-	return string(raw), nil
+func encodeWaitFor(waitFor []string) ([]byte, error) {
+	return runtimecodec.EncodeWaitForJobs(waitFor)
 }
 
 func timeToNS(t time.Time) int64 {
@@ -211,6 +187,13 @@ func cloneJSON(raw json.RawMessage) json.RawMessage {
 	return append(json.RawMessage(nil), raw...)
 }
 
+func cloneBytes(raw []byte) []byte {
+	if raw == nil {
+		return nil
+	}
+	return append([]byte(nil), raw...)
+}
+
 func cloneString(value string) *string {
 	v := value
 	return &v
@@ -232,7 +215,7 @@ func statusFromRow(ctx context.Context, tx queryer, row jobRow, now time.Time) (
 		}
 		return swf.JobStatusCrashConcern, nil
 	}
-	waitFor, err := decodeWaitFor(row.waitForJSON)
+	waitFor, err := decodeWaitFor(row.waitForRaw)
 	if err != nil {
 		return "", err
 	}

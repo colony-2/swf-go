@@ -2161,11 +2161,14 @@ func (b0 JobPrerequisite_builder) Build() *JobPrerequisite {
 }
 
 type SchedulerPayload struct {
-	state                protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_RunPolicy *RunPolicy             `protobuf:"bytes,1,opt,name=run_policy,json=runPolicy"`
-	xxx_hidden_TaskWait  *TaskWait              `protobuf:"bytes,2,opt,name=task_wait,json=taskWait"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	state                         protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_RunPolicy          *RunPolicy             `protobuf:"bytes,1,opt,name=run_policy,json=runPolicy"`
+	xxx_hidden_TaskWait           *TaskWait              `protobuf:"bytes,2,opt,name=task_wait,json=taskWait"`
+	xxx_hidden_VisiblePayloadJson []byte                 `protobuf:"bytes,3,opt,name=visible_payload_json,json=visiblePayloadJson"`
+	XXX_raceDetectHookData        protoimpl.RaceDetectHookData
+	XXX_presence                  [1]uint32
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *SchedulerPayload) Reset() {
@@ -2207,12 +2210,27 @@ func (x *SchedulerPayload) GetTaskWait() *TaskWait {
 	return nil
 }
 
+func (x *SchedulerPayload) GetVisiblePayloadJson() []byte {
+	if x != nil {
+		return x.xxx_hidden_VisiblePayloadJson
+	}
+	return nil
+}
+
 func (x *SchedulerPayload) SetRunPolicy(v *RunPolicy) {
 	x.xxx_hidden_RunPolicy = v
 }
 
 func (x *SchedulerPayload) SetTaskWait(v *TaskWait) {
 	x.xxx_hidden_TaskWait = v
+}
+
+func (x *SchedulerPayload) SetVisiblePayloadJson(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_VisiblePayloadJson = v
+	protoimpl.X.SetPresent(&(x.XXX_presence[0]), 2, 3)
 }
 
 func (x *SchedulerPayload) HasRunPolicy() bool {
@@ -2229,6 +2247,13 @@ func (x *SchedulerPayload) HasTaskWait() bool {
 	return x.xxx_hidden_TaskWait != nil
 }
 
+func (x *SchedulerPayload) HasVisiblePayloadJson() bool {
+	if x == nil {
+		return false
+	}
+	return protoimpl.X.Present(&(x.XXX_presence[0]), 2)
+}
+
 func (x *SchedulerPayload) ClearRunPolicy() {
 	x.xxx_hidden_RunPolicy = nil
 }
@@ -2237,11 +2262,17 @@ func (x *SchedulerPayload) ClearTaskWait() {
 	x.xxx_hidden_TaskWait = nil
 }
 
+func (x *SchedulerPayload) ClearVisiblePayloadJson() {
+	protoimpl.X.ClearPresent(&(x.XXX_presence[0]), 2)
+	x.xxx_hidden_VisiblePayloadJson = nil
+}
+
 type SchedulerPayload_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	RunPolicy *RunPolicy
-	TaskWait  *TaskWait
+	RunPolicy          *RunPolicy
+	TaskWait           *TaskWait
+	VisiblePayloadJson []byte
 }
 
 func (b0 SchedulerPayload_builder) Build() *SchedulerPayload {
@@ -2250,6 +2281,10 @@ func (b0 SchedulerPayload_builder) Build() *SchedulerPayload {
 	_, _ = b, x
 	x.xxx_hidden_RunPolicy = b.RunPolicy
 	x.xxx_hidden_TaskWait = b.TaskWait
+	if b.VisiblePayloadJson != nil {
+		protoimpl.X.SetPresentNonAtomic(&(x.XXX_presence[0]), 2, 3)
+		x.xxx_hidden_VisiblePayloadJson = b.VisiblePayloadJson
+	}
 	return m0
 }
 
@@ -2554,11 +2589,12 @@ const file_swf_storage_v1_storage_proto_rawDesc = "" +
 	"\rtotal_timeout\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\ftotalTimeout\"F\n" +
 	"\x0fJobPrerequisite\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1c\n" +
-	"\tcondition\x18\x02 \x01(\tR\tcondition\"\x83\x01\n" +
+	"\tcondition\x18\x02 \x01(\tR\tcondition\"\xb5\x01\n" +
 	"\x10SchedulerPayload\x128\n" +
 	"\n" +
 	"run_policy\x18\x01 \x01(\v2\x19.swf.storage.v1.RunPolicyR\trunPolicy\x125\n" +
-	"\ttask_wait\x18\x02 \x01(\v2\x18.swf.storage.v1.TaskWaitR\btaskWait\"}\n" +
+	"\ttask_wait\x18\x02 \x01(\v2\x18.swf.storage.v1.TaskWaitR\btaskWait\x120\n" +
+	"\x14visible_payload_json\x18\x03 \x01(\fR\x12visiblePayloadJson\"}\n" +
 	"\bTaskWait\x12\x1d\n" +
 	"\n" +
 	"input_step\x18\x01 \x01(\x03R\tinputStep\x12\x1f\n" +

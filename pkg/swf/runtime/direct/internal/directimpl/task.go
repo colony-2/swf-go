@@ -144,8 +144,10 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTas
 		}
 	}
 
-	var payload jobPayload
-	_ = json.Unmarshal(job.Payload, &payload)
+	payload, err := decodeJobPayload(job.Payload)
+	if err != nil {
+		return err
+	}
 
 	meta := chapterMetadata{}
 	if inputChapter != nil {
@@ -204,13 +206,18 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req swf.CompleteTas
 		resumeNeed = req.ResumeNeed
 	}
 
+	resumePayload, err := encodeJobPayload(jobPayload{RunPolicy: payload.RunPolicy})
+	if err != nil {
+		return err
+	}
+
 	err = pgwf.RescheduleUnheldJob(
 		ctx,
 		r.pgwfDB(ctx),
 		tenantID,
 		pgwf.JobID(jobKey.JobId),
 		pgwf.WorkerID(workerID), pgwf.JobDependencies{NextNeed: pgwf.Capability(resumeNeed)},
-		jobPayload{RunPolicy: payload.RunPolicy})
+		resumePayload)
 	if err != nil {
 		switch {
 		case errors.Is(err, pgwf.ErrJobNotFound):

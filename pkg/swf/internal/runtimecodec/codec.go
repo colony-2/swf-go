@@ -56,8 +56,9 @@ type ChapterEnvelope struct {
 }
 
 type SchedulerPayload struct {
-	RunPolicy swf.RunPolicy
-	TaskWait  *TaskWait
+	RunPolicy      swf.RunPolicy
+	TaskWait       *TaskWait
+	VisiblePayload json.RawMessage
 }
 
 type TaskWait struct {
@@ -174,6 +175,12 @@ func EncodeSchedulerPayload(payload SchedulerPayload) ([]byte, error) {
 	if payload.TaskWait != nil {
 		builder.TaskWait = taskWaitToProto(*payload.TaskWait)
 	}
+	if len(payload.VisiblePayload) > 0 {
+		if !json.Valid(payload.VisiblePayload) {
+			return nil, fmt.Errorf("visible payload must be valid JSON")
+		}
+		builder.VisiblePayloadJson = cloneBytes(payload.VisiblePayload)
+	}
 	return deterministicMarshal.Marshal(builder.Build())
 }
 
@@ -189,6 +196,9 @@ func DecodeSchedulerPayload(raw []byte) (SchedulerPayload, error) {
 	if payload.HasTaskWait() {
 		tw := taskWaitFromProto(payload.GetTaskWait())
 		out.TaskWait = &tw
+	}
+	if len(payload.GetVisiblePayloadJson()) > 0 {
+		out.VisiblePayload = cloneJSON(payload.GetVisiblePayloadJson())
 	}
 	return out, nil
 }
@@ -213,6 +223,9 @@ func DecodeSchedulerPayloadJSON(raw json.RawMessage) (SchedulerPayload, error) {
 }
 
 func SchedulerPayloadJSONView(payload SchedulerPayload) (json.RawMessage, error) {
+	if len(payload.VisiblePayload) > 0 {
+		return cloneJSON(payload.VisiblePayload), nil
+	}
 	type taskWaitJSON struct {
 		InputStep  int64  `json:"in"`
 		OutputStep int64  `json:"out"`
@@ -237,6 +250,47 @@ func SchedulerPayloadJSONView(payload SchedulerPayload) (json.RawMessage, error)
 		return nil, err
 	}
 	return json.RawMessage(raw), nil
+}
+
+func SchedulerPayloadFromJSONView(raw json.RawMessage) (SchedulerPayload, error) {
+	if len(raw) == 0 {
+		raw = json.RawMessage(`{}`)
+	}
+	if !json.Valid(raw) {
+		return SchedulerPayload{}, fmt.Errorf("visible payload must be valid JSON")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return SchedulerPayload{}, err
+	}
+	if fields == nil {
+		return SchedulerPayload{}, fmt.Errorf("visible payload must be a JSON object")
+	}
+	payload := SchedulerPayload{VisiblePayload: cloneJSON(raw)}
+	if policyRaw, ok := fields["run_policy"]; ok && len(policyRaw) > 0 && string(policyRaw) != "null" {
+		var policy swf.RunPolicy
+		if err := json.Unmarshal(policyRaw, &policy); err == nil {
+			payload.RunPolicy = policy
+		}
+	}
+	if waitRaw, ok := fields["task_wait"]; ok && len(waitRaw) > 0 && string(waitRaw) != "null" {
+		type taskWaitJSON struct {
+			InputStep  int64  `json:"in"`
+			OutputStep int64  `json:"out"`
+			Next       string `json:"next"`
+			InputHash  string `json:"input_hash,omitempty"`
+		}
+		var wait taskWaitJSON
+		if err := json.Unmarshal(waitRaw, &wait); err == nil {
+			payload.TaskWait = &TaskWait{
+				InputStep:  wait.InputStep,
+				OutputStep: wait.OutputStep,
+				Next:       wait.Next,
+				InputHash:  wait.InputHash,
+			}
+		}
+	}
+	return payload, nil
 }
 
 func EncodeWaitForJobs(jobIDs []string) ([]byte, error) {

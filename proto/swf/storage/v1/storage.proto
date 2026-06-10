@@ -99,6 +99,7 @@ message JobPrerequisite {
 message SchedulerPayload {
   RunPolicy run_policy = 1;
   TaskWait task_wait = 2;
+  bytes visible_payload_json = 3;
 }
 
 message TaskWait {

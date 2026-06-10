@@ -17,7 +17,7 @@ type executionLease struct {
 	leaseID    string
 	workerID   string
 	capability string
-	payload    json.RawMessage
+	payload    []byte
 	duration   time.Duration
 }
 
@@ -32,7 +32,7 @@ func (l *executionLease) Job() swf.JobHandle {
 func (l *executionLease) Capability() string { return l.capability }
 
 func (l *executionLease) Payload() json.RawMessage {
-	return cloneJSON(l.payload)
+	return jobPayloadVisibleJSON(l.payload)
 }
 
 func (l *executionLease) KeepAlive(ctx context.Context) error {
@@ -136,6 +136,14 @@ func (r *Runtime) RescheduleJobWithLeaseByID(ctx context.Context, jobKey swf.Job
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
 	}
+	storedPayload, err := jobPayloadFromVisibleJSON(payload)
+	if err != nil {
+		return err
+	}
+	payloadBytes, err := encodeJobPayload(storedPayload)
+	if err != nil {
+		return err
+	}
 	waitFor, err := encodeWaitFor(req.WaitForJobIDs)
 	if err != nil {
 		return err
@@ -169,7 +177,7 @@ SET next_need = ?, payload = ?, wait_for = ?, available_at_ns = ?,
 	lease_id = NULL, lease_worker_id = NULL, lease_expires_at_ns = NULL,
 	alternate_need = ?, alternate_at_ns = ?, updated_at_ns = ?
 WHERE tenant_id = ? AND job_id = ?`,
-			req.NextNeed, payload, waitFor, timeToNS(availableAt), alternateNeed, alternateAt, timeToNS(now), jobKey.TenantId, jobKey.JobId)
+			req.NextNeed, payloadBytes, waitFor, timeToNS(availableAt), alternateNeed, alternateAt, timeToNS(now), jobKey.TenantId, jobKey.JobId)
 		return err
 	})
 }

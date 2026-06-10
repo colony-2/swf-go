@@ -38,17 +38,8 @@ const (
 	restartExtraTaskType = "__restart_extra__"
 )
 
-type jobPayload struct {
-	RunPolicy swf.RunPolicy `json:"run_policy,omitempty"`
-	TaskWait  *taskWait     `json:"task_wait,omitempty"`
-}
-
-type taskWait struct {
-	InputStep  int64  `json:"in"`
-	OutputStep int64  `json:"out"`
-	Next       string `json:"next"`
-	InputHash  string `json:"input_hash,omitempty"`
-}
+type jobPayload = runtimecodec.SchedulerPayload
+type taskWait = runtimecodec.TaskWait
 
 type chapterMeta = runtimecodec.ChapterMeta
 
@@ -397,15 +388,35 @@ func normalizePrerequisites(jobKey swf.JobKey, prereqs []swf.JobPrerequisite) ([
 }
 
 func extractTaskWaitFromRaw(payloadJSON json.RawMessage) (*taskWait, error) {
-	var payload jobPayload
-	if err := json.Unmarshal(payloadJSON, &payload); err == nil && payload.TaskWait != nil {
-		return payload.TaskWait, nil
-	}
-	var legacy taskWait
-	if err := json.Unmarshal(payloadJSON, &legacy); err != nil {
+	payload, err := decodeJobPayload(payloadJSON)
+	if err != nil {
 		return nil, err
 	}
-	return &legacy, nil
+	return payload.TaskWait, nil
+}
+
+func encodeJobPayload(payload jobPayload) ([]byte, error) {
+	return runtimecodec.EncodeSchedulerPayload(payload)
+}
+
+func decodeJobPayload(raw []byte) (jobPayload, error) {
+	return runtimecodec.DecodeSchedulerPayload(raw)
+}
+
+func jobPayloadFromVisibleJSON(raw json.RawMessage) (jobPayload, error) {
+	return runtimecodec.SchedulerPayloadFromJSONView(raw)
+}
+
+func jobPayloadVisibleJSON(raw []byte) json.RawMessage {
+	payload, err := decodeJobPayload(raw)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	view, err := runtimecodec.SchedulerPayloadJSONView(payload)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return view
 }
 
 func taskTypeFromCapability(capability string) string {

@@ -45,8 +45,7 @@ func getJobRun(ctx context.Context, accessor jobRunAccessor, req swf.GetJobRunRe
 	}
 	runPolicy := swf.RunPolicy{}
 	if len(statusInfo.Payload) > 0 {
-		var payload jobPayload
-		if err := json.Unmarshal(statusInfo.Payload, &payload); err == nil {
+		if payload, err := decodeJobPayload(statusInfo.Payload); err == nil {
 			runPolicy = payload.RunPolicy
 		}
 	}
