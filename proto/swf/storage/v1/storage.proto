@@ -1,0 +1,100 @@
+edition = "2024";
+
+package swf.storage.v1;
+
+option go_package = "github.com/colony-2/swf-go/pkg/swf/internal/storagepb/v1;storagepb";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+message ChapterRecord {
+  int64 ordinal = 1;
+  string task_type = 2;
+  string worker_id = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp finished_at = 6;
+  string input_hash = 7;
+  bytes metadata_json = 8;
+  bytes input_json = 9;
+  int32 attempt = 10;
+  int32 max_attempts = 11;
+  google.protobuf.Timestamp next_attempt_at = 12;
+  int64 backoff_millis = 13;
+  bool retryable = 14;
+  InputReference input_ref = 15;
+  RunPolicy run_policy = 16;
+  repeated JobPrerequisite prerequisites = 17;
+
+  oneof chapter {
+    JobStartChapter job_start = 30;
+    JobAttemptOutcomeChapter job_attempt_outcome = 31;
+    TaskAttemptOutcomeChapter task_attempt_outcome = 32;
+    RestartExtraChapter restart_extra = 33;
+  }
+}
+
+message JobStartChapter {
+  bytes payload_json = 1;
+}
+
+message JobAttemptOutcomeChapter {
+  TaskOutcome outcome = 1;
+}
+
+message TaskAttemptOutcomeChapter {
+  TaskOutcome outcome = 1;
+}
+
+message RestartExtraChapter {
+  bytes payload_json = 1;
+}
+
+message TaskOutcome {
+  oneof result {
+    bytes app_payload_json = 1;
+    bytes app_error_payload_json = 2;
+    bytes system_error_payload_json = 3;
+    bytes timeout_payload_json = 4;
+  }
+}
+
+message InputReference {
+  int64 ordinal = 1;
+  string hash = 2;
+}
+
+message RetryPolicy {
+  google.protobuf.Duration initial_interval = 1;
+  double backoff_coefficient = 2;
+  google.protobuf.Duration maximum_interval = 3;
+  int32 maximum_attempts = 4;
+  repeated string non_retryable_error_types = 5;
+}
+
+message RunPolicy {
+  RetryPolicy retry = 1;
+  google.protobuf.Duration invocation_timeout = 2;
+  google.protobuf.Duration total_timeout = 3;
+}
+
+message JobPrerequisite {
+  string job_id = 1;
+  string condition = 2;
+}
+
+message SchedulerPayload {
+  RunPolicy run_policy = 1;
+  TaskWait task_wait = 2;
+}
+
+message TaskWait {
+  int64 input_step = 1;
+  int64 output_step = 2;
+  string next = 3;
+  string input_hash = 4;
+}
+
+message WaitForJobs {
+  repeated string job_ids = 1;
+}
