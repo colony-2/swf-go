@@ -15,6 +15,7 @@ import (
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
 	directtest "github.com/colony-2/swf-go/pkg/swf/internal/directtestsupport"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 )
@@ -95,14 +96,11 @@ func waitForChapterValue(t *testing.T, client *strataclient.Client, key story.Ke
 
 func decodeNumber(t *testing.T, body []byte) int {
 	t.Helper()
-	var env struct {
-		PayloadKind string          `json:"payload_kind"`
-		Payload     json.RawMessage `json:"payload"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
+	env, err := runtimecodec.DecodeChapter(body)
+	if err != nil {
 		t.Fatalf("failed to decode chapter body: %v", err)
 	}
-	if env.PayloadKind != "App" {
+	if env.PayloadKind != runtimecodec.PayloadKindApp {
 		t.Fatalf("unexpected payload kind %q", env.PayloadKind)
 	}
 
