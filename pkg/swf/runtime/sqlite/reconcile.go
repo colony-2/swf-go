@@ -3,7 +3,6 @@ package sqlite
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -177,19 +176,4 @@ func storedChapterRunPolicy(chapter story.Chapter) (swf.RunPolicy, error) {
 		return swf.RunPolicy{}, nil
 	}
 	return *env.Meta.RunPolicy, nil
-}
-
-func equivalentStoredChapter(left, right swf.StoredChapter) bool {
-	left.Metadata = normalizeRawForCompare(left.Metadata)
-	right.Metadata = normalizeRawForCompare(right.Metadata)
-	left.Data = normalizeRawForCompare(left.Data)
-	right.Data = normalizeRawForCompare(right.Data)
-	return reflect.DeepEqual(left, right)
-}
-
-func normalizeRawForCompare(raw json.RawMessage) json.RawMessage {
-	if len(raw) == 0 {
-		return nil
-	}
-	return append(json.RawMessage(nil), raw...)
 }

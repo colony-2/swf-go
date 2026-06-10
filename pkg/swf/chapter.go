@@ -2,7 +2,6 @@ package swf
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -11,97 +10,30 @@ import (
 	"time"
 )
 
-// StructuredWorkflowRuntime exposes direct chapter access without the legacy
-// stringly typed chapter and payload discriminator fields.
-type StructuredWorkflowRuntime interface {
-	GetStructuredChapter(ctx context.Context, ref ChapterRef) (StructuredChapterRecord, error)
-	ListStructuredChapters(ctx context.Context, req ListChaptersRequest) ([]StructuredChapterRecord, error)
-	PutStructuredChapter(ctx context.Context, req PutStructuredChapterRequest) error
-}
-
-// NewStructuredWorkflowRuntime returns a structured chapter adapter for runtime.
-func NewStructuredWorkflowRuntime(runtime WorkflowRuntime) StructuredWorkflowRuntime {
-	if structured, ok := runtime.(StructuredWorkflowRuntime); ok {
-		return structured
-	}
-	return structuredWorkflowRuntime{runtime: runtime}
-}
-
-type structuredWorkflowRuntime struct {
-	runtime WorkflowRuntime
-}
-
-func (r structuredWorkflowRuntime) GetStructuredChapter(ctx context.Context, ref ChapterRef) (StructuredChapterRecord, error) {
-	if r.runtime == nil {
-		return StructuredChapterRecord{}, fmt.Errorf("workflow runtime is required")
-	}
-	chapter, err := r.runtime.GetChapter(ctx, ref)
-	if err != nil {
-		return StructuredChapterRecord{}, err
-	}
-	return StructuredChapterFromStored(chapter)
-}
-
-func (r structuredWorkflowRuntime) ListStructuredChapters(ctx context.Context, req ListChaptersRequest) ([]StructuredChapterRecord, error) {
-	if r.runtime == nil {
-		return nil, fmt.Errorf("workflow runtime is required")
-	}
-	chapters, err := r.runtime.ListChapters(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]StructuredChapterRecord, 0, len(chapters))
-	for _, chapter := range chapters {
-		converted, err := StructuredChapterFromStored(chapter)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, converted)
-	}
-	return out, nil
-}
-
-func (r structuredWorkflowRuntime) PutStructuredChapter(ctx context.Context, req PutStructuredChapterRequest) error {
-	if r.runtime == nil {
-		return fmt.Errorf("workflow runtime is required")
-	}
-	chapter, err := StoredChapterFromStructured(req.Chapter)
-	if err != nil {
-		return err
-	}
-	return r.runtime.PutChapter(ctx, PutChapterRequest{
-		LeaseID:         req.LeaseID,
-		LeaseToken:      req.LeaseToken,
-		Ref:             req.Ref,
-		Chapter:         chapter,
-		ArtifactUploads: req.ArtifactUploads,
-	})
-}
-
-// StructuredChapterRecord is the structured representation of a stored chapter.
-type StructuredChapterRecord struct {
+// Chapter is a durable workflow chapter.
+type Chapter struct {
 	Ordinal   int64
 	TaskType  string
-	Body      StructuredChapterBody
+	Body      ChapterBody
 	InputHash string
 	CreatedAt time.Time
 	Metadata  ChapterMetadata
 	Artifacts []StoredArtifact
 }
 
-// PutStructuredChapterRequest stores a structured chapter.
-type PutStructuredChapterRequest struct {
+// PutChapterRequest stores a typed chapter.
+type PutChapterRequest struct {
 	LeaseID         string
 	LeaseToken      string
 	Ref             ChapterRef
-	Chapter         StructuredChapterRecord
+	Chapter         Chapter
 	ArtifactUploads []ArtifactUpload
 }
 
-// StructuredChapterBody is a sealed interface implemented by the supported
+// ChapterBody is a sealed interface implemented by the supported
 // chapter body variants.
-type StructuredChapterBody interface {
-	structuredChapterBody()
+type ChapterBody interface {
+	chapterBody()
 }
 
 // JobStartChapter records the initial application input for a job.
@@ -109,33 +41,33 @@ type JobStartChapter struct {
 	Input ApplicationInputBytes
 }
 
-func (JobStartChapter) structuredChapterBody() {}
+func (JobStartChapter) chapterBody() {}
 
 // JobAttemptOutcomeChapter records the final outcome for a job attempt.
 type JobAttemptOutcomeChapter struct {
-	Outcome StructuredTaskOutcome
+	Outcome ChapterOutcome
 }
 
-func (JobAttemptOutcomeChapter) structuredChapterBody() {}
+func (JobAttemptOutcomeChapter) chapterBody() {}
 
 // TaskAttemptOutcomeChapter records the outcome for a task attempt.
 type TaskAttemptOutcomeChapter struct {
-	Outcome StructuredTaskOutcome
+	Outcome ChapterOutcome
 }
 
-func (TaskAttemptOutcomeChapter) structuredChapterBody() {}
+func (TaskAttemptOutcomeChapter) chapterBody() {}
 
 // RestartExtraChapter records output retained from a restarted job.
 type RestartExtraChapter struct {
 	Output ApplicationOutputBytes
 }
 
-func (RestartExtraChapter) structuredChapterBody() {}
+func (RestartExtraChapter) chapterBody() {}
 
-// StructuredTaskOutcome is a sealed interface implemented by the supported
+// ChapterOutcome is a sealed interface implemented by the supported
 // task outcome variants.
-type StructuredTaskOutcome interface {
-	structuredTaskOutcome()
+type ChapterOutcome interface {
+	chapterOutcome()
 }
 
 // ApplicationOutputOutcome contains successful application output bytes.
@@ -143,28 +75,28 @@ type ApplicationOutputOutcome struct {
 	Output ApplicationOutputBytes
 }
 
-func (ApplicationOutputOutcome) structuredTaskOutcome() {}
+func (ApplicationOutputOutcome) chapterOutcome() {}
 
 // AppErrorOutcome contains a user/application error payload.
 type AppErrorOutcome struct {
 	Error AppErrorPayload
 }
 
-func (AppErrorOutcome) structuredTaskOutcome() {}
+func (AppErrorOutcome) chapterOutcome() {}
 
 // SystemErrorOutcome contains an infrastructure/system error payload.
 type SystemErrorOutcome struct {
 	Error SystemErrorPayload
 }
 
-func (SystemErrorOutcome) structuredTaskOutcome() {}
+func (SystemErrorOutcome) chapterOutcome() {}
 
 // TimeoutOutcome contains a deterministic timeout payload.
 type TimeoutOutcome struct {
 	Timeout TimeoutPayload
 }
 
-func (TimeoutOutcome) structuredTaskOutcome() {}
+func (TimeoutOutcome) chapterOutcome() {}
 
 // ApplicationInputBytes wraps application input bytes.
 type ApplicationInputBytes struct {
@@ -176,7 +108,7 @@ type ApplicationOutputBytes struct {
 	Data []byte
 }
 
-// ChapterMetadata is a structured metadata object.
+// ChapterMetadata is chapter metadata.
 type ChapterMetadata struct {
 	Fields map[string]ChapterMetadataValue
 }
@@ -194,7 +126,7 @@ const (
 	ChapterMetadataMap    ChapterMetadataKind = "map"
 )
 
-// ChapterMetadataValue is a structured metadata value.
+// ChapterMetadataValue is a chapter metadata value.
 type ChapterMetadataValue struct {
 	Kind   ChapterMetadataKind
 	Bool   bool
@@ -205,16 +137,14 @@ type ChapterMetadataValue struct {
 	Map    map[string]ChapterMetadataValue
 }
 
-// ChapterMetadataFromJSON converts a legacy JSON metadata object into
-// structured metadata.
-func ChapterMetadataFromJSON(raw json.RawMessage) (ChapterMetadata, error) {
+func chapterMetadataFromJSON(raw json.RawMessage) (ChapterMetadata, error) {
 	if len(raw) == 0 {
 		return ChapterMetadata{}, nil
 	}
 	if !json.Valid(raw) {
 		return ChapterMetadata{}, fmt.Errorf("metadata must be valid JSON")
 	}
-	value, err := decodeStructuredJSONValue(raw)
+	value, err := decodeJSONValue(raw)
 	if err != nil {
 		return ChapterMetadata{}, err
 	}
@@ -236,94 +166,62 @@ func ChapterMetadataFromJSON(raw json.RawMessage) (ChapterMetadata, error) {
 	return out, nil
 }
 
-// JSON converts structured metadata into the legacy JSON metadata form.
-func (m ChapterMetadata) JSON() (json.RawMessage, error) {
-	if m.Fields == nil {
+func chapterMetadataJSON(metadata ChapterMetadata) (json.RawMessage, error) {
+	if metadata.Fields == nil {
 		return nil, nil
 	}
-	raw, err := json.Marshal(chapterMetadataFieldsToAny(m.Fields))
+	raw, err := json.Marshal(chapterMetadataFieldsToAny(metadata.Fields))
 	if err != nil {
 		return nil, err
 	}
 	return json.RawMessage(raw), nil
 }
 
-// StructuredChapterFromStored converts a legacy stored chapter into the
-// structured chapter API.
-func StructuredChapterFromStored(chapter StoredChapter) (StructuredChapterRecord, error) {
-	metadata, err := ChapterMetadataFromJSON(chapter.Metadata)
-	if err != nil {
-		return StructuredChapterRecord{}, err
-	}
-	body, err := structuredChapterBodyFromStored(chapter)
-	if err != nil {
-		return StructuredChapterRecord{}, err
-	}
-	return StructuredChapterRecord{
-		Ordinal:   chapter.Ordinal,
-		TaskType:  chapter.TaskType,
-		Body:      body,
-		InputHash: chapter.InputHash,
-		CreatedAt: chapter.CreatedAt,
-		Metadata:  metadata,
-		Artifacts: cloneStoredArtifacts(chapter.Artifacts),
-	}, nil
+func chapterType(chapter Chapter) (string, error) {
+	chapterType, _, _, err := chapterBodyToWire(chapter.Body)
+	return chapterType, err
 }
 
-// StoredChapterFromStructured converts a structured chapter into the legacy
-// stored chapter representation used by existing WorkflowRuntime backends.
-func StoredChapterFromStructured(chapter StructuredChapterRecord) (StoredChapter, error) {
-	metadata, err := chapter.Metadata.JSON()
-	if err != nil {
-		return StoredChapter{}, err
-	}
-	chapterType, payloadKind, data, err := storedChapterDiscriminatorsAndData(chapter.Body)
-	if err != nil {
-		return StoredChapter{}, err
-	}
-	return StoredChapter{
-		Ordinal:     chapter.Ordinal,
-		TaskType:    chapter.TaskType,
-		ChapterType: chapterType,
-		PayloadKind: payloadKind,
-		InputHash:   chapter.InputHash,
-		CreatedAt:   chapter.CreatedAt,
-		Metadata:    metadata,
-		Data:        data,
-		Artifacts:   cloneStoredArtifacts(chapter.Artifacts),
-	}, nil
+func chapterPayload(chapter Chapter) (string, json.RawMessage, error) {
+	_, payloadKind, data, err := chapterBodyToWire(chapter.Body)
+	return payloadKind, data, err
 }
 
-func structuredChapterBodyFromStored(chapter StoredChapter) (StructuredChapterBody, error) {
-	switch chapter.ChapterType {
+func chapterIs(chapter Chapter, want string) bool {
+	got, err := chapterType(chapter)
+	return err == nil && got == want
+}
+
+func chapterBodyFromWire(chapterType string, payloadKind string, data json.RawMessage) (ChapterBody, error) {
+	switch chapterType {
 	case chapterTypeJobStart:
-		if chapter.PayloadKind != payloadKindApp {
-			return nil, fmt.Errorf("%s chapters require %s payloads", chapter.ChapterType, payloadKindApp)
+		if payloadKind != payloadKindApp {
+			return nil, fmt.Errorf("%s chapters require %s payloads", chapterType, payloadKindApp)
 		}
-		return JobStartChapter{Input: ApplicationInputBytes{Data: cloneRawMessage(chapter.Data)}}, nil
+		return JobStartChapter{Input: ApplicationInputBytes{Data: cloneRawMessage(data)}}, nil
 	case chapterTypeJobAttemptOutcome:
-		outcome, err := structuredTaskOutcomeFromStored(chapter.PayloadKind, chapter.Data)
+		outcome, err := chapterOutcomeFromWire(payloadKind, data)
 		if err != nil {
 			return nil, err
 		}
 		return JobAttemptOutcomeChapter{Outcome: outcome}, nil
 	case chapterTypeTaskAttemptOutcome:
-		outcome, err := structuredTaskOutcomeFromStored(chapter.PayloadKind, chapter.Data)
+		outcome, err := chapterOutcomeFromWire(payloadKind, data)
 		if err != nil {
 			return nil, err
 		}
 		return TaskAttemptOutcomeChapter{Outcome: outcome}, nil
 	case chapterTypeRestartExtra:
-		if chapter.PayloadKind != payloadKindApp {
-			return nil, fmt.Errorf("%s chapters require %s payloads", chapter.ChapterType, payloadKindApp)
+		if payloadKind != payloadKindApp {
+			return nil, fmt.Errorf("%s chapters require %s payloads", chapterType, payloadKindApp)
 		}
-		return RestartExtraChapter{Output: ApplicationOutputBytes{Data: cloneRawMessage(chapter.Data)}}, nil
+		return RestartExtraChapter{Output: ApplicationOutputBytes{Data: cloneRawMessage(data)}}, nil
 	default:
-		return nil, fmt.Errorf("unsupported chapter type %q", chapter.ChapterType)
+		return nil, fmt.Errorf("unsupported chapter type %q", chapterType)
 	}
 }
 
-func structuredTaskOutcomeFromStored(payloadKind string, data json.RawMessage) (StructuredTaskOutcome, error) {
+func chapterOutcomeFromWire(payloadKind string, data json.RawMessage) (ChapterOutcome, error) {
 	switch payloadKind {
 	case payloadKindApp:
 		return ApplicationOutputOutcome{Output: ApplicationOutputBytes{Data: cloneRawMessage(data)}}, nil
@@ -350,7 +248,7 @@ func structuredTaskOutcomeFromStored(payloadKind string, data json.RawMessage) (
 	}
 }
 
-func storedChapterDiscriminatorsAndData(body StructuredChapterBody) (string, string, json.RawMessage, error) {
+func chapterBodyToWire(body ChapterBody) (string, string, json.RawMessage, error) {
 	switch body := body.(type) {
 	case JobStartChapter:
 		return chapterTypeJobStart, payloadKindApp, cloneRawMessage(body.Input.Data), nil
@@ -360,22 +258,22 @@ func storedChapterDiscriminatorsAndData(body StructuredChapterBody) (string, str
 		}
 		return chapterTypeJobStart, payloadKindApp, cloneRawMessage(body.Input.Data), nil
 	case JobAttemptOutcomeChapter:
-		payloadKind, data, err := storedTaskOutcome(body.Outcome)
+		payloadKind, data, err := chapterOutcomeToWire(body.Outcome)
 		return chapterTypeJobAttemptOutcome, payloadKind, data, err
 	case *JobAttemptOutcomeChapter:
 		if body == nil {
 			return "", "", nil, fmt.Errorf("chapter body is required")
 		}
-		payloadKind, data, err := storedTaskOutcome(body.Outcome)
+		payloadKind, data, err := chapterOutcomeToWire(body.Outcome)
 		return chapterTypeJobAttemptOutcome, payloadKind, data, err
 	case TaskAttemptOutcomeChapter:
-		payloadKind, data, err := storedTaskOutcome(body.Outcome)
+		payloadKind, data, err := chapterOutcomeToWire(body.Outcome)
 		return chapterTypeTaskAttemptOutcome, payloadKind, data, err
 	case *TaskAttemptOutcomeChapter:
 		if body == nil {
 			return "", "", nil, fmt.Errorf("chapter body is required")
 		}
-		payloadKind, data, err := storedTaskOutcome(body.Outcome)
+		payloadKind, data, err := chapterOutcomeToWire(body.Outcome)
 		return chapterTypeTaskAttemptOutcome, payloadKind, data, err
 	case RestartExtraChapter:
 		return chapterTypeRestartExtra, payloadKindApp, cloneRawMessage(body.Output.Data), nil
@@ -389,7 +287,7 @@ func storedChapterDiscriminatorsAndData(body StructuredChapterBody) (string, str
 	}
 }
 
-func storedTaskOutcome(outcome StructuredTaskOutcome) (string, json.RawMessage, error) {
+func chapterOutcomeToWire(outcome ChapterOutcome) (string, json.RawMessage, error) {
 	switch outcome := outcome.(type) {
 	case ApplicationOutputOutcome:
 		return payloadKindApp, cloneRawMessage(outcome.Output.Data), nil
@@ -488,7 +386,7 @@ func chapterMetadataValueFromAny(value any) (ChapterMetadataValue, error) {
 		if !json.Valid(v) {
 			return ChapterMetadataValue{}, fmt.Errorf("raw metadata value must be valid JSON")
 		}
-		decoded, err := decodeStructuredJSONValue(v)
+		decoded, err := decodeJSONValue(v)
 		if err != nil {
 			return ChapterMetadataValue{}, err
 		}
@@ -501,7 +399,7 @@ func chapterMetadataValueFromAny(value any) (ChapterMetadataValue, error) {
 		if !json.Valid(raw) {
 			return ChapterMetadataValue{}, fmt.Errorf("metadata value cannot be represented as JSON")
 		}
-		decoded, err := decodeStructuredJSONValue(raw)
+		decoded, err := decodeJSONValue(raw)
 		if err != nil {
 			return ChapterMetadataValue{}, err
 		}
@@ -571,7 +469,7 @@ func chapterMetadataValueToAny(value ChapterMetadataValue) any {
 	}
 }
 
-func decodeStructuredJSONValue(raw []byte) (any, error) {
+func decodeJSONValue(raw []byte) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var value any
@@ -586,6 +484,155 @@ func cloneRawMessage(raw []byte) json.RawMessage {
 		return nil
 	}
 	return append(json.RawMessage(nil), raw...)
+}
+
+func cloneChapterBody(body ChapterBody) ChapterBody {
+	switch body := body.(type) {
+	case JobStartChapter:
+		body.Input.Data = cloneRawMessage(body.Input.Data)
+		return body
+	case *JobStartChapter:
+		if body == nil {
+			return nil
+		}
+		cloned := *body
+		cloned.Input.Data = cloneRawMessage(body.Input.Data)
+		return &cloned
+	case JobAttemptOutcomeChapter:
+		body.Outcome = cloneChapterOutcome(body.Outcome)
+		return body
+	case *JobAttemptOutcomeChapter:
+		if body == nil {
+			return nil
+		}
+		cloned := *body
+		cloned.Outcome = cloneChapterOutcome(body.Outcome)
+		return &cloned
+	case TaskAttemptOutcomeChapter:
+		body.Outcome = cloneChapterOutcome(body.Outcome)
+		return body
+	case *TaskAttemptOutcomeChapter:
+		if body == nil {
+			return nil
+		}
+		cloned := *body
+		cloned.Outcome = cloneChapterOutcome(body.Outcome)
+		return &cloned
+	case RestartExtraChapter:
+		body.Output.Data = cloneRawMessage(body.Output.Data)
+		return body
+	case *RestartExtraChapter:
+		if body == nil {
+			return nil
+		}
+		cloned := *body
+		cloned.Output.Data = cloneRawMessage(body.Output.Data)
+		return &cloned
+	default:
+		return body
+	}
+}
+
+func cloneChapterOutcome(outcome ChapterOutcome) ChapterOutcome {
+	switch outcome := outcome.(type) {
+	case ApplicationOutputOutcome:
+		outcome.Output.Data = cloneRawMessage(outcome.Output.Data)
+		return outcome
+	case *ApplicationOutputOutcome:
+		if outcome == nil {
+			return nil
+		}
+		cloned := *outcome
+		cloned.Output.Data = cloneRawMessage(outcome.Output.Data)
+		return &cloned
+	case AppErrorOutcome:
+		outcome.Error = cloneAppErrorPayload(outcome.Error)
+		return outcome
+	case *AppErrorOutcome:
+		if outcome == nil {
+			return nil
+		}
+		cloned := *outcome
+		cloned.Error = cloneAppErrorPayload(outcome.Error)
+		return &cloned
+	case SystemErrorOutcome:
+		outcome.Error = cloneSystemErrorPayload(outcome.Error)
+		return outcome
+	case *SystemErrorOutcome:
+		if outcome == nil {
+			return nil
+		}
+		cloned := *outcome
+		cloned.Error = cloneSystemErrorPayload(outcome.Error)
+		return &cloned
+	case TimeoutOutcome:
+		outcome.Timeout = cloneTimeoutPayload(outcome.Timeout)
+		return outcome
+	case *TimeoutOutcome:
+		if outcome == nil {
+			return nil
+		}
+		cloned := *outcome
+		cloned.Timeout = cloneTimeoutPayload(outcome.Timeout)
+		return &cloned
+	default:
+		return outcome
+	}
+}
+
+func cloneAppErrorPayload(payload AppErrorPayload) AppErrorPayload {
+	payload.Attrs = cloneAttrs(payload.Attrs)
+	payload.Stacktrace = append([]string(nil), payload.Stacktrace...)
+	if payload.InputRef != nil {
+		ref := *payload.InputRef
+		payload.InputRef = &ref
+	}
+	return payload
+}
+
+func cloneSystemErrorPayload(payload SystemErrorPayload) SystemErrorPayload {
+	payload.Stacktrace = append([]string(nil), payload.Stacktrace...)
+	if payload.InputRef != nil {
+		ref := *payload.InputRef
+		payload.InputRef = &ref
+	}
+	return payload
+}
+
+func cloneTimeoutPayload(payload TimeoutPayload) TimeoutPayload {
+	if payload.InputRef != nil {
+		ref := *payload.InputRef
+		payload.InputRef = &ref
+	}
+	return payload
+}
+
+func cloneChapterMetadata(metadata ChapterMetadata) ChapterMetadata {
+	if metadata.Fields == nil {
+		return ChapterMetadata{}
+	}
+	return ChapterMetadata{Fields: cloneChapterMetadataFields(metadata.Fields)}
+}
+
+func cloneChapterMetadataFields(fields map[string]ChapterMetadataValue) map[string]ChapterMetadataValue {
+	out := make(map[string]ChapterMetadataValue, len(fields))
+	for key, value := range fields {
+		out[key] = cloneChapterMetadataValue(value)
+	}
+	return out
+}
+
+func cloneChapterMetadataValue(value ChapterMetadataValue) ChapterMetadataValue {
+	if value.List != nil {
+		value.List = append([]ChapterMetadataValue(nil), value.List...)
+		for i := range value.List {
+			value.List[i] = cloneChapterMetadataValue(value.List[i])
+		}
+	}
+	if value.Map != nil {
+		value.Map = cloneChapterMetadataFields(value.Map)
+	}
+	return value
 }
 
 func cloneStoredArtifacts(artifacts []StoredArtifact) []StoredArtifact {

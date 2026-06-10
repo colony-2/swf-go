@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 	swftest "github.com/colony-2/swf-go/pkg/swf/internal/swftest"
 )
 
@@ -457,15 +458,41 @@ func normalizeJobSummaries(jobs []swf.JobSummary) []normalizedJobSummary {
 	return out
 }
 
-func normalizeStoredChapter(chapter swf.StoredChapter) normalizedStoredChapter {
+func appTaskAttemptChapterForParity(t testing.TB, ordinal int64, taskType string, inputHash string, data []byte, metadata json.RawMessage) swf.Chapter {
+	t.Helper()
+	chapterMetadata, err := runtimecodec.ChapterMetadataFromJSON(metadata)
+	if err != nil {
+		t.Fatalf("chapter metadata: %v", err)
+	}
+	return swf.Chapter{
+		Ordinal:   ordinal,
+		TaskType:  taskType,
+		InputHash: inputHash,
+		CreatedAt: time.Now().UTC(),
+		Metadata:  chapterMetadata,
+		Body: swf.TaskAttemptOutcomeChapter{Outcome: swf.ApplicationOutputOutcome{
+			Output: swf.ApplicationOutputBytes{Data: append([]byte(nil), data...)},
+		}},
+	}
+}
+
+func normalizeStoredChapter(chapter swf.Chapter) normalizedStoredChapter {
+	chapterType, payloadKind, data, err := runtimecodec.ChapterBodyToWire(chapter.Body)
+	if err != nil {
+		panic(err)
+	}
+	metadata, err := runtimecodec.ChapterMetadataToJSON(chapter.Metadata)
+	if err != nil {
+		panic(err)
+	}
 	out := normalizedStoredChapter{
 		Ordinal:     chapter.Ordinal,
 		TaskType:    chapter.TaskType,
-		ChapterType: chapter.ChapterType,
-		PayloadKind: chapter.PayloadKind,
+		ChapterType: chapterType,
+		PayloadKind: payloadKind,
 		InputHash:   chapter.InputHash,
-		Metadata:    canonicalChapterMetadata(chapter.Metadata),
-		Data:        canonicalJSON(chapter.Data),
+		Metadata:    canonicalChapterMetadata(metadata),
+		Data:        canonicalJSON(data),
 	}
 	if len(chapter.Artifacts) == 0 {
 		return out

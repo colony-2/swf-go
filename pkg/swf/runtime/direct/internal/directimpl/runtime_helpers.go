@@ -7,6 +7,7 @@ import (
 
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 )
 
 // StoryKeyForJob exposes the direct-runtime story-key mapping.
@@ -14,9 +15,9 @@ func StoryKeyForJob(jobKey swf.JobKey) story.Key {
 	return storyKeyForJob(jobKey)
 }
 
-// EncodeStoredChapter converts the backend-agnostic chapter representation into
+// EncodeChapter converts the backend-agnostic chapter representation into
 // the on-disk chapter envelope used by the direct runtime.
-func EncodeStoredChapter(chapter swf.StoredChapter) ([]byte, error) {
+func EncodeChapter(chapter swf.Chapter) ([]byte, error) {
 	meta := chapterMeta{
 		Version:   envelopeVersion,
 		Ordinal:   chapter.Ordinal,
@@ -24,8 +25,12 @@ func EncodeStoredChapter(chapter swf.StoredChapter) ([]byte, error) {
 		CreatedAt: chapter.CreatedAt,
 		InputHash: chapter.InputHash,
 	}
-	if len(chapter.Metadata) > 0 {
-		if err := json.Unmarshal(chapter.Metadata, &meta); err != nil {
+	rawMetadata, err := runtimecodec.ChapterMetadataToJSON(chapter.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("encode chapter metadata: %w", err)
+	}
+	if len(rawMetadata) > 0 {
+		if err := json.Unmarshal(rawMetadata, &meta); err != nil {
 			return nil, fmt.Errorf("decode chapter metadata: %w", err)
 		}
 		if meta.Ordinal == 0 {
@@ -47,19 +52,31 @@ func EncodeStoredChapter(chapter swf.StoredChapter) ([]byte, error) {
 	if meta.CreatedAt.IsZero() {
 		meta.CreatedAt = chapter.CreatedAt
 	}
-	return buildChapterEnvelope(meta, chapter.ChapterType, chapter.PayloadKind, chapter.Data)
+	chapterType, payloadKind, payload, err := runtimecodec.ChapterBodyToWire(chapter.Body)
+	if err != nil {
+		return nil, err
+	}
+	return buildChapterEnvelope(meta, chapterType, payloadKind, payload)
 }
 
-// StoredChapterFromStoryChapter converts a direct-runtime chapter into the
+// ChapterFromStoryChapter converts a direct-runtime chapter into the
 // backend-agnostic representation.
-func StoredChapterFromStoryChapter(chapter story.Chapter) (swf.StoredChapter, error) {
+func ChapterFromStoryChapter(chapter story.Chapter) (swf.Chapter, error) {
 	env, err := decodeChapterEnvelope(chapter.Body())
 	if err != nil {
-		return swf.StoredChapter{}, err
+		return swf.Chapter{}, err
 	}
-	metadata, err := json.Marshal(env.Meta)
+	rawMetadata, err := json.Marshal(env.Meta)
 	if err != nil {
-		return swf.StoredChapter{}, fmt.Errorf("encode chapter metadata: %w", err)
+		return swf.Chapter{}, fmt.Errorf("encode chapter metadata: %w", err)
+	}
+	metadata, err := runtimecodec.ChapterMetadataFromJSON(rawMetadata)
+	if err != nil {
+		return swf.Chapter{}, fmt.Errorf("decode chapter metadata: %w", err)
+	}
+	body, err := runtimecodec.ChapterBodyFromWire(env.ChapterType, env.PayloadKind, env.Payload)
+	if err != nil {
+		return swf.Chapter{}, err
 	}
 	artifacts := make([]swf.StoredArtifact, 0, len(chapter.Artifacts()))
 	for _, art := range chapter.Artifacts() {
@@ -73,15 +90,13 @@ func StoredChapterFromStoryChapter(chapter story.Chapter) (swf.StoredChapter, er
 			Size:   art.SizeBytes(),
 		})
 	}
-	return swf.StoredChapter{
-		Ordinal:     chapter.Ordinal(),
-		TaskType:    env.Meta.TaskType,
-		ChapterType: env.ChapterType,
-		PayloadKind: env.PayloadKind,
-		InputHash:   env.Meta.InputHash,
-		CreatedAt:   env.Meta.CreatedAt,
-		Metadata:    metadata,
-		Data:        env.Payload,
-		Artifacts:   artifacts,
+	return swf.Chapter{
+		Ordinal:   chapter.Ordinal(),
+		TaskType:  env.Meta.TaskType,
+		Body:      body,
+		InputHash: env.Meta.InputHash,
+		CreatedAt: env.Meta.CreatedAt,
+		Metadata:  metadata,
+		Artifacts: artifacts,
 	}, nil
 }

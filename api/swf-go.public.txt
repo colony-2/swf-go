@@ -67,12 +67,19 @@ type CancelJobRequest struct
   field JobKey JobKey
   field Reason string
   field WorkerID string
+type Chapter struct
+  field Ordinal int64
+  field TaskType string
+  field Body ChapterBody
+  field InputHash string
+  field CreatedAt time.Time
+  field Metadata ChapterMetadata
+  field Artifacts []StoredArtifact
+type ChapterBody interface
 type ChapterMetadata struct
   field Fields map[string]ChapterMetadataValue
-method ChapterMetadata.JSON func() (encoding/json.RawMessage, error)
 const ChapterMetadataBool ChapterMetadataKind = "bool"
 const ChapterMetadataDouble ChapterMetadataKind = "double"
-func ChapterMetadataFromJSON func(raw encoding/json.RawMessage) (ChapterMetadata, error)
 const ChapterMetadataInt ChapterMetadataKind = "int"
 type ChapterMetadataKind string
 const ChapterMetadataList ChapterMetadataKind = "list"
@@ -87,6 +94,7 @@ type ChapterMetadataValue struct
   field String string
   field List []ChapterMetadataValue
   field Map map[string]ChapterMetadataValue
+type ChapterOutcome interface
 type ChapterRef struct
   field JobKey JobKey
   field Ordinal int64
@@ -198,7 +206,7 @@ type JobAttempt struct
   field Outcome TaskOutcome
   field Tasks []TaskRun
 type JobAttemptOutcomeChapter struct
-  field Outcome StructuredTaskOutcome
+  field Outcome ChapterOutcome
 type JobContext interface
   method AwaitDuration func(waitFor Duration) error
   method AwaitJobs func(jobIds ...string) error
@@ -353,7 +361,6 @@ func NewArtifactFromFileNoCleanup func(name string, filePath string) (Artifact, 
 func NewArtifactFromReader func(name string, r io.Reader, size int64) Artifact
 func NewEngineBuilder func() *EngineBuilder
 func NewExistingJobMismatchError func(message string) error
-func NewStructuredWorkflowRuntime func(runtime WorkflowRuntime) StructuredWorkflowRuntime
 func NewSystemError func(payload SystemErrorPayload) error
 func NewTaskContext func(jobKey JobKey, step int64, logger *log/slog.Logger, await func(time.Time) error, awaitJobs func(...string) error) TaskContext
 func NewTaskData func(data any, artifacts ...Artifact) (TaskData, error)
@@ -374,13 +381,7 @@ type PutChapterRequest struct
   field LeaseID string
   field LeaseToken string
   field Ref ChapterRef
-  field Chapter StoredChapter
-  field ArtifactUploads []ArtifactUpload
-type PutStructuredChapterRequest struct
-  field LeaseID string
-  field LeaseToken string
-  field Ref ChapterRef
-  field Chapter StructuredChapterRecord
+  field Chapter Chapter
   field ArtifactUploads []ArtifactUpload
 const ReplayCacheMissAwaitJobsPending ReplayCacheMissReason = "await_jobs_pending"
 const ReplayCacheMissAwaitNotReady ReplayCacheMissReason = "await_not_ready"
@@ -446,32 +447,6 @@ type StoredArtifact struct
   field Name string
   field Digest string
   field Size int64
-type StoredChapter struct
-  field Ordinal int64
-  field TaskType string
-  field ChapterType string
-  field PayloadKind string
-  field InputHash string
-  field CreatedAt time.Time
-  field Metadata encoding/json.RawMessage
-  field Data encoding/json.RawMessage
-  field Artifacts []StoredArtifact
-func StoredChapterFromStructured func(chapter StructuredChapterRecord) (StoredChapter, error)
-type StructuredChapterBody interface
-func StructuredChapterFromStored func(chapter StoredChapter) (StructuredChapterRecord, error)
-type StructuredChapterRecord struct
-  field Ordinal int64
-  field TaskType string
-  field Body StructuredChapterBody
-  field InputHash string
-  field CreatedAt time.Time
-  field Metadata ChapterMetadata
-  field Artifacts []StoredArtifact
-type StructuredTaskOutcome interface
-type StructuredWorkflowRuntime interface
-  method GetStructuredChapter func(ctx context.Context, ref ChapterRef) (StructuredChapterRecord, error)
-  method ListStructuredChapters func(ctx context.Context, req ListChaptersRequest) ([]StructuredChapterRecord, error)
-  method PutStructuredChapter func(ctx context.Context, req PutStructuredChapterRequest) error
 type SubmitJob struct
   field TenantId string
   field JobType string
@@ -526,7 +501,7 @@ type TaskAttempt struct
   field Runtime *TaskRuntime
   field Outcome TaskOutcome
 type TaskAttemptOutcomeChapter struct
-  field Outcome StructuredTaskOutcome
+  field Outcome ChapterOutcome
 const TaskAttemptStateFailed untyped string = "FAILED"
 const TaskAttemptStateLeased untyped string = "LEASED"
 const TaskAttemptStateReady untyped string = "READY"
@@ -672,10 +647,10 @@ type Worker interface
 type WorkflowRuntime interface
   method CancelJob func(ctx context.Context, req CancelJobRequest) error
   method CompleteTaskIfWaiting func(ctx context.Context, req CompleteTaskIfWaitingRequest) error
-  method GetChapter func(ctx context.Context, ref ChapterRef) (StoredChapter, error)
+  method GetChapter func(ctx context.Context, ref ChapterRef) (Chapter, error)
   method GetJob func(ctx context.Context, jobKey JobKey) (JobInfo, error)
   method GetJobLease func(ctx context.Context, req GetJobLeaseRequest) (ExecutionLease, error)
-  method ListChapters func(ctx context.Context, req ListChaptersRequest) ([]StoredChapter, error)
+  method ListChapters func(ctx context.Context, req ListChaptersRequest) ([]Chapter, error)
   method ListJobs func(ctx context.Context, req ListJobsRequest) (ListJobsResponse, error)
   method OpenArtifact func(ctx context.Context, ref ArtifactRef) (ArtifactReader, error)
   method PollWork func(ctx context.Context, req PollWorkRequest) ([]ExecutionLease, error)
@@ -702,10 +677,10 @@ func NewServer func(runtime github.com/colony-2/swf-go/pkg/swf.WorkflowRuntime) 
 type Runtime struct
 method Runtime.CancelJob func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.CancelJobRequest) error
 method Runtime.CompleteTaskIfWaiting func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.CompleteTaskIfWaitingRequest) error
-method Runtime.GetChapter func(ctx context.Context, ref github.com/colony-2/swf-go/pkg/swf.ChapterRef) (github.com/colony-2/swf-go/pkg/swf.StoredChapter, error)
+method Runtime.GetChapter func(ctx context.Context, ref github.com/colony-2/swf-go/pkg/swf.ChapterRef) (github.com/colony-2/swf-go/pkg/swf.Chapter, error)
 method Runtime.GetJob func(ctx context.Context, jobKey github.com/colony-2/swf-go/pkg/swf.JobKey) (github.com/colony-2/swf-go/pkg/swf.JobInfo, error)
 method Runtime.GetJobLease func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.GetJobLeaseRequest) (github.com/colony-2/swf-go/pkg/swf.ExecutionLease, error)
-method Runtime.ListChapters func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.ListChaptersRequest) ([]github.com/colony-2/swf-go/pkg/swf.StoredChapter, error)
+method Runtime.ListChapters func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.ListChaptersRequest) ([]github.com/colony-2/swf-go/pkg/swf.Chapter, error)
 method Runtime.ListJobs func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.ListJobsRequest) (github.com/colony-2/swf-go/pkg/swf.ListJobsResponse, error)
 method Runtime.OpenArtifact func(ctx context.Context, ref github.com/colony-2/swf-go/pkg/swf.ArtifactRef) (github.com/colony-2/swf-go/pkg/swf.ArtifactReader, error)
 method Runtime.PollWork func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.PollWorkRequest) ([]github.com/colony-2/swf-go/pkg/swf.ExecutionLease, error)
@@ -734,11 +709,11 @@ method Runtime.CancelJob func(ctx context.Context, req github.com/colony-2/swf-g
 method Runtime.Close func(ctx context.Context) error
 method Runtime.CompleteJobWithLeaseByID func(ctx context.Context, jobKey github.com/colony-2/swf-go/pkg/swf.JobKey, leaseID string, workerID string, req github.com/colony-2/swf-go/pkg/swf.CompleteExecutionRequest) error
 method Runtime.CompleteTaskIfWaiting func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.CompleteTaskIfWaitingRequest) error
-method Runtime.GetChapter func(ctx context.Context, ref github.com/colony-2/swf-go/pkg/swf.ChapterRef) (github.com/colony-2/swf-go/pkg/swf.StoredChapter, error)
+method Runtime.GetChapter func(ctx context.Context, ref github.com/colony-2/swf-go/pkg/swf.ChapterRef) (github.com/colony-2/swf-go/pkg/swf.Chapter, error)
 method Runtime.GetJob func(ctx context.Context, jobKey github.com/colony-2/swf-go/pkg/swf.JobKey) (github.com/colony-2/swf-go/pkg/swf.JobInfo, error)
 method Runtime.GetJobLease func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.GetJobLeaseRequest) (github.com/colony-2/swf-go/pkg/swf.ExecutionLease, error)
 method Runtime.KeepAliveLeaseByID func(ctx context.Context, jobKey github.com/colony-2/swf-go/pkg/swf.JobKey, leaseID string, workerID string, leaseDuration time.Duration) error
-method Runtime.ListChapters func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.ListChaptersRequest) ([]github.com/colony-2/swf-go/pkg/swf.StoredChapter, error)
+method Runtime.ListChapters func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.ListChaptersRequest) ([]github.com/colony-2/swf-go/pkg/swf.Chapter, error)
 method Runtime.ListJobs func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.ListJobsRequest) (github.com/colony-2/swf-go/pkg/swf.ListJobsResponse, error)
 method Runtime.OpenArtifact func(ctx context.Context, ref github.com/colony-2/swf-go/pkg/swf.ArtifactRef) (github.com/colony-2/swf-go/pkg/swf.ArtifactReader, error)
 method Runtime.PollWork func(ctx context.Context, req github.com/colony-2/swf-go/pkg/swf.PollWorkRequest) ([]github.com/colony-2/swf-go/pkg/swf.ExecutionLease, error)

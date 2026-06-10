@@ -159,14 +159,14 @@ func TestSubmitRestartJobRecoversMissingPgwfRecordForExplicitJobID(t *testing.T)
 			JobKey:  sourceHandle.JobKey,
 			Ordinal: 1,
 		},
-		Chapter: swf.StoredChapter{
-			Ordinal:     1,
-			TaskType:    "manual",
-			ChapterType: "TaskAttemptOutcome",
-			PayloadKind: "App",
-			InputHash:   "restart-recover-input",
-			CreatedAt:   time.Now().UTC(),
-			Data:        json.RawMessage(`{"n":2}`),
+		Chapter: swf.Chapter{
+			Ordinal:   1,
+			TaskType:  "manual",
+			InputHash: "restart-recover-input",
+			CreatedAt: time.Now().UTC(),
+			Body: swf.TaskAttemptOutcomeChapter{Outcome: swf.ApplicationOutputOutcome{
+				Output: swf.ApplicationOutputBytes{Data: []byte(`{"n":2}`)},
+			}},
 		},
 	}); err != nil {
 		t.Fatalf("put source chapter: %v", err)
@@ -397,14 +397,14 @@ func addSingleChapterAndArchiveJobForTest(t *testing.T, ctx context.Context, rt 
 			JobKey:  jobKey,
 			Ordinal: 1,
 		},
-		Chapter: swf.StoredChapter{
-			Ordinal:     1,
-			TaskType:    capability,
-			ChapterType: "TaskAttemptOutcome",
-			PayloadKind: "App",
-			InputHash:   "archive-source-input",
-			CreatedAt:   time.Now().UTC(),
-			Data:        json.RawMessage(`{"n":2}`),
+		Chapter: swf.Chapter{
+			Ordinal:   1,
+			TaskType:  capability,
+			InputHash: "archive-source-input",
+			CreatedAt: time.Now().UTC(),
+			Body: swf.TaskAttemptOutcomeChapter{Outcome: swf.ApplicationOutputOutcome{
+				Output: swf.ApplicationOutputBytes{Data: []byte(`{"n":2}`)},
+			}},
 		},
 	}); err != nil {
 		t.Fatalf("put source chapter: %v", err)

@@ -50,11 +50,11 @@ func (r *runJobIfLeaseableStubRuntime) ListJobs(context.Context, ListJobsRequest
 	return r.listResp, r.listErr
 }
 
-func (r *runJobIfLeaseableStubRuntime) GetChapter(context.Context, ChapterRef) (StoredChapter, error) {
-	return StoredChapter{}, errors.New("unexpected GetChapter call")
+func (r *runJobIfLeaseableStubRuntime) GetChapter(context.Context, ChapterRef) (Chapter, error) {
+	return Chapter{}, errors.New("unexpected GetChapter call")
 }
 
-func (r *runJobIfLeaseableStubRuntime) ListChapters(context.Context, ListChaptersRequest) ([]StoredChapter, error) {
+func (r *runJobIfLeaseableStubRuntime) ListChapters(context.Context, ListChaptersRequest) ([]Chapter, error) {
 	return nil, errors.New("unexpected ListChapters call")
 }
 
@@ -259,7 +259,7 @@ func TestJobRunnableRunDoesNotBlockOnListener(t *testing.T) {
 		}
 		chapters := runtime.chapters[key]
 		for _, chapter := range chapters {
-			if chapter.ChapterType == chapterTypeJobAttemptOutcome {
+			if chapterIs(chapter, chapterTypeJobAttemptOutcome) {
 				return JobStatusCompleted, nil
 			}
 		}

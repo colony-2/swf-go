@@ -121,7 +121,7 @@ func (a *runtimeBackedArtifact) Bytes(ctx context.Context) ([]byte, error) {
 
 func (a *runtimeBackedArtifact) Cleanup() error { return nil }
 
-func storedChapterMeta(ch StoredChapter) (chapterMeta, error) {
+func chapterMetaFromChapter(ch Chapter) (chapterMeta, error) {
 	meta := chapterMeta{
 		Version:   envelopeVersion,
 		Ordinal:   ch.Ordinal,
@@ -129,8 +129,12 @@ func storedChapterMeta(ch StoredChapter) (chapterMeta, error) {
 		CreatedAt: ch.CreatedAt,
 		InputHash: ch.InputHash,
 	}
-	if len(ch.Metadata) > 0 {
-		if err := json.Unmarshal(ch.Metadata, &meta); err != nil {
+	rawMetadata, err := chapterMetadataJSON(ch.Metadata)
+	if err != nil {
+		return chapterMeta{}, fmt.Errorf("encode chapter metadata: %w", err)
+	}
+	if len(rawMetadata) > 0 {
+		if err := json.Unmarshal(rawMetadata, &meta); err != nil {
 			return chapterMeta{}, fmt.Errorf("decode chapter metadata: %w", err)
 		}
 	}
@@ -152,7 +156,7 @@ func storedChapterMeta(ch StoredChapter) (chapterMeta, error) {
 	return meta, nil
 }
 
-func storedChapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch StoredChapter) (TaskData, error) {
+func chapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch Chapter) (TaskData, error) {
 	artifacts := make([]Artifact, 0, len(ch.Artifacts))
 	for _, stored := range ch.Artifacts {
 		artifacts = append(artifacts, newRuntimeBackedArtifact(runtime, ArtifactRef{
@@ -163,27 +167,31 @@ func storedChapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch StoredCh
 		}, stored.Size))
 	}
 
-	payload := append(json.RawMessage(nil), ch.Data...)
+	payloadKind, data, err := chapterPayload(ch)
+	if err != nil {
+		return nil, err
+	}
+	payload := append(json.RawMessage(nil), data...)
 	td := &EnvelopedTaskData{
 		SimpleTaskData: SimpleTaskData{
 			Data:      Data(payload),
 			Artifacts: artifacts,
 		},
-		Kind: ch.PayloadKind,
+		Kind: payloadKind,
 	}
 
-	switch ch.PayloadKind {
+	switch payloadKind {
 	case payloadKindApp:
 		return td, nil
 	case payloadKindTimeout:
 		var p TimeoutPayload
-		if err := json.Unmarshal(ch.Data, &p); err != nil {
+		if err := json.Unmarshal(data, &p); err != nil {
 			return td, err
 		}
 		return td, &TimeoutError{Payload: p}
 	case payloadKindAppError:
 		var p AppErrorPayload
-		if err := json.Unmarshal(ch.Data, &p); err != nil {
+		if err := json.Unmarshal(data, &p); err != nil {
 			return td, err
 		}
 		if jobFailedErr, ok := decodeJobFailedAppError(p); ok {
@@ -192,12 +200,12 @@ func storedChapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch StoredCh
 		return td, &AppError{Payload: p}
 	case payloadKindSystemError:
 		var p SystemErrorPayload
-		if err := json.Unmarshal(ch.Data, &p); err != nil {
+		if err := json.Unmarshal(data, &p); err != nil {
 			return td, err
 		}
 		return td, &SystemError{Payload: p}
 	default:
-		return td, fmt.Errorf("unsupported payload kind %q", ch.PayloadKind)
+		return td, fmt.Errorf("unsupported payload kind %q", payloadKind)
 	}
 }
 
@@ -223,17 +231,23 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease 
 	if err != nil {
 		return nil, err
 	}
+	metadata, err := chapterMetadataFromJSON(metaJSON)
+	if err != nil {
+		return nil, err
+	}
+	body, err := chapterBodyFromWire(chapterType, payloadKind, payload)
+	if err != nil {
+		return nil, err
+	}
 
-	chapter := StoredChapter{
-		Ordinal:     ref.Ordinal,
-		TaskType:    taskType,
-		ChapterType: chapterType,
-		PayloadKind: payloadKind,
-		InputHash:   inputHash,
-		CreatedAt:   createdAt,
-		Metadata:    metaJSON,
-		Data:        append(json.RawMessage(nil), payload...),
-		Artifacts:   storedArtifacts,
+	chapter := Chapter{
+		Ordinal:   ref.Ordinal,
+		TaskType:  taskType,
+		Body:      body,
+		InputHash: inputHash,
+		CreatedAt: createdAt,
+		Metadata:  metadata,
+		Artifacts: storedArtifacts,
 	}
 	if err := runtime.PutChapter(ctx, PutChapterRequest{
 		LeaseID:         lease.LeaseID(),
@@ -260,7 +274,7 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease 
 	if payloadKind != payloadKindApp {
 		return nil, nil
 	}
-	return storedChapterToTaskData(runtime, ref.JobKey, chapter)
+	return chapterToTaskData(runtime, ref.JobKey, chapter)
 }
 
 func executionLeaseToken(lease ExecutionLease) string {

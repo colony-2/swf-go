@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 	remoteruntime "github.com/colony-2/swf-go/pkg/swf/runtime/remote"
 )
 
@@ -32,8 +33,12 @@ func TestRuntimeSubmitJobCreatesInitialChapter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get chapter: %v", err)
 	}
-	if chapter.ChapterType != chapterTypeJobStart {
-		t.Fatalf("chapter type = %s, want %s", chapter.ChapterType, chapterTypeJobStart)
+	chapterType, err := runtimecodec.ChapterType(chapter)
+	if err != nil {
+		t.Fatalf("chapter type: %v", err)
+	}
+	if chapterType != chapterTypeJobStart {
+		t.Fatalf("chapter type = %s, want %s", chapterType, chapterTypeJobStart)
 	}
 }
 

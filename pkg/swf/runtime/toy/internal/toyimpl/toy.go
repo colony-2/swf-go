@@ -43,7 +43,7 @@ func WithJobIDGenerator(gen JobIDGenerator) Option {
 type ToyEngine struct {
 	mu               sync.Mutex
 	jobRecords       map[swf.JobKey]*jobRecord
-	runtimeChapters  map[swf.JobKey]map[int64]swf.StoredChapter
+	runtimeChapters  map[swf.JobKey]map[int64]swf.Chapter
 	runtimeArtifacts map[runtimeArtifactKey][]byte
 	idGenerator      JobIDGenerator
 	logger           *slog.Logger
@@ -204,7 +204,7 @@ func metadataMatches(raw json.RawMessage, predicates []normalizedMetadataPredica
 func NewToyEngine(opts ...Option) *ToyEngine {
 	engine := &ToyEngine{
 		jobRecords:       make(map[swf.JobKey]*jobRecord),
-		runtimeChapters:  make(map[swf.JobKey]map[int64]swf.StoredChapter),
+		runtimeChapters:  make(map[swf.JobKey]map[int64]swf.Chapter),
 		runtimeArtifacts: make(map[runtimeArtifactKey][]byte),
 		idGenerator: func(tenantId string) (swf.JobKey, error) {
 			return swf.JobKey{TenantId: tenantId, JobId: ksuid.New().String()}, nil

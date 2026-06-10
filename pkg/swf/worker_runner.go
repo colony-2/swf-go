@@ -195,17 +195,17 @@ func metaEndAt(meta chapterMeta) time.Time {
 	return meta.CreatedAt
 }
 
-func (r *workerRunner) getChapter(ctx context.Context, ordinal int64) (StoredChapter, chapterMeta, error) {
+func (r *workerRunner) getChapter(ctx context.Context, ordinal int64) (Chapter, chapterMeta, error) {
 	chapter, err := r.runtime.GetChapter(ctx, ChapterRef{
 		JobKey:  r.GetJobKey(),
 		Ordinal: ordinal,
 	})
 	if err != nil {
-		return StoredChapter{}, chapterMeta{}, err
+		return Chapter{}, chapterMeta{}, err
 	}
-	meta, err := storedChapterMeta(chapter)
+	meta, err := chapterMetaFromChapter(chapter)
 	if err != nil {
-		return StoredChapter{}, chapterMeta{}, err
+		return Chapter{}, chapterMeta{}, err
 	}
 	return chapter, meta, nil
 }
@@ -374,20 +374,21 @@ func (r *workerRunner) AwaitDuration(waitFor Duration) error {
 	return r.awaitUntil(time.Now().Add(wait), r.storyCounter, 0, kind, r.currentInputRef, r.currentInvocationDeadline, r.currentTotalDeadline, r.currentInvocationLimit, r.currentTotalLimit)
 }
 
-func (r *workerRunner) loadInitialChapterAndPolicy(ctx context.Context) (TaskData, StoredChapter, chapterMeta, error) {
+func (r *workerRunner) loadInitialChapterAndPolicy(ctx context.Context) (TaskData, Chapter, chapterMeta, error) {
 	chapter, meta, err := r.getChapter(ctx, 0)
 	if err != nil {
-		return nil, StoredChapter{}, chapterMeta{}, err
+		return nil, Chapter{}, chapterMeta{}, err
 	}
-	if chapter.ChapterType != chapterTypeJobStart {
-		return nil, StoredChapter{}, chapterMeta{}, fmt.Errorf("%w: unexpected chapter type %q at ordinal 0", ErrWorkflowNotDeterministic, chapter.ChapterType)
+	if !chapterIs(chapter, chapterTypeJobStart) {
+		got, _ := chapterType(chapter)
+		return nil, Chapter{}, chapterMeta{}, fmt.Errorf("%w: unexpected chapter type %q at ordinal 0", ErrWorkflowNotDeterministic, got)
 	}
 	if meta.RunPolicy != nil {
 		r.jobPolicy = mergeRunPolicy(*meta.RunPolicy, r.jobPolicy)
 	}
-	inputData, err := storedChapterToTaskData(r.runtime, r.GetJobKey(), chapter)
+	inputData, err := chapterToTaskData(r.runtime, r.GetJobKey(), chapter)
 	if err != nil {
-		return nil, StoredChapter{}, chapterMeta{}, err
+		return nil, Chapter{}, chapterMeta{}, err
 	}
 	return inputData, chapter, meta, nil
 }
@@ -609,8 +610,9 @@ func (r *workerRunner) checkCachedJobResult(ctx context.Context, ordinal int64, 
 	if err != nil {
 		return nil, 0, false, false, nil, err, nil, nil
 	}
-	if chapter.ChapterType != chapterTypeJobAttemptOutcome {
-		return nil, 0, false, false, nil, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, chapter.ChapterType, ordinal), nil, nil
+	if !chapterIs(chapter, chapterTypeJobAttemptOutcome) {
+		got, _ := chapterType(chapter)
+		return nil, 0, false, false, nil, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, got, ordinal), nil, nil
 	}
 	if meta.InputHash != "" && meta.InputHash != inputHash {
 		return nil, 0, false, false, nil, fmt.Errorf("%w: ordinal %d job result input hash mismatch", ErrWorkflowNotDeterministic, ordinal), nil, nil
@@ -626,7 +628,7 @@ func (r *workerRunner) checkCachedJobResult(ctx context.Context, ordinal int64, 
 	nextAttempt := priorAttempt + 1
 	endAt := metaEndAt(meta)
 
-	output, payloadErr := storedChapterToTaskData(r.runtime, r.GetJobKey(), chapter)
+	output, payloadErr := chapterToTaskData(r.runtime, r.GetJobKey(), chapter)
 	if payloadErr == nil {
 		return output, nextAttempt, true, true, nil, nil, &endAt, &endAt
 	}
@@ -714,11 +716,12 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 		chapter, meta, err := r.getChapter(ctx, ordinal)
 		if err == nil {
 			r.markStoryOrdinalConsumed(ordinal)
-			if chapter.ChapterType != chapterTypeTaskAttemptOutcome && chapter.ChapterType != chapterTypeRestartExtra {
-				return nil, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, chapter.ChapterType, ordinal)
+			if !chapterIs(chapter, chapterTypeTaskAttemptOutcome) && !chapterIs(chapter, chapterTypeRestartExtra) {
+				got, _ := chapterType(chapter)
+				return nil, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, got, ordinal)
 			}
 			r.emitTaskStart(taskType, ordinal, attempt, data, metaStartAt(meta))
-			if chapter.ChapterType == chapterTypeRestartExtra && r.shouldCheckPrerequisites() && len(meta.Prerequisites) > 0 {
+			if chapterIs(chapter, chapterTypeRestartExtra) && r.shouldCheckPrerequisites() && len(meta.Prerequisites) > 0 {
 				if err := r.checkPrerequisites(ctx, meta); err != nil {
 					r.emitTaskEnd(taskType, ordinal, attempt, nil, err, metaEndAt(meta))
 					return nil, err
@@ -752,7 +755,7 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 					},
 				}
 			}
-			td, payloadErr := storedChapterToTaskData(r.runtime, r.GetJobKey(), chapter)
+			td, payloadErr := chapterToTaskData(r.runtime, r.GetJobKey(), chapter)
 			if payloadErr == nil {
 				r.emitTaskEnd(taskType, ordinal, attempt, td, nil, metaEndAt(meta))
 				return td, nil
@@ -1112,7 +1115,7 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 			nextStartAt  *time.Time
 		)
 		if cachedChapter, _, err := r.getChapter(ctx, r.storyCounter); err == nil {
-			if cachedChapter.ChapterType == chapterTypeJobAttemptOutcome {
+			if chapterIs(cachedChapter, chapterTypeJobAttemptOutcome) {
 				ordinal := r.storyCounter
 				r.markStoryOrdinalConsumed(ordinal)
 				outputCached, nextAttempt, cached, terminal, priorErr, cachedErr, cachedEndAt, nextStartAt = r.checkCachedJobResult(ctx, ordinal, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)

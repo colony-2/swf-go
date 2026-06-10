@@ -553,21 +553,21 @@ func (r *Runtime) GetWaitingTask(ctx context.Context, key swf.JobKey) (swf.TaskH
 	}, nil
 }
 
-func (r *Runtime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.StoredChapter, error) {
+func (r *Runtime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.Chapter, error) {
 	if err := r.validate(); err != nil {
-		return swf.StoredChapter{}, err
+		return swf.Chapter{}, err
 	}
 	chapter, err := r.strataClient.Chapter(ctx, StoryKeyForJob(ref.JobKey), ref.Ordinal)
 	if err != nil {
 		if errors.Is(err, core.ErrNotFound) {
-			return swf.StoredChapter{}, swf.ErrChapterNotFound
+			return swf.Chapter{}, swf.ErrChapterNotFound
 		}
-		return swf.StoredChapter{}, err
+		return swf.Chapter{}, err
 	}
-	return StoredChapterFromStoryChapter(chapter)
+	return ChapterFromStoryChapter(chapter)
 }
 
-func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.StoredChapter, error) {
+func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.Chapter, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
 	}
@@ -589,7 +589,7 @@ func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest)
 		return nil, err
 	}
 
-	out := make([]swf.StoredChapter, 0)
+	out := make([]swf.Chapter, 0)
 	for iter.HasNext() {
 		chapter, err := iter.Next(ctx)
 		if errors.Is(err, pagination.ErrNoMoreItems) {
@@ -598,7 +598,7 @@ func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest)
 		if err != nil {
 			return nil, err
 		}
-		stored, err := StoredChapterFromStoryChapter(chapter)
+		stored, err := ChapterFromStoryChapter(chapter)
 		if err != nil {
 			return nil, err
 		}
@@ -643,7 +643,7 @@ func (r *Runtime) PutChapter(ctx context.Context, req swf.PutChapterRequest) err
 	if err != nil {
 		return err
 	}
-	body, err := EncodeStoredChapter(chapter)
+	body, err := EncodeChapter(chapter)
 	if err != nil {
 		return err
 	}
@@ -786,11 +786,11 @@ func (r *Runtime) ensureNextVisibleChapterOrdinal(ctx context.Context, jobKey sw
 	}
 }
 
-func (r *Runtime) prepareChapterWrite(ctx context.Context, req swf.PutChapterRequest) (swf.StoredChapter, []strataartifact.Artifact, error) {
+func (r *Runtime) prepareChapterWrite(ctx context.Context, req swf.PutChapterRequest) (swf.Chapter, []strataartifact.Artifact, error) {
 	chapter := req.Chapter
 	if len(req.ArtifactUploads) == 0 {
 		if len(chapter.Artifacts) > 0 {
-			return swf.StoredChapter{}, nil, fmt.Errorf("put chapter with artifact descriptors but no artifact uploads")
+			return swf.Chapter{}, nil, fmt.Errorf("put chapter with artifact descriptors but no artifact uploads")
 		}
 		return chapter, nil, nil
 	}
@@ -799,21 +799,21 @@ func (r *Runtime) prepareChapterWrite(ctx context.Context, req swf.PutChapterReq
 	attached := make([]strataartifact.Artifact, 0, len(req.ArtifactUploads))
 	for _, item := range req.ArtifactUploads {
 		if item.Open == nil {
-			return swf.StoredChapter{}, nil, fmt.Errorf("artifact %q is missing opener", item.Name)
+			return swf.Chapter{}, nil, fmt.Errorf("artifact %q is missing opener", item.Name)
 		}
 		reader, err := item.Open()
 		if err != nil {
-			return swf.StoredChapter{}, nil, err
+			return swf.Chapter{}, nil, err
 		}
 		data, err := io.ReadAll(reader)
 		_ = reader.Close()
 		if err != nil {
-			return swf.StoredChapter{}, nil, err
+			return swf.Chapter{}, nil, err
 		}
 		art := swf.NewArtifactFromBytes(item.Name, data)
 		digest, err := art.Sha256(ctx)
 		if err != nil {
-			return swf.StoredChapter{}, nil, err
+			return swf.Chapter{}, nil, err
 		}
 		stored = append(stored, swf.StoredArtifact{
 			Name:   item.Name,
@@ -823,7 +823,7 @@ func (r *Runtime) prepareChapterWrite(ctx context.Context, req swf.PutChapterReq
 		attached = append(attached, ToStrataArtifactForRuntime(art))
 	}
 	if err := validateChapterArtifactDescriptors(chapter.Artifacts, stored); err != nil {
-		return swf.StoredChapter{}, nil, err
+		return swf.Chapter{}, nil, err
 	}
 	chapter.Artifacts = stored
 	return chapter, attached, nil

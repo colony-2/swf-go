@@ -369,7 +369,7 @@ func replayRuntimeJob(ctx context.Context, runtime WorkflowRuntime, spec *replay
 		}
 		return nil, err
 	}
-	meta, err := storedChapterMeta(chapter)
+	meta, err := chapterMetaFromChapter(chapter)
 	if err != nil {
 		return nil, err
 	}

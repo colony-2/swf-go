@@ -15,6 +15,7 @@ import (
 
 	"github.com/colony-2/swf-go/pkg/swf"
 	"github.com/colony-2/swf-go/pkg/swf/internal/runtimeapi"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 )
 
 const (
@@ -339,12 +340,20 @@ func taskDataFromAPIStored(runtime *Runtime, jobKey swf.JobKey, data runtimeapi.
 	return taskDataFromPayload(artifacts, data.PayloadKind, data.Data)
 }
 
-func toAPIStoredChapter(ctx context.Context, chapter swf.StoredChapter) (runtimeapi.StoredChapter, error) {
-	dataValue, err := marshalJSONValueRequired(chapter.Data)
+func toAPIStoredChapter(ctx context.Context, chapter swf.Chapter) (runtimeapi.StoredChapter, error) {
+	chapterType, payloadKind, payload, err := runtimecodec.ChapterBodyToWire(chapter.Body)
 	if err != nil {
 		return runtimeapi.StoredChapter{}, err
 	}
-	metadataValue, err := marshalJSONValueOptional(chapter.Metadata)
+	dataValue, err := marshalJSONValueRequired(payload)
+	if err != nil {
+		return runtimeapi.StoredChapter{}, err
+	}
+	rawMetadata, err := runtimecodec.ChapterMetadataToJSON(chapter.Metadata)
+	if err != nil {
+		return runtimeapi.StoredChapter{}, err
+	}
+	metadataValue, err := marshalJSONValueOptional(rawMetadata)
 	if err != nil {
 		return runtimeapi.StoredChapter{}, err
 	}
@@ -358,13 +367,13 @@ func toAPIStoredChapter(ctx context.Context, chapter swf.StoredChapter) (runtime
 	}
 	out := runtimeapi.StoredChapter{
 		Artifacts:   artifacts,
-		ChapterType: runtimeapi.ChapterType(chapter.ChapterType),
+		ChapterType: runtimeapi.ChapterType(chapterType),
 		CreatedAt:   chapter.CreatedAt,
 		Data:        dataValue,
 		InputHash:   stringPtrOrNil(chapter.InputHash),
 		Metadata:    metadataValue,
 		Ordinal:     chapter.Ordinal,
-		PayloadKind: runtimeapi.PayloadKind(chapter.PayloadKind),
+		PayloadKind: runtimeapi.PayloadKind(payloadKind),
 	}
 	if chapter.TaskType != "" {
 		out.TaskType = stringPtr(chapter.TaskType)
@@ -372,22 +381,28 @@ func toAPIStoredChapter(ctx context.Context, chapter swf.StoredChapter) (runtime
 	return out, nil
 }
 
-func fromAPIStoredChapter(chapter runtimeapi.StoredChapter) (swf.StoredChapter, error) {
+func fromAPIStoredChapter(chapter runtimeapi.StoredChapter) (swf.Chapter, error) {
 	data, err := unmarshalJSONValueRequired(chapter.Data)
 	if err != nil {
-		return swf.StoredChapter{}, err
+		return swf.Chapter{}, err
 	}
-	metadata, err := unmarshalJSONValueOptional(chapter.Metadata)
+	rawMetadata, err := unmarshalJSONValueOptional(chapter.Metadata)
 	if err != nil {
-		return swf.StoredChapter{}, err
+		return swf.Chapter{}, err
 	}
-	out := swf.StoredChapter{
-		Ordinal:     chapter.Ordinal,
-		ChapterType: string(chapter.ChapterType),
-		PayloadKind: string(chapter.PayloadKind),
-		CreatedAt:   chapter.CreatedAt,
-		Data:        data,
-		Metadata:    metadata,
+	metadata, err := runtimecodec.ChapterMetadataFromJSON(rawMetadata)
+	if err != nil {
+		return swf.Chapter{}, err
+	}
+	body, err := runtimecodec.ChapterBodyFromWire(string(chapter.ChapterType), string(chapter.PayloadKind), data)
+	if err != nil {
+		return swf.Chapter{}, err
+	}
+	out := swf.Chapter{
+		Ordinal:   chapter.Ordinal,
+		Body:      body,
+		CreatedAt: chapter.CreatedAt,
+		Metadata:  metadata,
 	}
 	if chapter.InputHash != nil {
 		out.InputHash = *chapter.InputHash
@@ -405,22 +420,28 @@ func fromAPIStoredChapter(chapter runtimeapi.StoredChapter) (swf.StoredChapter, 
 	return out, nil
 }
 
-func writableChapterToRuntimeChapter(chapter runtimeapi.WritableChapter) (swf.StoredChapter, []swf.ArtifactUpload, error) {
+func writableChapterToRuntimeChapter(chapter runtimeapi.WritableChapter) (swf.Chapter, []swf.ArtifactUpload, error) {
 	data, err := unmarshalJSONValueRequired(chapter.Data)
 	if err != nil {
-		return swf.StoredChapter{}, nil, err
+		return swf.Chapter{}, nil, err
 	}
-	metadata, err := unmarshalJSONValueOptional(chapter.Metadata)
+	rawMetadata, err := unmarshalJSONValueOptional(chapter.Metadata)
 	if err != nil {
-		return swf.StoredChapter{}, nil, err
+		return swf.Chapter{}, nil, err
 	}
-	out := swf.StoredChapter{
-		Ordinal:     chapter.Ordinal,
-		ChapterType: string(chapter.ChapterType),
-		PayloadKind: string(chapter.PayloadKind),
-		CreatedAt:   chapter.CreatedAt,
-		Data:        data,
-		Metadata:    metadata,
+	metadata, err := runtimecodec.ChapterMetadataFromJSON(rawMetadata)
+	if err != nil {
+		return swf.Chapter{}, nil, err
+	}
+	body, err := runtimecodec.ChapterBodyFromWire(string(chapter.ChapterType), string(chapter.PayloadKind), data)
+	if err != nil {
+		return swf.Chapter{}, nil, err
+	}
+	out := swf.Chapter{
+		Ordinal:   chapter.Ordinal,
+		Body:      body,
+		CreatedAt: chapter.CreatedAt,
+		Metadata:  metadata,
 	}
 	if chapter.InputHash != nil {
 		out.InputHash = *chapter.InputHash
@@ -450,12 +471,20 @@ func writableChapterToRuntimeChapter(chapter runtimeapi.WritableChapter) (swf.St
 	return out, uploads, nil
 }
 
-func runtimeChapterToWritable(ctx context.Context, chapter swf.StoredChapter, uploads []swf.ArtifactUpload) (runtimeapi.WritableChapter, error) {
-	dataValue, err := marshalJSONValueRequired(chapter.Data)
+func runtimeChapterToWritable(ctx context.Context, chapter swf.Chapter, uploads []swf.ArtifactUpload) (runtimeapi.WritableChapter, error) {
+	chapterType, payloadKind, payload, err := runtimecodec.ChapterBodyToWire(chapter.Body)
 	if err != nil {
 		return runtimeapi.WritableChapter{}, err
 	}
-	metadataValue, err := marshalJSONValueOptional(chapter.Metadata)
+	dataValue, err := marshalJSONValueRequired(payload)
+	if err != nil {
+		return runtimeapi.WritableChapter{}, err
+	}
+	rawMetadata, err := runtimecodec.ChapterMetadataToJSON(chapter.Metadata)
+	if err != nil {
+		return runtimeapi.WritableChapter{}, err
+	}
+	metadataValue, err := marshalJSONValueOptional(rawMetadata)
 	if err != nil {
 		return runtimeapi.WritableChapter{}, err
 	}
@@ -478,13 +507,13 @@ func runtimeChapterToWritable(ctx context.Context, chapter swf.StoredChapter, up
 	}
 	out := runtimeapi.WritableChapter{
 		Artifacts:   artifacts,
-		ChapterType: runtimeapi.ChapterType(chapter.ChapterType),
+		ChapterType: runtimeapi.ChapterType(chapterType),
 		CreatedAt:   chapter.CreatedAt,
 		Data:        dataValue,
 		InputHash:   stringPtrOrNil(chapter.InputHash),
 		Metadata:    metadataValue,
 		Ordinal:     chapter.Ordinal,
-		PayloadKind: runtimeapi.PayloadKind(chapter.PayloadKind),
+		PayloadKind: runtimeapi.PayloadKind(payloadKind),
 	}
 	if chapter.TaskType != "" {
 		out.TaskType = stringPtr(chapter.TaskType)

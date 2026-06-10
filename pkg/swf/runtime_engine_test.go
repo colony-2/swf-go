@@ -27,8 +27,8 @@ type fakeWorkflowRuntime struct {
 	jobRunResp    GetJobRunResponse
 	leaseResp     ExecutionLease
 	listResp      ListJobsResponse
-	chapterResp   StoredChapter
-	chaptersResp  []StoredChapter
+	chapterResp   Chapter
+	chaptersResp  []Chapter
 	artifactBytes []byte
 }
 
@@ -71,7 +71,7 @@ func (r *fakeWorkflowRuntime) ListJobs(ctx context.Context, req ListJobsRequest)
 	return r.listResp, nil
 }
 
-func (r *fakeWorkflowRuntime) GetChapter(ctx context.Context, ref ChapterRef) (StoredChapter, error) {
+func (r *fakeWorkflowRuntime) GetChapter(ctx context.Context, ref ChapterRef) (Chapter, error) {
 	r.chapterRef = ref
 	return r.chapterResp, nil
 }
@@ -81,8 +81,8 @@ func (r *fakeWorkflowRuntime) PutChapter(ctx context.Context, req PutChapterRequ
 	return nil
 }
 
-func (r *fakeWorkflowRuntime) ListChapters(ctx context.Context, req ListChaptersRequest) ([]StoredChapter, error) {
-	return append([]StoredChapter(nil), r.chaptersResp...), nil
+func (r *fakeWorkflowRuntime) ListChapters(ctx context.Context, req ListChaptersRequest) ([]Chapter, error) {
+	return append([]Chapter(nil), r.chaptersResp...), nil
 }
 
 func (r *fakeWorkflowRuntime) OpenArtifact(ctx context.Context, ref ArtifactRef) (ArtifactReader, error) {
@@ -114,6 +114,15 @@ func (fakeJobWorker) Run(JobContext, JobData) (JobData, error) {
 	return NewTaskData(map[string]any{"ok": true})
 }
 
+func mustChapterMetadata(t *testing.T, raw json.RawMessage) ChapterMetadata {
+	t.Helper()
+	metadata, err := chapterMetadataFromJSON(raw)
+	if err != nil {
+		t.Fatalf("chapter metadata: %v", err)
+	}
+	return metadata
+}
+
 func TestBuildEngineWithWorkflowRuntime(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine, err := NewEngineBuilder().
@@ -141,26 +150,22 @@ func TestRuntimeEngineDelegatesLifecycleMethodsToRuntime(t *testing.T) {
 			{JobKey: JobKey{TenantId: "tenant-d", JobId: "job-d"}},
 			{JobKey: JobKey{TenantId: "tenant-run", JobId: "job-run"}, Status: JobStatusCompleted, JobType: "job-run", CreatedAt: time.Unix(100, 0).UTC()},
 		}},
-		chaptersResp: []StoredChapter{
+		chaptersResp: []Chapter{
 			{
-				Ordinal:     0,
-				TaskType:    "job-run",
-				ChapterType: chapterTypeJobStart,
-				PayloadKind: payloadKindApp,
-				InputHash:   "hash-0",
-				CreatedAt:   time.Unix(100, 0).UTC(),
-				Metadata:    json.RawMessage(`{"version":1,"ordinal":0,"task_type":"job-run","worker_id":"worker-1","created_at":"1970-01-01T00:01:40Z","input_hash":"hash-0","attempt":1}`),
-				Data:        json.RawMessage(`{"input":true}`),
+				Ordinal:   0,
+				TaskType:  "job-run",
+				Body:      JobStartChapter{Input: ApplicationInputBytes{Data: []byte(`{"input":true}`)}},
+				InputHash: "hash-0",
+				CreatedAt: time.Unix(100, 0).UTC(),
+				Metadata:  mustChapterMetadata(t, json.RawMessage(`{"version":1,"ordinal":0,"task_type":"job-run","worker_id":"worker-1","created_at":"1970-01-01T00:01:40Z","input_hash":"hash-0","attempt":1}`)),
 			},
 			{
-				Ordinal:     1,
-				TaskType:    "job-run",
-				ChapterType: chapterTypeJobAttemptOutcome,
-				PayloadKind: payloadKindApp,
-				InputHash:   "hash-0",
-				CreatedAt:   time.Unix(101, 0).UTC(),
-				Metadata:    json.RawMessage(`{"version":1,"ordinal":1,"task_type":"job-run","worker_id":"worker-1","created_at":"1970-01-01T00:01:41Z","input_hash":"hash-0","attempt":1,"input_ref":{"ordinal":0,"hash":"hash-0"}}`),
-				Data:        json.RawMessage(`{"ok":true}`),
+				Ordinal:   1,
+				TaskType:  "job-run",
+				Body:      JobAttemptOutcomeChapter{Outcome: ApplicationOutputOutcome{Output: ApplicationOutputBytes{Data: []byte(`{"ok":true}`)}}},
+				InputHash: "hash-0",
+				CreatedAt: time.Unix(101, 0).UTC(),
+				Metadata:  mustChapterMetadata(t, json.RawMessage(`{"version":1,"ordinal":1,"task_type":"job-run","worker_id":"worker-1","created_at":"1970-01-01T00:01:41Z","input_hash":"hash-0","attempt":1,"input_ref":{"ordinal":0,"hash":"hash-0"}}`)),
 			},
 		},
 	}
@@ -262,13 +267,11 @@ func TestRuntimeEngineDelegatesWaitingTaskMethodsToRuntime(t *testing.T) {
 			TaskWaitInputHash: strPtr("hash-1"),
 			TaskWaitNext:      strPtr("job"),
 		}}},
-		chapterResp: StoredChapter{
-			Ordinal:     1,
-			TaskType:    "task",
-			ChapterType: chapterTypeTaskAttemptOutcome,
-			PayloadKind: payloadKindApp,
-			CreatedAt:   time.Unix(99, 0).UTC(),
-			Data:        json.RawMessage(`{"value":1}`),
+		chapterResp: Chapter{
+			Ordinal:   1,
+			TaskType:  "task",
+			Body:      TaskAttemptOutcomeChapter{Outcome: ApplicationOutputOutcome{Output: ApplicationOutputBytes{Data: []byte(`{"value":1}`)}}},
+			CreatedAt: time.Unix(99, 0).UTC(),
 		},
 	}
 	engine, err := NewEngineBuilder().WithRuntime(runtime).WithWorkerTenantId("tenant-x").PlusWorkers(fakeJobWorker{}).BuildEngine()
@@ -362,7 +365,7 @@ func TestRuntimeEngineDelegatesGetJobLeaseToRuntime(t *testing.T) {
 
 func TestRuntimeEngineLoadsArtifactsThroughRuntimeStorage(t *testing.T) {
 	runtime := &fakeWorkflowRuntime{
-		chapterResp: StoredChapter{
+		chapterResp: Chapter{
 			Ordinal: 7,
 			Artifacts: []StoredArtifact{
 				{Name: "artifact.txt", Digest: "digest-1", Size: 8},

@@ -105,15 +105,7 @@ func TestRemoteRuntimeChapterAndArtifactRoundTripAcrossExistingRuntimes(t *testi
 					JobKey:  handle.JobKey,
 					Ordinal: 1,
 				},
-				Chapter: swf.StoredChapter{
-					Ordinal:     1,
-					TaskType:    "manual",
-					ChapterType: "TaskAttemptOutcome",
-					PayloadKind: "App",
-					InputHash:   "manual-input-hash",
-					CreatedAt:   time.Now().UTC(),
-					Data:        json.RawMessage(`{"n":99}`),
-				},
+				Chapter: appTaskAttemptChapterForTest(t, 1, "manual", "manual-input-hash", []byte(`{"n":99}`), nil),
 				ArtifactUploads: []swf.ArtifactUpload{
 					{
 						Name: "hello.txt",
@@ -135,8 +127,8 @@ func TestRemoteRuntimeChapterAndArtifactRoundTripAcrossExistingRuntimes(t *testi
 			if storedChapter.Ordinal != 1 || storedChapter.TaskType != "manual" {
 				t.Fatalf("unexpected stored chapter %+v", storedChapter)
 			}
-			if string(storedChapter.Data) != `{"n":99}` {
-				t.Fatalf("unexpected chapter payload %s", storedChapter.Data)
+			if payload := appChapterPayloadForTest(t, storedChapter); string(payload) != `{"n":99}` {
+				t.Fatalf("unexpected chapter payload %s", payload)
 			}
 			if len(storedChapter.Artifacts) != 1 || storedChapter.Artifacts[0].Name != "hello.txt" {
 				t.Fatalf("unexpected stored artifacts %+v", storedChapter.Artifacts)
@@ -294,15 +286,7 @@ func TestRemoteRuntimeConflictBehaviorAcrossExistingRuntimes(t *testing.T) {
 							JobKey:  handle.JobKey,
 							Ordinal: ordinal,
 						},
-						Chapter: swf.StoredChapter{
-							Ordinal:     ordinal,
-							TaskType:    "manual",
-							ChapterType: "TaskAttemptOutcome",
-							PayloadKind: "App",
-							InputHash:   "conflict-hash",
-							CreatedAt:   time.Now().UTC(),
-							Data:        json.RawMessage(`{"n":1}`),
-						},
+						Chapter: appTaskAttemptChapterForTest(t, ordinal, "manual", "conflict-hash", []byte(`{"n":1}`), nil),
 					})
 				}
 

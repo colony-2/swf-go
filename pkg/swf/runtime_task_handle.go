@@ -149,7 +149,7 @@ func (h *runtimeListedTaskHandle) Data() (TaskData, error) {
 	if err != nil {
 		return nil, err
 	}
-	return storedChapterToTaskData(h.runtime, h.jobKey, chapter)
+	return chapterToTaskData(h.runtime, h.jobKey, chapter)
 }
 
 func (h *runtimeListedTaskHandle) Finish(ctx context.Context, taskData TaskData) error {

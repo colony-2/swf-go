@@ -17,7 +17,7 @@ import (
 type runnerTestRuntime struct {
 	mu sync.Mutex
 
-	chapters   map[JobKey]map[int64]StoredChapter
+	chapters   map[JobKey]map[int64]Chapter
 	artifacts  map[ArtifactRef][]byte
 	activeJobs map[JobKey]JobSummary
 
@@ -63,7 +63,7 @@ func (d *runnerTestJobInfoData) TaskDataResult() (TaskData, error) {
 
 func newRunnerTestRuntime() *runnerTestRuntime {
 	return &runnerTestRuntime{
-		chapters:   make(map[JobKey]map[int64]StoredChapter),
+		chapters:   make(map[JobKey]map[int64]Chapter),
 		artifacts:  make(map[ArtifactRef][]byte),
 		activeJobs: make(map[JobKey]JobSummary),
 	}
@@ -112,18 +112,18 @@ func (r *runnerTestRuntime) GetJob(_ context.Context, jobKey JobKey) (JobInfo, e
 	if len(byOrdinal) == 0 {
 		return job, nil
 	}
-	var latest StoredChapter
+	var latest Chapter
 	haveLatest := false
 	for _, chapter := range byOrdinal {
 		if !haveLatest || chapter.Ordinal > latest.Ordinal {
-			latest = cloneStoredChapterForTest(chapter)
+			latest = cloneChapterForTest(chapter)
 			haveLatest = true
 		}
 	}
 	if !haveLatest {
 		return job, nil
 	}
-	td, payloadErr := storedChapterToTaskData(r, jobKey, latest)
+	td, payloadErr := chapterToTaskData(r, jobKey, latest)
 	job.Data = &runnerTestJobInfoData{taskData: td, err: payloadErr}
 	return job, nil
 }
@@ -152,7 +152,7 @@ func (r *runnerTestRuntime) ListJobs(_ context.Context, req ListJobsRequest) (Li
 	return ListJobsResponse{Jobs: jobs}, nil
 }
 
-func (r *runnerTestRuntime) ListChapters(_ context.Context, req ListChaptersRequest) ([]StoredChapter, error) {
+func (r *runnerTestRuntime) ListChapters(_ context.Context, req ListChaptersRequest) ([]Chapter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	byOrdinal := r.chapters[req.JobKey]
@@ -164,7 +164,7 @@ func (r *runnerTestRuntime) ListChapters(_ context.Context, req ListChaptersRequ
 		ordinals = append(ordinals, ordinal)
 	}
 	sort.Slice(ordinals, func(i, j int) bool { return ordinals[i] < ordinals[j] })
-	out := make([]StoredChapter, 0, len(ordinals))
+	out := make([]Chapter, 0, len(ordinals))
 	for _, ordinal := range ordinals {
 		if ordinal < req.StartOrdinal {
 			continue
@@ -172,7 +172,7 @@ func (r *runnerTestRuntime) ListChapters(_ context.Context, req ListChaptersRequ
 		if req.EndOrdinal != nil && ordinal > *req.EndOrdinal {
 			break
 		}
-		out = append(out, cloneStoredChapterForTest(byOrdinal[ordinal]))
+		out = append(out, cloneChapterForTest(byOrdinal[ordinal]))
 	}
 	return out, nil
 }
@@ -190,18 +190,18 @@ func (r *runnerTestRuntime) checkJobStatus(jobKey JobKey) (JobStatus, error) {
 	return summary.Status, nil
 }
 
-func (r *runnerTestRuntime) GetChapter(_ context.Context, ref ChapterRef) (StoredChapter, error) {
+func (r *runnerTestRuntime) GetChapter(_ context.Context, ref ChapterRef) (Chapter, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	byOrdinal := r.chapters[ref.JobKey]
 	if byOrdinal == nil {
-		return StoredChapter{}, ErrChapterNotFound
+		return Chapter{}, ErrChapterNotFound
 	}
 	chapter, ok := byOrdinal[ref.Ordinal]
 	if !ok {
-		return StoredChapter{}, ErrChapterNotFound
+		return Chapter{}, ErrChapterNotFound
 	}
-	return cloneStoredChapterForTest(chapter), nil
+	return cloneChapterForTest(chapter), nil
 }
 
 func (r *runnerTestRuntime) PutChapter(_ context.Context, req PutChapterRequest) error {
@@ -252,13 +252,13 @@ func (r *runnerTestRuntime) PutChapter(_ context.Context, req PutChapterRequest)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.chapters[req.Ref.JobKey] == nil {
-		r.chapters[req.Ref.JobKey] = make(map[int64]StoredChapter)
+		r.chapters[req.Ref.JobKey] = make(map[int64]Chapter)
 	}
 	if _, exists := r.chapters[req.Ref.JobKey][req.Ref.Ordinal]; exists {
 		return errors.New("chapter already created")
 	}
-	r.chapters[req.Ref.JobKey][req.Ref.Ordinal] = cloneStoredChapterForTest(chapter)
-	if chapter.ChapterType == chapterTypeJobAttemptOutcome {
+	r.chapters[req.Ref.JobKey][req.Ref.Ordinal] = cloneChapterForTest(chapter)
+	if chapterIs(chapter, chapterTypeJobAttemptOutcome) {
 		delete(r.activeJobs, req.Ref.JobKey)
 	}
 	return nil
@@ -369,16 +369,14 @@ func seedJobStartForTest(t *testing.T, runtime *runnerTestRuntime, jobKey JobKey
 		t.Fatalf("marshal metadata: %v", err)
 	}
 	runtime.mu.Lock()
-	runtime.chapters[jobKey] = map[int64]StoredChapter{
+	runtime.chapters[jobKey] = map[int64]Chapter{
 		0: {
-			Ordinal:     0,
-			TaskType:    jobType,
-			ChapterType: chapterTypeJobStart,
-			PayloadKind: payloadKindApp,
-			InputHash:   inputHash,
-			CreatedAt:   meta.CreatedAt,
-			Metadata:    metaJSON,
-			Data:        append(json.RawMessage(nil), raw...),
+			Ordinal:   0,
+			TaskType:  jobType,
+			InputHash: inputHash,
+			CreatedAt: meta.CreatedAt,
+			Metadata:  mustChapterMetadataForRunnerTest(t, metaJSON),
+			Body:      JobStartChapter{Input: ApplicationInputBytes{Data: append([]byte(nil), raw...)}},
 		},
 	}
 	runtime.activeJobs[jobKey] = JobSummary{
@@ -389,14 +387,41 @@ func seedJobStartForTest(t *testing.T, runtime *runnerTestRuntime, jobKey JobKey
 	runtime.mu.Unlock()
 }
 
-func cloneStoredChapterForTest(ch StoredChapter) StoredChapter {
+func cloneChapterForTest(ch Chapter) Chapter {
 	out := ch
-	out.Metadata = append(json.RawMessage(nil), ch.Metadata...)
-	out.Data = append(json.RawMessage(nil), ch.Data...)
+	out.Body = cloneChapterBody(ch.Body)
+	out.Metadata = cloneChapterMetadata(ch.Metadata)
 	if len(ch.Artifacts) > 0 {
 		out.Artifacts = append([]StoredArtifact(nil), ch.Artifacts...)
 	}
 	return out
+}
+
+func mustChapterMetadataForRunnerTest(t *testing.T, raw json.RawMessage) ChapterMetadata {
+	t.Helper()
+	metadata, err := chapterMetadataFromJSON(raw)
+	if err != nil {
+		t.Fatalf("decode chapter metadata: %v", err)
+	}
+	return metadata
+}
+
+func chapterTypeForRunnerTest(t *testing.T, chapter Chapter) string {
+	t.Helper()
+	chapterType, err := chapterType(chapter)
+	if err != nil {
+		t.Fatalf("chapter type: %v", err)
+	}
+	return chapterType
+}
+
+func payloadKindForRunnerTest(t *testing.T, chapter Chapter) string {
+	t.Helper()
+	payloadKind, _, err := chapterPayload(chapter)
+	if err != nil {
+		t.Fatalf("chapter payload: %v", err)
+	}
+	return payloadKind
 }
 
 func containsTenant(items []string, want string) bool {
@@ -666,11 +691,11 @@ func TestWorkerRunnerSequentialTaskInputRefsUsePreviousOrdinal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chapter 2: %v", err)
 	}
-	meta1, err := storedChapterMeta(ch1)
+	meta1, err := chapterMetaFromChapter(ch1)
 	if err != nil {
 		t.Fatalf("chapter 1 meta: %v", err)
 	}
-	meta2, err := storedChapterMeta(ch2)
+	meta2, err := chapterMetaFromChapter(ch2)
 	if err != nil {
 		t.Fatalf("chapter 2 meta: %v", err)
 	}
@@ -705,15 +730,15 @@ func TestWorkerRunnerJobRetryWithFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chapter 1: %v", err)
 	}
-	if ch1.PayloadKind != payloadKindAppError {
-		t.Fatalf("expected app error chapter, got %s", ch1.PayloadKind)
+	if payloadKindForRunnerTest(t, ch1) != payloadKindAppError {
+		t.Fatalf("expected app error chapter, got %s", payloadKindForRunnerTest(t, ch1))
 	}
 	ch2, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 2})
 	if err != nil {
 		t.Fatalf("chapter 2: %v", err)
 	}
-	if ch2.PayloadKind != payloadKindApp {
-		t.Fatalf("expected success chapter, got %s", ch2.PayloadKind)
+	if payloadKindForRunnerTest(t, ch2) != payloadKindApp {
+		t.Fatalf("expected success chapter, got %s", payloadKindForRunnerTest(t, ch2))
 	}
 }
 
@@ -744,21 +769,21 @@ func TestWorkerRunnerTaskRetryWithFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("chapter 1: %v", err)
 	}
-	if ch1.PayloadKind != payloadKindAppError {
-		t.Fatalf("expected app error chapter, got %s", ch1.PayloadKind)
+	if payloadKindForRunnerTest(t, ch1) != payloadKindAppError {
+		t.Fatalf("expected app error chapter, got %s", payloadKindForRunnerTest(t, ch1))
 	}
 	ch2, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 2})
 	if err != nil {
 		t.Fatalf("chapter 2: %v", err)
 	}
-	if ch2.PayloadKind != payloadKindApp {
-		t.Fatalf("expected success chapter, got %s", ch2.PayloadKind)
+	if payloadKindForRunnerTest(t, ch2) != payloadKindApp {
+		t.Fatalf("expected success chapter, got %s", payloadKindForRunnerTest(t, ch2))
 	}
-	meta1, err := storedChapterMeta(ch1)
+	meta1, err := chapterMetaFromChapter(ch1)
 	if err != nil {
 		t.Fatalf("chapter 1 meta: %v", err)
 	}
-	meta2, err := storedChapterMeta(ch2)
+	meta2, err := chapterMetaFromChapter(ch2)
 	if err != nil {
 		t.Fatalf("chapter 2 meta: %v", err)
 	}
@@ -986,7 +1011,7 @@ func TestWorkerRunnerIgnoresLeaseLossOnComplete(t *testing.T) {
 func TestWorkerRunnerDoesNotCompleteLeaseOnPersistFailure(t *testing.T) {
 	runtime := newRunnerTestRuntime()
 	runtime.putChapterHook = func(req PutChapterRequest) error {
-		if req.Chapter.ChapterType == chapterTypeJobAttemptOutcome {
+		if chapterIs(req.Chapter, chapterTypeJobAttemptOutcome) {
 			return errors.New("save failed")
 		}
 		return nil
@@ -1017,8 +1042,8 @@ func TestWorkerRunnerTaskPersistFailureWritesJobFailureAtSameOrdinal(t *testing.
 	}
 	var calls []putCall
 	runtime.putChapterHook = func(req PutChapterRequest) error {
-		calls = append(calls, putCall{ordinal: req.Ref.Ordinal, chapterType: req.Chapter.ChapterType})
-		if req.Chapter.ChapterType == chapterTypeTaskAttemptOutcome {
+		calls = append(calls, putCall{ordinal: req.Ref.Ordinal, chapterType: chapterTypeForRunnerTest(t, req.Chapter)})
+		if chapterIs(req.Chapter, chapterTypeTaskAttemptOutcome) {
 			return taskPersistErr
 		}
 		return nil
@@ -1057,14 +1082,18 @@ func TestWorkerRunnerTaskPersistFailureWritesJobFailureAtSameOrdinal(t *testing.
 	if err != nil {
 		t.Fatalf("expected job failure chapter at ordinal 1: %v", err)
 	}
-	if chapter.ChapterType != chapterTypeJobAttemptOutcome {
-		t.Fatalf("expected job outcome chapter, got %s", chapter.ChapterType)
+	if !chapterIs(chapter, chapterTypeJobAttemptOutcome) {
+		t.Fatalf("expected job outcome chapter, got %s", chapterTypeForRunnerTest(t, chapter))
 	}
-	if chapter.PayloadKind != payloadKindSystemError {
-		t.Fatalf("expected system error payload, got %s", chapter.PayloadKind)
+	payloadKind, payload, err := chapterPayload(chapter)
+	if err != nil {
+		t.Fatalf("chapter payload: %v", err)
 	}
-	if !strings.Contains(string(chapter.Data), taskPersistErr.Error()) {
-		t.Fatalf("expected persisted payload to mention persistence error, got %s", chapter.Data)
+	if payloadKind != payloadKindSystemError {
+		t.Fatalf("expected system error payload, got %s", payloadKind)
+	}
+	if !strings.Contains(string(payload), taskPersistErr.Error()) {
+		t.Fatalf("expected persisted payload to mention persistence error, got %s", payload)
 	}
 	if _, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 2}); !errors.Is(err, ErrChapterNotFound) {
 		t.Fatalf("expected no skipped ordinal 2 chapter, got %v", err)
@@ -1129,9 +1158,9 @@ func TestReplayObserverUsesCachedChapterTimes(t *testing.T) {
 	startChapter, _ := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 0})
 	taskChapter, _ := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 1})
 	jobChapter, _ := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 2})
-	startMeta, _ := storedChapterMeta(startChapter)
-	taskMeta, _ := storedChapterMeta(taskChapter)
-	jobMeta, _ := storedChapterMeta(jobChapter)
+	startMeta, _ := chapterMetaFromChapter(startChapter)
+	taskMeta, _ := chapterMetaFromChapter(taskChapter)
+	jobMeta, _ := chapterMetaFromChapter(jobChapter)
 	if !observer.jobStarts[0].At.Equal(startMeta.CreatedAt) {
 		t.Fatalf("job start mismatch: got %v want %v", observer.jobStarts[0].At, startMeta.CreatedAt)
 	}

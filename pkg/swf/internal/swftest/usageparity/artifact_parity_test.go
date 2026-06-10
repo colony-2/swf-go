@@ -22,7 +22,7 @@ func leaseTokenForTest(lease swf.ExecutionLease) string {
 }
 
 type artifactRoundTripObservation struct {
-	Chapter   swf.StoredChapter  `json:"chapter"`
+	Chapter   swf.Chapter        `json:"chapter"`
 	Runtime   normalizedArtifact `json:"runtime"`
 	Engine    normalizedArtifact `json:"engine"`
 	StoredRef swf.StoredArtifact `json:"storedRef"`
@@ -126,15 +126,7 @@ func TestRuntimeArtifactRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 					JobKey:  jobKey,
 					Ordinal: 1,
 				},
-				Chapter: swf.StoredChapter{
-					Ordinal:     1,
-					TaskType:    "manual",
-					ChapterType: "TaskAttemptOutcome",
-					PayloadKind: "App",
-					InputHash:   "manual-input",
-					CreatedAt:   time.Now().UTC(),
-					Data:        []byte(`{"n":99}`),
-				},
+				Chapter: appTaskAttemptChapterForParity(t, 1, "manual", "manual-input", []byte(`{"n":99}`), nil),
 				ArtifactUploads: []swf.ArtifactUpload{
 					{
 						Name: "hello.txt",
@@ -202,15 +194,7 @@ func TestStoredChapterRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 					LeaseID:    lease.LeaseID(),
 					LeaseToken: leaseTokenForTest(lease),
 					Ref:        swf.ChapterRef{JobKey: jobKey, Ordinal: 1},
-					Chapter: swf.StoredChapter{
-						Ordinal:     1,
-						TaskType:    "manual",
-						ChapterType: "TaskAttemptOutcome",
-						PayloadKind: "App",
-						InputHash:   "manual-input",
-						CreatedAt:   time.Now().UTC(),
-						Data:        []byte(`{"n":99}`),
-					},
+					Chapter:    appTaskAttemptChapterForParity(t, 1, "manual", "manual-input", []byte(`{"n":99}`), nil),
 					ArtifactUploads: []swf.ArtifactUpload{
 						{
 							Name: "chapter.txt",
@@ -268,16 +252,7 @@ func TestChapterMetadataRoundTripParityAcrossBuiltInRuntimes(t *testing.T) {
 					LeaseID:    lease.LeaseID(),
 					LeaseToken: leaseTokenForTest(lease),
 					Ref:        swf.ChapterRef{JobKey: jobKey, Ordinal: 1},
-					Chapter: swf.StoredChapter{
-						Ordinal:     1,
-						TaskType:    "manual",
-						ChapterType: "TaskAttemptOutcome",
-						PayloadKind: "App",
-						InputHash:   "manual-input",
-						CreatedAt:   time.Now().UTC(),
-						Metadata:    []byte(`{"attempt":3,"worker":"manual","flags":["a","b"]}`),
-						Data:        []byte(`{"value":"chapter-metadata"}`),
-					},
+					Chapter:    appTaskAttemptChapterForParity(t, 1, "manual", "manual-input", []byte(`{"value":"chapter-metadata"}`), []byte(`{"attempt":3,"worker":"manual","flags":["a","b"]}`)),
 				}
 				if err := subject.Runtime().PutChapter(ctx, req); err != nil {
 					t.Fatalf("put metadata chapter via %s: %v", subject.mode, err)

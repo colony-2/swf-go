@@ -83,11 +83,11 @@ func (r replayReadOnlyRuntime) ListJobs(ctx context.Context, req ListJobsRequest
 	return r.runtime.ListJobs(ctx, req)
 }
 
-func (r replayReadOnlyRuntime) GetChapter(ctx context.Context, ref ChapterRef) (StoredChapter, error) {
+func (r replayReadOnlyRuntime) GetChapter(ctx context.Context, ref ChapterRef) (Chapter, error) {
 	return r.runtime.GetChapter(ctx, ref)
 }
 
-func (r replayReadOnlyRuntime) ListChapters(ctx context.Context, req ListChaptersRequest) ([]StoredChapter, error) {
+func (r replayReadOnlyRuntime) ListChapters(ctx context.Context, req ListChaptersRequest) ([]Chapter, error) {
 	return r.runtime.ListChapters(ctx, req)
 }
 

@@ -309,18 +309,18 @@ func (r *Runtime) ListJobs(ctx context.Context, req swf.ListJobsRequest) (swf.Li
 	return out, nil
 }
 
-func (r *Runtime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.StoredChapter, error) {
+func (r *Runtime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.Chapter, error) {
 	resp, err := r.client.GetChapterWithResponse(ctx, ref.JobKey.TenantId, ref.JobKey.JobId, ref.Ordinal)
 	if err != nil {
-		return swf.StoredChapter{}, err
+		return swf.Chapter{}, err
 	}
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
-		return swf.StoredChapter{}, responseError("get chapter", resp.StatusCode(), resp.Body, swf.ErrChapterNotFound)
+		return swf.Chapter{}, responseError("get chapter", resp.StatusCode(), resp.Body, swf.ErrChapterNotFound)
 	}
 	return fromAPIStoredChapter(*resp.JSON200)
 }
 
-func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.StoredChapter, error) {
+func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.Chapter, error) {
 	params := &runtimeapi.ListChaptersParams{
 		StartOrdinal: req.StartOrdinal,
 	}
@@ -335,7 +335,7 @@ func (r *Runtime) ListChapters(ctx context.Context, req swf.ListChaptersRequest)
 	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
 		return nil, responseError("list chapters", resp.StatusCode(), resp.Body, swf.ErrChapterNotFound)
 	}
-	out := make([]swf.StoredChapter, 0, len(resp.JSON200.Chapters))
+	out := make([]swf.Chapter, 0, len(resp.JSON200.Chapters))
 	for _, chapter := range resp.JSON200.Chapters {
 		converted, err := fromAPIStoredChapter(chapter)
 		if err != nil {

@@ -584,12 +584,12 @@ func (r *tenantNamespacedRuntime) ListJobs(ctx context.Context, req swf.ListJobs
 	return resp, nil
 }
 
-func (r *tenantNamespacedRuntime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.StoredChapter, error) {
+func (r *tenantNamespacedRuntime) GetChapter(ctx context.Context, ref swf.ChapterRef) (swf.Chapter, error) {
 	ref.JobKey = r.prefixJobKey(ref.JobKey)
 	return r.runtime.GetChapter(ctx, ref)
 }
 
-func (r *tenantNamespacedRuntime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.StoredChapter, error) {
+func (r *tenantNamespacedRuntime) ListChapters(ctx context.Context, req swf.ListChaptersRequest) ([]swf.Chapter, error) {
 	req.JobKey = r.prefixJobKey(req.JobKey)
 	return r.runtime.ListChapters(ctx, req)
 }

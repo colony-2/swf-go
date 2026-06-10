@@ -11,8 +11,39 @@ import (
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 	swftest "github.com/colony-2/swf-go/pkg/swf/internal/swftest"
 )
+
+func appTaskAttemptChapterForTest(t *testing.T, ordinal int64, taskType string, inputHash string, data []byte, metadata json.RawMessage) swf.Chapter {
+	t.Helper()
+	chapterMetadata, err := runtimecodec.ChapterMetadataFromJSON(metadata)
+	if err != nil {
+		t.Fatalf("chapter metadata: %v", err)
+	}
+	return swf.Chapter{
+		Ordinal:   ordinal,
+		TaskType:  taskType,
+		InputHash: inputHash,
+		CreatedAt: time.Now().UTC(),
+		Metadata:  chapterMetadata,
+		Body: swf.TaskAttemptOutcomeChapter{Outcome: swf.ApplicationOutputOutcome{
+			Output: swf.ApplicationOutputBytes{Data: append([]byte(nil), data...)},
+		}},
+	}
+}
+
+func appChapterPayloadForTest(t *testing.T, chapter swf.Chapter) []byte {
+	t.Helper()
+	payloadKind, payload, err := runtimecodec.ChapterPayload(chapter)
+	if err != nil {
+		t.Fatalf("chapter payload: %v", err)
+	}
+	if payloadKind != runtimecodec.PayloadKindApp {
+		t.Fatalf("payload kind = %s, want %s", payloadKind, runtimecodec.PayloadKindApp)
+	}
+	return payload
+}
 
 func leaseTokenForTest(lease swf.ExecutionLease) string {
 	if leaseWithToken, ok := lease.(interface{ LeaseToken() string }); ok {
@@ -191,15 +222,7 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 					JobKey:  handle.JobKey,
 					Ordinal: 1,
 				},
-				Chapter: swf.StoredChapter{
-					Ordinal:     1,
-					TaskType:    "manual",
-					ChapterType: "TaskAttemptOutcome",
-					PayloadKind: "App",
-					InputHash:   "manual-input-hash",
-					CreatedAt:   time.Now().UTC(),
-					Data:        json.RawMessage(`{"n":99}`),
-				},
+				Chapter: appTaskAttemptChapterForTest(t, 1, "manual", "manual-input-hash", []byte(`{"n":99}`), nil),
 				ArtifactUploads: []swf.ArtifactUpload{
 					{
 						Name: "hello.txt",
@@ -221,8 +244,8 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 			if storedChapter.Ordinal != 1 || storedChapter.TaskType != "manual" {
 				t.Fatalf("unexpected stored chapter %+v", storedChapter)
 			}
-			if string(storedChapter.Data) != `{"n":99}` {
-				t.Fatalf("unexpected chapter payload %s", storedChapter.Data)
+			if payload := appChapterPayloadForTest(t, storedChapter); string(payload) != `{"n":99}` {
+				t.Fatalf("unexpected chapter payload %s", payload)
 			}
 			if len(storedChapter.Artifacts) != 1 || storedChapter.Artifacts[0].Name != "hello.txt" {
 				t.Fatalf("unexpected stored artifacts %+v", storedChapter.Artifacts)
@@ -471,15 +494,7 @@ func TestWorkflowRuntimeConflictBehaviorAcrossBuiltInRuntimes(t *testing.T) {
 							JobKey:  handle.JobKey,
 							Ordinal: ordinal,
 						},
-						Chapter: swf.StoredChapter{
-							Ordinal:     ordinal,
-							TaskType:    "manual",
-							ChapterType: "TaskAttemptOutcome",
-							PayloadKind: "App",
-							InputHash:   "conflict-hash",
-							CreatedAt:   time.Now().UTC(),
-							Data:        json.RawMessage(`{"n":1}`),
-						},
+						Chapter: appTaskAttemptChapterForTest(t, ordinal, "manual", "conflict-hash", []byte(`{"n":1}`), nil),
 					})
 				}
 

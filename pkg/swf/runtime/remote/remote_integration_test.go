@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
+	"github.com/colony-2/swf-go/pkg/swf/internal/runtimecodec"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 )
@@ -268,14 +269,18 @@ func TestRemoteRuntimeChapterAndArtifactRoundTrip(t *testing.T) {
 			}
 
 			artifact := swf.NewArtifactFromBytes("hello.txt", []byte("hello remote"))
-			chapter := swf.StoredChapter{
-				Ordinal:     1,
-				TaskType:    "artifact-job",
-				ChapterType: "JobAttemptOutcome",
-				PayloadKind: "App",
-				CreatedAt:   time.Now().UTC(),
-				Metadata:    json.RawMessage(`{"version":1}`),
-				Data:        json.RawMessage(`{"ok":true}`),
+			metadata, err := runtimecodec.ChapterMetadataFromJSON(json.RawMessage(`{"version":1}`))
+			if err != nil {
+				t.Fatalf("metadata: %v", err)
+			}
+			chapter := swf.Chapter{
+				Ordinal:   1,
+				TaskType:  "artifact-job",
+				CreatedAt: time.Now().UTC(),
+				Metadata:  metadata,
+				Body: swf.JobAttemptOutcomeChapter{Outcome: swf.ApplicationOutputOutcome{
+					Output: swf.ApplicationOutputBytes{Data: []byte(`{"ok":true}`)},
+				}},
 			}
 			if err := runtime.PutChapter(ctx, swf.PutChapterRequest{
 				LeaseID:    lease.LeaseID(),

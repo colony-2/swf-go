@@ -39,7 +39,7 @@ func getJobRunFromRuntime(ctx context.Context, runtime WorkflowRuntime, req GetJ
 		},
 	}
 
-	chapterByOrdinal := make(map[int64]StoredChapter, len(chapters))
+	chapterByOrdinal := make(map[int64]Chapter, len(chapters))
 	for _, chapter := range chapters {
 		chapterByOrdinal[chapter.Ordinal] = cloneStoredJobRunChapter(chapter)
 	}
@@ -85,14 +85,15 @@ func getJobRunFromRuntime(ctx context.Context, runtime WorkflowRuntime, req GetJ
 			lastOrdinal = chapter.Ordinal
 		}
 
-		meta, err := storedChapterMeta(chapter)
+		meta, err := chapterMetaFromChapter(chapter)
 		if err != nil {
 			return GetJobRunResponse{}, fmt.Errorf("%w: decode chapter metadata: %v", ErrWorkflowNotDeterministic, err)
 		}
 
 		if chapter.Ordinal == 0 && !startSet {
-			if chapter.ChapterType != chapterTypeJobStart {
-				return GetJobRunResponse{}, fmt.Errorf("%w: unexpected chapter type %q at ordinal 0", ErrWorkflowNotDeterministic, chapter.ChapterType)
+			if !chapterIs(chapter, chapterTypeJobStart) {
+				got, _ := chapterType(chapter)
+				return GetJobRunResponse{}, fmt.Errorf("%w: unexpected chapter type %q at ordinal 0", ErrWorkflowNotDeterministic, got)
 			}
 			if meta.TaskType != "" {
 				jobType = meta.TaskType
@@ -122,12 +123,13 @@ func getJobRunFromRuntime(ctx context.Context, runtime WorkflowRuntime, req GetJ
 			continue
 		}
 
-		attempt, err := buildStoredTaskAttempt(req.JobKey, chapter, meta, chapterByOrdinal, includeInputs, includeOutputs || chapter.ChapterType == chapterTypeJobAttemptOutcome, includeArtifacts, includeAttemptInputs)
+		isJobAttemptOutcome := chapterIs(chapter, chapterTypeJobAttemptOutcome)
+		attempt, err := buildStoredTaskAttempt(req.JobKey, chapter, meta, chapterByOrdinal, includeInputs, includeOutputs || isJobAttemptOutcome, includeArtifacts, includeAttemptInputs)
 		if err != nil {
 			return GetJobRunResponse{}, err
 		}
 
-		if chapter.ChapterType == chapterTypeJobAttemptOutcome {
+		if isJobAttemptOutcome {
 			attemptNum := attempt.Attempt
 			if attemptNum <= 0 {
 				attemptNum = 1
@@ -148,8 +150,9 @@ func getJobRunFromRuntime(ctx context.Context, runtime WorkflowRuntime, req GetJ
 			continue
 		}
 
-		if chapter.ChapterType != chapterTypeTaskAttemptOutcome && chapter.ChapterType != chapterTypeRestartExtra {
-			return GetJobRunResponse{}, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, chapter.ChapterType, chapter.Ordinal)
+		if !chapterIs(chapter, chapterTypeTaskAttemptOutcome) && !chapterIs(chapter, chapterTypeRestartExtra) {
+			got, _ := chapterType(chapter)
+			return GetJobRunResponse{}, fmt.Errorf("%w: unexpected chapter type %q at ordinal %d", ErrWorkflowNotDeterministic, got, chapter.Ordinal)
 		}
 		idx := ensureAttempt(activeAttempt)
 		if currentAttempt != activeAttempt {
@@ -240,9 +243,9 @@ func normalizeGetJobRunOptions(req GetJobRunRequest) (bool, bool, bool, bool) {
 
 func buildStoredTaskAttempt(
 	jobKey JobKey,
-	chapter StoredChapter,
+	chapter Chapter,
 	meta chapterMeta,
-	chapterByOrdinal map[int64]StoredChapter,
+	chapterByOrdinal map[int64]Chapter,
 	includeInputs bool,
 	includeOutputs bool,
 	includeArtifacts bool,
@@ -274,7 +277,7 @@ func buildStoredTaskAttempt(
 		}
 	}
 
-	outcome, err := outcomeFromStoredChapter(chapter)
+	outcome, err := outcomeFromChapter(chapter)
 	if err != nil {
 		return TaskAttempt{}, err
 	}
@@ -305,7 +308,7 @@ func buildStoredTaskAttempt(
 func buildRuntimeTaskRunFromSummary(
 	job JobSummary,
 	lastOrdinal int64,
-	chapterByOrdinal map[int64]StoredChapter,
+	chapterByOrdinal map[int64]Chapter,
 	includeInputs bool,
 	includeArtifacts bool,
 	includeAttemptInputs bool,
@@ -398,7 +401,7 @@ func runPolicyFromJobSummary(job JobSummary) (RunPolicy, bool) {
 	return payload.RunPolicy, true
 }
 
-func resolveStoredInputRef(jobKey JobKey, chapterByOrdinal map[int64]StoredChapter, ref *InputReference, includeArtifacts bool) (*TaskIO, error) {
+func resolveStoredInputRef(jobKey JobKey, chapterByOrdinal map[int64]Chapter, ref *InputReference, includeArtifacts bool) (*TaskIO, error) {
 	if ref == nil {
 		return nil, nil
 	}
@@ -409,13 +412,19 @@ func resolveStoredInputRef(jobKey JobKey, chapterByOrdinal map[int64]StoredChapt
 	return buildStoredTaskIO(jobKey, chapter, true, includeArtifacts)
 }
 
-func buildStoredTaskIO(jobKey JobKey, chapter StoredChapter, includeData bool, includeArtifacts bool) (*TaskIO, error) {
+func buildStoredTaskIO(jobKey JobKey, chapter Chapter, includeData bool, includeArtifacts bool) (*TaskIO, error) {
 	if !includeData && !includeArtifacts {
 		return nil, nil
 	}
 	out := &TaskIO{}
-	if includeData && chapter.Data != nil {
-		out.Data = append(json.RawMessage(nil), chapter.Data...)
+	if includeData {
+		_, data, err := chapterPayload(chapter)
+		if err != nil {
+			return nil, err
+		}
+		if data != nil {
+			out.Data = append(json.RawMessage(nil), data...)
+		}
 	}
 	if includeArtifacts {
 		out.Artifacts = buildStoredArtifactInfos(jobKey, chapter)
@@ -426,7 +435,7 @@ func buildStoredTaskIO(jobKey JobKey, chapter StoredChapter, includeData bool, i
 	return out, nil
 }
 
-func buildStoredArtifactInfos(jobKey JobKey, chapter StoredChapter) []ArtifactInfo {
+func buildStoredArtifactInfos(jobKey JobKey, chapter Chapter) []ArtifactInfo {
 	if len(chapter.Artifacts) == 0 {
 		return nil
 	}
@@ -448,18 +457,22 @@ func buildStoredArtifactInfos(jobKey JobKey, chapter StoredChapter) []ArtifactIn
 	return out
 }
 
-func outcomeFromStoredChapter(chapter StoredChapter) (TaskOutcome, error) {
+func outcomeFromChapter(chapter Chapter) (TaskOutcome, error) {
+	payloadKind, data, err := chapterPayload(chapter)
+	if err != nil {
+		return TaskOutcome{}, err
+	}
 	outcome := TaskOutcome{
-		PayloadKind: chapter.PayloadKind,
+		PayloadKind: payloadKind,
 	}
 
-	switch chapter.PayloadKind {
+	switch payloadKind {
 	case payloadKindApp:
 		outcome.Status = TaskOutcomeStatusSucceeded
 		return outcome, nil
 	case payloadKindAppError:
 		var p AppErrorPayload
-		if err := json.Unmarshal(chapter.Data, &p); err != nil {
+		if err := json.Unmarshal(data, &p); err != nil {
 			return TaskOutcome{}, err
 		}
 		outcome.Status = TaskOutcomeStatusFailed
@@ -474,7 +487,7 @@ func outcomeFromStoredChapter(chapter StoredChapter) (TaskOutcome, error) {
 		return outcome, nil
 	case payloadKindSystemError:
 		var p SystemErrorPayload
-		if err := json.Unmarshal(chapter.Data, &p); err != nil {
+		if err := json.Unmarshal(data, &p); err != nil {
 			return TaskOutcome{}, err
 		}
 		outcome.Status = TaskOutcomeStatusFailed
@@ -490,7 +503,7 @@ func outcomeFromStoredChapter(chapter StoredChapter) (TaskOutcome, error) {
 		return outcome, nil
 	case payloadKindTimeout:
 		var p TimeoutPayload
-		if err := json.Unmarshal(chapter.Data, &p); err != nil {
+		if err := json.Unmarshal(data, &p); err != nil {
 			return TaskOutcome{}, err
 		}
 		outcome.Status = TaskOutcomeStatusFailed
@@ -509,7 +522,7 @@ func outcomeFromStoredChapter(chapter StoredChapter) (TaskOutcome, error) {
 		outcome.Status = TaskOutcomeStatusFailed
 		outcome.Error = &TaskError{
 			Kind:    TaskErrorKindSystem,
-			Message: fmt.Sprintf("unsupported payload kind %q", chapter.PayloadKind),
+			Message: fmt.Sprintf("unsupported payload kind %q", payloadKind),
 			Code:    "unknown_payload_kind",
 		}
 		return outcome, nil
@@ -547,10 +560,10 @@ func shouldSynthesizeNextAttempt(lastAttempt int, outcome TaskOutcome, policy Re
 	}
 }
 
-func cloneStoredJobRunChapter(chapter StoredChapter) StoredChapter {
+func cloneStoredJobRunChapter(chapter Chapter) Chapter {
 	cloned := chapter
-	cloned.Metadata = append(json.RawMessage(nil), chapter.Metadata...)
-	cloned.Data = append(json.RawMessage(nil), chapter.Data...)
+	cloned.Body = cloneChapterBody(chapter.Body)
+	cloned.Metadata = cloneChapterMetadata(chapter.Metadata)
 	if len(chapter.Artifacts) > 0 {
 		cloned.Artifacts = append([]StoredArtifact(nil), chapter.Artifacts...)
 	}
