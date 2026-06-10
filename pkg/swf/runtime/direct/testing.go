@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/colony-2/swf-go/pkg/swf"
-	"github.com/colony-2/swf-go/pkg/swf/runtime/direct/testsupport"
+	"github.com/colony-2/swf-go/pkg/swf/internal/directtestsupport"
 )
 
 type EmbeddedEngine struct {
@@ -39,7 +39,7 @@ func (e *EmbeddedRuntime) Shutdown() {
 }
 
 func StartEmbeddedRuntime(ctx context.Context) (*EmbeddedRuntime, error) {
-	dsn, stopPG, err := testsupport.StartEmbeddedPostgres()
+	dsn, stopPG, err := directtestsupport.StartEmbeddedPostgres()
 	if err != nil {
 		return nil, err
 	}
@@ -57,11 +57,11 @@ func StartEmbeddedRuntime(ctx context.Context) (*EmbeddedRuntime, error) {
 	setupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	if err := testsupport.InstallPGWF(setupCtx, db); err != nil {
+	if err := directtestsupport.InstallPGWF(setupCtx, db); err != nil {
 		cleanup()
 		return nil, err
 	}
-	s, err := testsupport.StartEmbeddedStrata()
+	s, err := directtestsupport.StartEmbeddedStrata()
 	if err != nil {
 		cleanup()
 		return nil, err

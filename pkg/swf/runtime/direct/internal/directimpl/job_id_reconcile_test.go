@@ -11,7 +11,7 @@ import (
 
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	"github.com/colony-2/swf-go/pkg/swf"
-	"github.com/colony-2/swf-go/pkg/swf/runtime/direct/testsupport"
+	"github.com/colony-2/swf-go/pkg/swf/internal/directtestsupport"
 	_ "github.com/lib/pq"
 )
 
@@ -309,7 +309,7 @@ func TestArchivedRestartJobIsNotRecoveredAsMissingForExplicitJobID(t *testing.T)
 func newEmbeddedDirectRuntimeForTest(t *testing.T) (*Runtime, func()) {
 	t.Helper()
 
-	dsn, stopPG, err := testsupport.StartEmbeddedPostgres()
+	dsn, stopPG, err := directtestsupport.StartEmbeddedPostgres()
 	if err != nil {
 		t.Fatalf("start embedded postgres: %v", err)
 	}
@@ -328,11 +328,11 @@ func newEmbeddedDirectRuntimeForTest(t *testing.T) (*Runtime, func()) {
 	setupCtx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	if err := testsupport.InstallPGWF(setupCtx, db); err != nil {
+	if err := directtestsupport.InstallPGWF(setupCtx, db); err != nil {
 		cleanup()
 		t.Fatalf("install pgwf: %v", err)
 	}
-	strata, err := testsupport.StartEmbeddedStrata()
+	strata, err := directtestsupport.StartEmbeddedStrata()
 	if err != nil {
 		cleanup()
 		t.Fatalf("start embedded strata: %v", err)

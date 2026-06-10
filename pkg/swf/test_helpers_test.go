@@ -14,8 +14,8 @@ import (
 	"github.com/colony-2/strata-go/pkg/client/core"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/colony-2/swf-go/pkg/swf"
+	directtest "github.com/colony-2/swf-go/pkg/swf/internal/directtestsupport"
 	directruntime "github.com/colony-2/swf-go/pkg/swf/runtime/direct"
-	directtest "github.com/colony-2/swf-go/pkg/swf/runtime/direct/testsupport"
 	toyruntime "github.com/colony-2/swf-go/pkg/swf/runtime/toy"
 )
 
