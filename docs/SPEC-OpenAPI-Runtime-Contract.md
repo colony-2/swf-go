@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** | Author: Codex | Date: 2026-06-11
+**Current REST contract reference** | Author: Codex | Updated: 2026-06-21
 
 ## Decision
 
@@ -871,6 +871,25 @@ current field name is kept, its schema must be typed as `SchedulerPayload`. If
 the field is renamed to `schedulerPayload`, keep a compatibility alias only for a
 versioned transition.
 
+### Lease Tokens
+
+Remote lease mutation is authorized by a runtime-minted lease token rather than
+by a caller-supplied worker ID. `pollWork` and `getJobLease` return
+`ExecutionLease.leaseToken`. Every lease-mutating REST operation must require
+that token in the `X-SWF-Lease-Token` header.
+
+The token binds tenant ID, job ID, lease ID, worker ID, schema hash, lease
+duration, and expiry. The runtime server validates those claims before calling
+the local runtime lease operation. `keepAliveLease` returns a fresh
+`KeepAliveLeaseResponse.leaseToken` for the renewed lease; its expiry is tied to
+the renewed scheduler lease expiry, with a small skew so the transport token
+does not outlive the underlying lease.
+
+When the server handles `addChapterWithLease`, validated token claims are passed
+into the local runtime so the chapter write can be authorized by the already
+validated lease identity. A stale, missing, expired, or mismatched token maps to
+lease-lost conflict semantics.
+
 ## Jobs
 
 ### Submit Job
@@ -965,6 +984,40 @@ Task-wait projection fields may remain for convenience only if their derivation
 from `payload.taskWait` is documented. A conforming server must keep projection
 fields and `payload.taskWait` consistent.
 
+## Schedules
+
+Schedules are first-class runtime resources. `ScheduleTarget` has the same
+application start shape as `SubmitJob`: target job type, `TaskDataWrite`, run
+policy, and app metadata.
+
+```yaml
+ScheduleTarget:
+  type: object
+  additionalProperties: false
+  required: [jobType, data]
+  properties:
+    jobType:
+      type: string
+      minLength: 1
+    data:
+      $ref: '#/components/schemas/TaskDataWrite'
+    runPolicy:
+      $ref: '#/components/schemas/RunPolicy'
+    metadata:
+      $ref: '#/components/schemas/Metadata'
+```
+
+`upsertSchedule` stores a durable target start spec. The server snapshots target
+artifact bytes/descriptors at schedule mutation time, and each occurrence is
+materialized as a normal job with an ordinary start chapter. Later occurrences
+must not depend on client-local files, handles, or request bodies from the
+original schedule mutation.
+
+REST schedule APIs expose app metadata and target data. Runtime-owned
+`internal.schedule` metadata is stored only in the scheduler job metadata
+envelope and is not accepted from clients or returned through public app-facing
+job metadata fields.
+
 ## Endpoint Contract Updates
 
 The current path layout can remain, but each operation must use the structured
@@ -976,12 +1029,15 @@ schemas:
 | `getJob` | `JobInfo.data` is nullable `StoredTaskData`; outcome is typed. |
 | `submitRestartJob`, `putRestartJob` | restart payload fields are `TaskDataWrite`; `lastStepToKeep` is `integer/int64`. |
 | `listJobs` | filters use typed `MetadataPredicate`; summaries expose `SchedulerPayload` and `Metadata`. |
-| `pollWork`, `getJobLease` | `ExecutionLease.payload` is `SchedulerPayload`. |
-| `rescheduleJobWithLease` | request payload is typed `SchedulerPayload`; caller-owned lease payload is `ApplicationPayload`. |
-| `addChapterWithLease` | request body uses `ChapterWrite`; chapter body is a discriminated union. |
+| `pollWork`, `getJobLease` | `ExecutionLease.payload` is `SchedulerPayload`; responses include a runtime-minted `leaseToken`. |
+| `keepAliveLease` | requires `X-SWF-Lease-Token`; response returns a fresh `leaseToken` for the renewed lease. |
+| `rescheduleJobWithLease` | requires `X-SWF-Lease-Token`; request payload is typed `SchedulerPayload`; caller-owned lease payload is `ApplicationPayload`. |
+| `completeJobWithLease` | requires `X-SWF-Lease-Token`; terminal detail remains the operation detail payload. |
+| `addChapterWithLease` | requires `X-SWF-Lease-Token`; request body uses `ChapterWrite`; chapter body is a discriminated union. |
 | `commitChapterIfWaiting` | completion data is `TaskDataWrite`; ordinal guards use `integer/int64`. |
 | `listChapters`, `getChapter` | responses are `ChapterRecord`; no `chapterType`/`payloadKind`/`data` triple. |
 | `openArtifact` | remains `application/octet-stream`; artifact metadata comes from descriptors. |
+| `upsertSchedule`, `getSchedule`, `listSchedules`, `pauseSchedule`, `resumeSchedule`, `archiveSchedule`, `triggerSchedule`, `listScheduleRuns` | schedule targets use `ScheduleTarget` with `TaskDataWrite`; public metadata is app metadata; runtime-owned schedule metadata is hidden from app APIs. |
 
 ## Deterministic Input Hash
 

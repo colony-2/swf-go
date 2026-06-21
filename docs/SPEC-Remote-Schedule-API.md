@@ -1,8 +1,8 @@
-# Proposal: Remote Schedule API
+# Remote Schedule API Reference
 
 ## Status
 
-Proposed | Updated: 2026-06-19
+Current reference | Updated: 2026-06-21
 
 ## Summary
 
@@ -86,11 +86,20 @@ generation
 spec_hash
 trigger_json
 target_json
+target_job_type
 overlap_policy
 failure_policy_json
+next_fire_at
+next_job_id
 created_at
 updated_at
 ```
+
+`target_json` stores the durable job-start-like target spec: target job type,
+raw application data, target artifact descriptors/bytes, run policy, and app
+metadata. The schedule spec hash includes the target data and artifact
+fingerprints. Occurrence submission uses this stored target snapshot; it does
+not reopen client-local files or depend on the original upsert request body.
 
 A runtime may also keep a companion `swf_schedule_events` table for update
 history and admin inspection, but lease preflight reads the current
@@ -125,7 +134,8 @@ controller jobs.
 
 A scheduled occurrence is submitted with:
 
-- `JobType`, input, run policy, and app metadata from the schedule target
+- `JobType`, input, target artifact snapshot, run policy, and app metadata from
+  the schedule target
 - deterministic explicit `JobID`
 - `AvailableAt = scheduledAt`
 - serial prerequisite, when applicable
@@ -198,9 +208,9 @@ Preflight algorithm:
 4. If `chapter_count > 1`, app execution has already written at least one
    post-start chapter. Skip schedule validation and return the lease.
 5. Load the `swf_schedules` row.
-6. If the schedule is paused, archived, missing, or generation/spec do not
-   match, record a scheduler-side schedule cancellation outcome, complete the
-   job as `CANCELLED`, and do not return the lease.
+6. If the schedule is paused, archived, missing, past `endAt`, or
+   generation/spec do not match, record a scheduler-side schedule cancellation
+   outcome, complete the job as `CANCELLED`, and do not return the lease.
 7. If `previousJobId` is present, load that terminal job and append one outcome
    bit to the hidden failure window.
 8. Evaluate failure policy. If violated, record a scheduler-side schedule
@@ -326,6 +336,7 @@ Recommended reason codes:
 schedule_missing
 schedule_paused
 schedule_archived
+schedule_ended
 schedule_generation_mismatch
 schedule_spec_mismatch
 failure_policy
@@ -368,7 +379,7 @@ current app job starts, but with a prerequisite on the current job:
 
 ```go
 SubmitJob{
-    JobID:       "swfsched_daily-cleanup_run_20260617T140000000000000Z",
+    JobID:       "swfsched_daily-cleanup_g8_run_20260617T140000000000000Z",
     AvailableAt: nextFireAt,
     Prerequisites: []swf.JobPrerequisite{
         {JobID: currentJobID, Condition: swf.JobPrereqComplete},
@@ -441,6 +452,10 @@ PUT /v1/tenants/{tenantId}/schedules/{scheduleId}
 
 Creates or updates the schedule row.
 
+`target.data` uses the same `TaskDataWrite` shape as `SubmitJob.data`. Artifact
+uploads in the target are persisted into the schedule target snapshot, and
+returned schedule projections include the stored target as normal task data.
+
 Request:
 
 ```json
@@ -454,7 +469,10 @@ Request:
   },
   "target": {
     "jobType": "daily_cleanup",
-    "data": { "bucket": "reports" },
+    "data": {
+      "data": { "bucket": "reports" },
+      "artifacts": []
+    },
     "runPolicy": {},
     "metadata": { "owner": "analytics" }
   },
@@ -473,24 +491,44 @@ Response:
 
 ```json
 {
-  "schedule": {
+  "tenantId": "tenant-a",
+  "scheduleId": "daily-cleanup",
+  "scheduleKey": {
     "tenantId": "tenant-a",
-    "scheduleId": "daily-cleanup",
-    "scheduleKey": {
-      "tenantId": "tenant-a",
-      "scheduleId": "daily-cleanup"
+    "scheduleId": "daily-cleanup"
+  },
+  "state": "ACTIVE",
+  "effectiveState": "ACTIVE",
+  "generation": 8,
+  "specHash": "sha256:...",
+  "trigger": {
+    "kind": "cron",
+    "expression": "0 12 * * *",
+    "timezone": "UTC",
+    "startAt": "2026-06-17T00:00:00Z"
+  },
+  "target": {
+    "jobType": "daily_cleanup",
+    "data": {
+      "data": { "bucket": "reports" },
+      "artifacts": []
     },
-    "state": "ACTIVE",
-    "effectiveState": "ACTIVE",
-    "generation": 8,
-    "specHash": "sha256:...",
-    "nextFireAt": "2026-06-17T13:00:00Z",
-    "nextJobKey": {
-      "tenantId": "tenant-a",
-      "jobId": "swfsched_daily-cleanup_run_20260617T130000000000000Z"
-    },
-    "updatedAt": "2026-06-17T12:00:00Z"
-  }
+    "runPolicy": {},
+    "metadata": { "owner": "analytics" }
+  },
+  "overlapPolicy": "serial",
+  "failurePolicy": {
+    "minSuccessPercent": 80,
+    "windowSize": 10,
+    "maxSequentialFailures": 3
+  },
+  "nextFireAt": "2026-06-17T13:00:00Z",
+  "nextJobKey": {
+    "tenantId": "tenant-a",
+    "jobId": "swfsched_daily-cleanup_g8_run_20260617T130000000000000Z"
+  },
+  "createdAt": "2026-06-17T12:00:00Z",
+  "updatedAt": "2026-06-17T12:00:00Z"
 }
 ```
 
@@ -739,8 +777,9 @@ Logical state ownership:
 ```text
 schedule identity             swf_schedules(tenant_id, schedule_id)
 schedule spec/generation      swf_schedules row
+target start spec             swf_schedules target_json
 desired state                 swf_schedules row
-next due occurrence           deterministic job ID + availableAt
+next due occurrence           swf_schedules next_fire_at/next_job_id + availableAt
 serial chain                  occurrence prerequisites
 failure window                hidden scheduler-side metadata on occurrence jobs
 preflight execution           runtime server lease path
@@ -827,8 +866,8 @@ Future versions can add `allow`, `skip`, or `cancel_previous`.
   `state: ACTIVE` and expose `effectiveState: FAILURE_PAUSED`?
 - How much of internal schedule metadata should be exposed through admin-only
   schedule APIs?
-- Should completion detail be normalized so scheduled cancellations are visible
-  in a consistent shape across backends?
+- Should scheduled cancellation projection be admin-only, public on run
+  summaries, or both?
 - What internal attempt budget should `PollWork` use when it consumes multiple
   non-runnable scheduled occurrences before finding an app-runnable lease?
 

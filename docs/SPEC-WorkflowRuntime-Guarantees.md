@@ -110,7 +110,12 @@ Every conforming implementation must preserve these rules:
 - `complete`, `reschedule`, and `add_chapter` require the current live lease.
 - After a lease is completed, rescheduled, expired, or otherwise lost, further use of that lease token must fail.
 
-For the remote API, lease loss maps to conflict semantics. The current adapter uses HTTP `409` for `ErrExecutionLeaseLost`.
+For the remote API, `ExecutionLease.leaseToken` is the transport credential for
+lease mutations. A server must reject missing, expired, stale, or mismatched
+lease tokens before applying `keepalive`, `complete`, `reschedule`, or
+`add_chapter`. `keepalive` returns a fresh lease token for the renewed lease.
+Lease loss maps to conflict semantics. The current adapter uses HTTP `409` for
+`ErrExecutionLeaseLost`.
 
 ## Artifact Guarantees
 
@@ -151,6 +156,36 @@ The runtime must obey all of the following:
 - If the durable job history matches the request but an internal runtime coordination record is missing, the runtime must recreate the missing record and return success.
 - That recovery behavior is only valid while the durable history still reflects the initial submitted or restarted shape. If later durable progress is visible but the internal coordination record is missing, the runtime must fail rather than silently manufacturing a new initial state.
 - If the target job ID already exists but the durable state does not match the request, the runtime must fail with a distinguishable conflict outcome.
+
+## Schedule Guarantees
+
+Schedules are runtime-owned recurring job definitions, not worker-owned
+controller jobs.
+
+The runtime must obey all of the following:
+
+- A schedule row is the authoritative control-plane state for schedule ID,
+  state, generation, spec hash, trigger, target start spec, overlap policy, and
+  failure policy.
+- The schedule target is job-start-like: job type, input task data including
+  artifacts, run policy, and app metadata.
+- Scheduled occurrences are ordinary app jobs with deterministic job IDs,
+  delayed leaseability, and hidden runtime-owned schedule metadata in the
+  scheduler job record.
+- Public app metadata APIs expose only app metadata. Runtime-owned
+  `internal.schedule` metadata must not be visible to app code or accepted from
+  public submit APIs.
+- For an unstarted scheduled occurrence, the runtime performs schedule preflight
+  before returning a lease to app code.
+- An occurrence is considered started for schedule-preflight purposes once its
+  visible chapter count is greater than one. After that point, later retries run
+  under normal job lease semantics even if the parent schedule changes.
+- With serial overlap policy, the next occurrence may be submitted before the
+  current occurrence starts, but it must not be leaseable until the previous
+  occurrence is terminal.
+- A stale, paused, archived, ended, generation-mismatched, spec-mismatched, or
+  failure-policy-blocked occurrence must be completed as `CANCELLED` with a
+  durable schedule cancellation detail rather than being returned to app code.
 
 ## Read Guarantees
 

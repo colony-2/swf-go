@@ -12,7 +12,7 @@ github.com/colony-2/swf-go/pkg/swf/runtime/sqlite
 
 The `toy` runtime remains appropriate for purely in-memory tests and examples.
 It is still not durable and should not be used when you expect persisted jobs,
-chapters, leases, or artifacts.
+chapters, leases, schedules, or artifacts.
 
 ## What Changed
 
@@ -22,7 +22,7 @@ Pebble row storage.
 
 It composes:
 
-1. SWF job scheduling, leases, wait state, metadata, and archive state in a
+1. SWF job scheduling, leases, schedules, wait state, metadata, and archive state in a
    local SQLite database.
 2. `strata-go`'s SQLite rowstore in the same SQLite database.
 3. `strata-go` blobfs storage for large artifact bytes.
@@ -142,7 +142,7 @@ github.com/colony-2/swf-go/pkg/swf/runtime/toy
 Keep using `toy.New()` for fast in-memory tests, examples, and cases where all
 state may disappear at process exit. Move to SQLite if the test or application
 asserts persisted runtime state, artifact reads after restart, lease behavior,
-or remote server behavior.
+schedule behavior, or remote server behavior.
 
 ## CLI Changes
 

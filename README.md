@@ -15,6 +15,9 @@ swf-go is a workflow orchestration library that helps you build reliable, distri
 - **Artifact Support**: Handle large files and binary data efficiently
 - **Multi-Tenant**: Built-in tenant isolation
 - **Job Querying**: List and filter jobs with flexible criteria
+- **Schedules**: First-class recurring jobs with pause/resume/archive support
+- **Embedded SQLite Runtime**: Durable local execution without external services
+- **Remote Runtime Protocol**: REST runtime adapter with tokenized lease operations
 
 ## Installation
 
@@ -31,6 +34,9 @@ Run the default SQLite-backed embedded runtime:
 ```bash
 go run ./cmd/swfd --listen 127.0.0.1:9047 --db swf.db
 ```
+
+The SQLite runtime stores jobs, chapters, artifacts, leases, and schedules in a
+local SQLite database plus a blob directory.
 
 Run the in-memory toy runtime explicitly:
 
@@ -272,7 +278,6 @@ artifact := swf.NewArtifact("custom.dat",
 // Get artifact metadata
 name := artifact.Name()           // "output.tar.gz"
 size := artifact.Size()            // size in bytes
-contentType := artifact.ContentType()
 
 // Stream artifact contents
 rc, err := artifact.Open()
@@ -526,6 +531,44 @@ if resp.NextPageToken != "" {
 }
 ```
 
+### Schedules
+
+Schedules are runtime-owned recurring job definitions. A schedule target is the
+same shape as a job start: job type, input `TaskData`, run policy, and app
+metadata. The runtime stores the target, including an artifact snapshot, and
+materializes each occurrence as a normal app job.
+
+```go
+start := time.Now().UTC()
+
+info, err := engine.UpsertSchedule(ctx, swf.UpsertScheduleRequest{
+    TenantId:   "my-tenant",
+    ScheduleId: "daily-cleanup",
+    Trigger: swf.ScheduleTrigger{
+        Kind:     swf.ScheduleTriggerInterval,
+        Interval: 24 * time.Hour,
+        StartAt:  &start,
+    },
+    Target: swf.ScheduleTarget{
+        JobType:  "data-processing",
+        Data:     swf.JobData(swf.NewTaskDataOrPanic(map[string]any{"bucket": "reports"})),
+        Metadata: json.RawMessage(`{"owner":"analytics"}`),
+    },
+    OverlapPolicy: swf.ScheduleOverlapSerial,
+})
+if err != nil {
+    return err
+}
+
+log.Printf("next scheduled job: %s", info.NextJobKey)
+```
+
+The schedule API includes `GetSchedule`, `ListSchedules`, `PauseSchedule`,
+`ResumeSchedule`, `ArchiveSchedule`, `TriggerSchedule`, and
+`ListScheduleRuns`. With serial overlap policy, the runtime submits the next
+occurrence before app execution starts, but makes it wait for the previous
+occurrence to complete before it can be leased.
+
 ### External Task Completion
 
 For tasks that require external input (e.g., human approval), you can complete them externally:
@@ -664,12 +707,19 @@ tenant.
 
 ## Architecture Notes
 
-swf-go requires two backing services:
+swf-go can run against several runtime backends:
 
-- **PostgreSQL**: Stores workflow state and coordinates distributed execution (via pgwf)
-- **Strata**: Stores workflow data and artifacts
+- **SQLite runtime**: Stores workflow state, leases, schedules, Strata row data,
+  and blobfs artifacts locally. This is the default embedded runtime and the
+  default `swfd` mode.
+- **Postgres/Strata direct runtime**: Stores workflow state and coordinates
+  distributed execution through pgwf, with workflow data and artifacts in
+  Strata.
+- **Remote runtime**: Uses the same `WorkflowRuntime` API over REST. The server
+  owns lease tokens and schedule preflight; clients and workers stay generic.
 
-Multiple engine instances can run concurrently, automatically coordinating through PostgreSQL to distribute work across workers.
+Multiple engine instances can run concurrently when the selected runtime backend
+supports shared coordination.
 
 ## License
 
