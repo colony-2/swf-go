@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	github.com/colony-2/pgwf-go v0.0.0-20260324185252-7a5ae14f742a
-	github.com/colony-2/strata-go v0.0.0-20260515174944-a1fd136d0c39
+	github.com/colony-2/strata-go v0.0.0-20260621025934-747fa0c819c0
 	github.com/fergusstrange/embedded-postgres v1.32.0
 	github.com/go-chi/chi/v5 v5.0.10
 	github.com/google/uuid v1.6.0
