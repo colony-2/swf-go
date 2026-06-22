@@ -23,7 +23,6 @@ resources:
       - source: ${{ env.HOME }}/.cache/go-mod
         target: /home/shai/go/mod
         mode: rw
-        mode: rw
     http:
       - openai.com
       - api.openai.com
