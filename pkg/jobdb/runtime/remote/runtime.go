@@ -698,9 +698,18 @@ func (l *remoteExecutionLease) KeepAlive(ctx context.Context) error {
 }
 
 func (l *remoteExecutionLease) Complete(ctx context.Context, req jobdb.CompleteExecutionRequest) error {
+	if req.Chapter == nil {
+		return fmt.Errorf("complete lease requires final chapter")
+	}
+	chapterWrite, err := runtimeChapterToAddRequest(ctx, *req.Chapter, req.ArtifactUploads)
+	if err != nil {
+		return err
+	}
 	body := runtimeapi.CompleteExecutionRequest{
-		Status: req.Status,
-		Detail: stringPtrOrNil(req.Detail),
+		Status:          req.Status,
+		Detail:          stringPtrOrNil(req.Detail),
+		Chapter:         chapterWrite.Chapter,
+		ArtifactUploads: chapterWrite.ArtifactUploads,
 	}
 	resp, err := l.runtime.client.CompleteJobWithLeaseWithResponse(
 		ctx,
@@ -717,6 +726,14 @@ func (l *remoteExecutionLease) Complete(ctx context.Context, req jobdb.CompleteE
 		return nil
 	}
 	return responseError("complete job with lease", resp.StatusCode(), resp.Body, jobdb.ErrExecutionLeaseLost)
+}
+
+func optionalArtifactWrites(items []runtimeapi.ArtifactWrite) *[]runtimeapi.ArtifactWrite {
+	if len(items) == 0 {
+		return nil
+	}
+	out := append([]runtimeapi.ArtifactWrite(nil), items...)
+	return &out
 }
 
 func (l *remoteExecutionLease) Reschedule(ctx context.Context, req jobdb.RescheduleExecutionRequest) error {

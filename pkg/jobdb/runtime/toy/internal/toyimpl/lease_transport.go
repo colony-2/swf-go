@@ -25,8 +25,8 @@ func (r *Runtime) KeepAliveLeaseByIDWithExpiry(_ context.Context, jobKey jobdb.J
 	return time.Now().UTC().Add(toyLeaseDurationOrDefault(leaseDuration)), nil
 }
 
-func (r *Runtime) CompleteJobWithLeaseByID(_ context.Context, jobKey jobdb.JobKey, leaseID string, _ string, req jobdb.CompleteExecutionRequest) error {
-	return r.completeLease(jobKey, leaseID, req)
+func (r *Runtime) CompleteJobWithLeaseByID(ctx context.Context, jobKey jobdb.JobKey, leaseID string, _ string, req jobdb.CompleteExecutionRequest) error {
+	return r.completeLease(ctx, jobKey, leaseID, req)
 }
 
 func (r *Runtime) RescheduleJobWithLeaseByID(_ context.Context, jobKey jobdb.JobKey, leaseID string, _ string, req jobdb.RescheduleExecutionRequest) error {

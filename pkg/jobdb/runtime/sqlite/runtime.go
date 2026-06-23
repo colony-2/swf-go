@@ -1,16 +1,19 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/colony-2/jobdb/pkg/internal/runtimecodec"
 	"github.com/colony-2/jobdb/pkg/jobdb"
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobmetadata"
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobschema"
@@ -890,6 +893,116 @@ func (r *Runtime) PutChapter(ctx context.Context, req jobdb.PutChapterRequest) e
 		return err
 	}
 	return nil
+}
+
+func (r *Runtime) ensureCompletionChapter(ctx context.Context, jobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.CompleteExecutionRequest) error {
+	if req.Chapter == nil {
+		return fmt.Errorf("complete lease requires final chapter")
+	}
+	if !runtimecodec.ChapterIs(*req.Chapter, runtimecodec.ChapterTypeJobAttemptOutcome) {
+		return fmt.Errorf("complete lease chapter must be %s", runtimecodec.ChapterTypeJobAttemptOutcome)
+	}
+	if req.Chapter.Ordinal < 0 {
+		return fmt.Errorf("chapter ordinal must be >= 0")
+	}
+	row, err := r.validateLease(ctx, jobKey, leaseID, workerID)
+	if err != nil {
+		return err
+	}
+	ref := jobdb.ChapterRef{JobKey: jobKey, Ordinal: req.Chapter.Ordinal}
+	if existing, ok, err := r.existingCompletionChapter(ctx, ref); err != nil {
+		return err
+	} else if ok {
+		candidate := *req.Chapter
+		if len(req.ArtifactUploads) > 0 {
+			prepared, _, err := r.prepareChapterWrite(ctx, jobdb.PutChapterRequest{
+				LeaseID:         leaseID,
+				Ref:             ref,
+				Chapter:         *req.Chapter,
+				ArtifactUploads: req.ArtifactUploads,
+			})
+			if err != nil {
+				return err
+			}
+			candidate = prepared
+		}
+		same, err := sameRuntimeChapter(existing, candidate)
+		if err != nil {
+			return err
+		}
+		if !same {
+			return fmt.Errorf("%w: chapter ordinal %d already exists with different contents", jobdb.ErrConflict, ref.Ordinal)
+		}
+		return nil
+	}
+	if err := r.ensureNextVisibleChapterOrdinal(ctx, jobKey, ref.Ordinal); err != nil {
+		return err
+	}
+	chapter, attached, err := r.prepareChapterWrite(ctx, jobdb.PutChapterRequest{
+		LeaseID:         leaseID,
+		Ref:             ref,
+		Chapter:         *req.Chapter,
+		ArtifactUploads: req.ArtifactUploads,
+	})
+	if err != nil {
+		return err
+	}
+	schemaHash := jobmetadata.SchemaHashFromStoredMetadata(row.metadata)
+	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
+		return err
+	}
+	body, err := encodeChapter(chapter)
+	if err != nil {
+		return err
+	}
+	builder := story.NewChapter().WithOrdinal(ref.Ordinal).WithBytes(body)
+	for _, art := range attached {
+		builder.AddArtifact(art)
+	}
+	err = r.strataClient.SaveChapter(strataContext(ctx), storyKeyForJob(jobKey), builder)
+	if err != nil {
+		if errors.Is(err, core.ErrConflict) {
+			return fmt.Errorf("%w: chapter ordinal %d already exists or is not appendable", jobdb.ErrConflict, ref.Ordinal)
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) existingCompletionChapter(ctx context.Context, ref jobdb.ChapterRef) (jobdb.Chapter, bool, error) {
+	chapter, err := r.strataClient.Chapter(strataContext(ctx), storyKeyForJob(ref.JobKey), ref.Ordinal)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return jobdb.Chapter{}, false, nil
+		}
+		return jobdb.Chapter{}, false, err
+	}
+	stored, err := chapterFromStoryChapter(chapter)
+	if err != nil {
+		return jobdb.Chapter{}, false, err
+	}
+	return stored, true, nil
+}
+
+func sameRuntimeChapter(left jobdb.Chapter, right jobdb.Chapter) (bool, error) {
+	leftBody, err := encodeChapter(left)
+	if err != nil {
+		return false, err
+	}
+	rightBody, err := encodeChapter(right)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(leftBody, rightBody) {
+		return false, nil
+	}
+	return reflect.DeepEqual(normalizeStoredArtifacts(left.Artifacts), normalizeStoredArtifacts(right.Artifacts)), nil
+}
+
+func normalizeStoredArtifacts(in []jobdb.StoredArtifact) []jobdb.StoredArtifact {
+	out := append([]jobdb.StoredArtifact(nil), in...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func (r *Runtime) OpenArtifact(ctx context.Context, ref jobdb.ArtifactRef) (jobdb.ArtifactReader, error) {

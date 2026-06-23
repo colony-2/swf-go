@@ -15,6 +15,24 @@ import (
 	_ "github.com/lib/pq"
 )
 
+func completeLeaseForTest(t *testing.T, ctx context.Context, lease jobdb.ExecutionLease, ordinal int64) {
+	t.Helper()
+	chapter := jobdb.Chapter{
+		Ordinal:   ordinal,
+		TaskType:  lease.Capability(),
+		CreatedAt: time.Now().UTC(),
+		Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.ApplicationOutputOutcome{
+			Output: jobdb.ApplicationOutputBytes{Data: []byte(`{"ok":true}`)},
+		}},
+	}
+	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{
+		Status:  "succeeded",
+		Chapter: &chapter,
+	}); err != nil {
+		t.Fatalf("complete lease: %v", err)
+	}
+}
+
 func TestSubmitJobRecoversMissingPgwfRecordForExplicitJobID(t *testing.T) {
 	rt, shutdown := newEmbeddedDirectRuntimeForTest(t)
 	defer shutdown()
@@ -171,9 +189,7 @@ func TestSubmitRestartJobRecoversMissingPgwfRecordForExplicitJobID(t *testing.T)
 	}); err != nil {
 		t.Fatalf("put source chapter: %v", err)
 	}
-	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-		t.Fatalf("complete source lease: %v", err)
-	}
+	completeLeaseForTest(t, ctx, lease, 2)
 
 	restartReq := jobdb.SubmitRestartJobRequest{
 		Job: jobdb.SubmitRestartJob{
@@ -372,9 +388,7 @@ func archiveJobForTest(t *testing.T, ctx context.Context, rt *Runtime, jobKey jo
 	if lease == nil {
 		t.Fatalf("expected lease for %s", jobKey)
 	}
-	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-		t.Fatalf("complete archived job: %v", err)
-	}
+	completeLeaseForTest(t, ctx, lease, 1)
 }
 
 func addSingleChapterAndArchiveJobForTest(t *testing.T, ctx context.Context, rt *Runtime, jobKey jobdb.JobKey, capability string) {
@@ -409,9 +423,7 @@ func addSingleChapterAndArchiveJobForTest(t *testing.T, ctx context.Context, rt 
 	}); err != nil {
 		t.Fatalf("put source chapter: %v", err)
 	}
-	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-		t.Fatalf("complete source job: %v", err)
-	}
+	completeLeaseForTest(t, ctx, lease, 2)
 }
 
 func pgwfRowCountsForTest(t *testing.T, ctx context.Context, rt *Runtime, jobKey jobdb.JobKey) (int, int) {

@@ -805,6 +805,9 @@ func (r *Runtime) materializeTaskData(ctx context.Context, jobKey jobdb.JobKey, 
 func (r *Runtime) prepareChapterWrite(ctx context.Context, req jobdb.PutChapterRequest) (jobdb.Chapter, error) {
 	chapter := req.Chapter
 	if len(req.ArtifactUploads) == 0 {
+		if len(chapter.Artifacts) > 0 {
+			return jobdb.Chapter{}, fmt.Errorf("put chapter with artifact descriptors but no artifact uploads")
+		}
 		return chapter, nil
 	}
 
@@ -969,11 +972,29 @@ func (r *Runtime) advanceRecordStateLocked(tenantId string, now time.Time, recor
 	}
 }
 
-func (r *Runtime) completeLease(jobKey jobdb.JobKey, leaseID string, req jobdb.CompleteExecutionRequest) error {
+func (r *Runtime) completeLease(ctx context.Context, jobKey jobdb.JobKey, leaseID string, req jobdb.CompleteExecutionRequest) error {
+	if req.Chapter == nil {
+		return fmt.Errorf("complete lease requires final chapter")
+	}
+	if !runtimecodec.ChapterIs(*req.Chapter, runtimecodec.ChapterTypeJobAttemptOutcome) {
+		return fmt.Errorf("complete lease chapter must be %s", runtimecodec.ChapterTypeJobAttemptOutcome)
+	}
 	record := r.engine.getJobRecord(jobKey)
 	if record == nil {
 		return jobdb.ErrJobNotFound
 	}
+	record.mu.Lock()
+	if record.leaseID != leaseID {
+		record.mu.Unlock()
+		return jobdb.ErrExecutionLeaseLost
+	}
+	schemaHash := jobmetadata.SchemaHashFromStoredMetadata(record.metadata)
+	record.mu.Unlock()
+
+	if _, err := r.ensureCompletionChapter(ctx, jobKey, leaseID, schemaHash, req); err != nil {
+		return err
+	}
+
 	record.mu.Lock()
 	defer record.mu.Unlock()
 	if record.leaseID != leaseID {
@@ -993,6 +1014,63 @@ func (r *Runtime) completeLease(jobKey jobdb.JobKey, leaseID string, req jobdb.C
 		record.status = jobdb.JobStatusCompleted
 	}
 	return nil
+}
+
+func (r *Runtime) ensureCompletionChapter(ctx context.Context, jobKey jobdb.JobKey, leaseID string, schemaHash string, req jobdb.CompleteExecutionRequest) (jobdb.Chapter, error) {
+	ref := jobdb.ChapterRef{JobKey: jobKey, Ordinal: req.Chapter.Ordinal}
+	if ref.Ordinal < 0 {
+		return jobdb.Chapter{}, fmt.Errorf("chapter ordinal must be >= 0")
+	}
+	if existing, ok := r.existingRuntimeChapter(jobKey, ref.Ordinal); ok {
+		candidate := *req.Chapter
+		if len(req.ArtifactUploads) > 0 {
+			prepared, err := r.prepareChapterWrite(ctx, jobdb.PutChapterRequest{
+				LeaseID:         leaseID,
+				Ref:             ref,
+				Chapter:         *req.Chapter,
+				ArtifactUploads: req.ArtifactUploads,
+			})
+			if err != nil {
+				return jobdb.Chapter{}, err
+			}
+			candidate = prepared
+		}
+		if !reflect.DeepEqual(cloneChapter(existing), cloneChapter(candidate)) {
+			return jobdb.Chapter{}, fmt.Errorf("%w: chapter ordinal %d already exists with different contents", jobdb.ErrConflict, ref.Ordinal)
+		}
+		return existing, nil
+	}
+
+	chapter, err := r.prepareChapterWrite(ctx, jobdb.PutChapterRequest{
+		LeaseID:         leaseID,
+		Ref:             ref,
+		Chapter:         *req.Chapter,
+		ArtifactUploads: req.ArtifactUploads,
+	})
+	if err != nil {
+		return jobdb.Chapter{}, err
+	}
+	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
+		return jobdb.Chapter{}, err
+	}
+	if err := r.storeRuntimeChapter(jobKey, ref.Ordinal, chapter); err != nil {
+		return jobdb.Chapter{}, err
+	}
+	return chapter, nil
+}
+
+func (r *Runtime) existingRuntimeChapter(jobKey jobdb.JobKey, ordinal int64) (jobdb.Chapter, bool) {
+	r.engine.mu.Lock()
+	defer r.engine.mu.Unlock()
+	chapters := r.engine.runtimeChapters[jobKey]
+	if chapters == nil {
+		return jobdb.Chapter{}, false
+	}
+	chapter, ok := chapters[ordinal]
+	if !ok {
+		return jobdb.Chapter{}, false
+	}
+	return cloneChapter(chapter), true
 }
 
 func (r *Runtime) rescheduleLease(jobKey jobdb.JobKey, leaseID string, req jobdb.RescheduleExecutionRequest) error {
@@ -1066,7 +1144,7 @@ func (l *runtimeLease) KeepAlive(context.Context) error {
 }
 func (l *runtimeLease) StopKeepAlive() {}
 func (l *runtimeLease) Complete(ctx context.Context, req jobdb.CompleteExecutionRequest) error {
-	return l.runtime.completeLease(l.jobKey, l.leaseID, req)
+	return l.runtime.completeLease(ctx, l.jobKey, l.leaseID, req)
 }
 func (l *runtimeLease) Reschedule(ctx context.Context, req jobdb.RescheduleExecutionRequest) error {
 	return l.runtime.rescheduleLease(l.jobKey, l.leaseID, req)

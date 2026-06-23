@@ -1,6 +1,7 @@
 package directimpl
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -9,9 +10,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/colony-2/jobdb/pkg/internal/runtimecodec"
 	"github.com/colony-2/jobdb/pkg/jobdb"
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobmetadata"
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobschema"
@@ -384,7 +388,7 @@ func (r *Runtime) PollWork(ctx context.Context, req jobdb.PollWorkRequest) ([]jo
 		if lease == nil {
 			break
 		}
-		wrapped := &executionLease{lease: lease, udb: r.udb, workerID: workerID}
+		wrapped := &executionLease{runtime: r, lease: lease, udb: r.udb, workerID: workerID}
 		ok, err := r.preflightScheduleLease(ctx, wrapped)
 		if err != nil {
 			return nil, err
@@ -428,7 +432,7 @@ func (r *Runtime) GetJobLease(ctx context.Context, req jobdb.GetJobLeaseRequest)
 	if lease == nil {
 		return nil, nil
 	}
-	wrapped := &executionLease{lease: lease, udb: r.udb, workerID: r.requestWorkerID(req.WorkerID)}
+	wrapped := &executionLease{runtime: r, lease: lease, udb: r.udb, workerID: r.requestWorkerID(req.WorkerID)}
 	ok, err := r.preflightScheduleLease(ctx, wrapped)
 	if err != nil {
 		return nil, err
@@ -708,6 +712,125 @@ func (r *Runtime) PutChapter(ctx context.Context, req jobdb.PutChapterRequest) e
 	return nil
 }
 
+func (r *Runtime) ensureCompletionChapter(ctx context.Context, jobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.CompleteExecutionRequest) error {
+	if req.Chapter == nil {
+		return fmt.Errorf("complete lease requires final chapter")
+	}
+	if !runtimecodec.ChapterIs(*req.Chapter, runtimecodec.ChapterTypeJobAttemptOutcome) {
+		return fmt.Errorf("complete lease chapter must be %s", runtimecodec.ChapterTypeJobAttemptOutcome)
+	}
+	if req.Chapter.Ordinal < 0 {
+		return fmt.Errorf("chapter ordinal must be >= 0")
+	}
+	detail, err := pgwf.GetJob(ctx, r.pgwfDB(ctx), pgwf.TenantID(jobKey.TenantId), pgwf.JobID(jobKey.JobId), pgwf.GetJobOptions{})
+	if err != nil {
+		if errors.Is(err, pgwf.ErrJobNotFound) {
+			return jobdb.ErrJobNotFound
+		}
+		return err
+	}
+	if detail.LeaseID == nil || *detail.LeaseID != leaseID {
+		return jobdb.ErrExecutionLeaseLost
+	}
+	if detail.LeaseExpiresAt == nil || !detail.LeaseExpiresAt.After(time.Now().UTC()) {
+		return jobdb.ErrExecutionLeaseLost
+	}
+	ref := jobdb.ChapterRef{JobKey: jobKey, Ordinal: req.Chapter.Ordinal}
+	if existing, ok, err := r.existingCompletionChapter(ctx, ref); err != nil {
+		return err
+	} else if ok {
+		candidate := *req.Chapter
+		if len(req.ArtifactUploads) > 0 {
+			prepared, _, err := r.prepareChapterWrite(ctx, jobdb.PutChapterRequest{
+				LeaseID:         leaseID,
+				Ref:             ref,
+				Chapter:         *req.Chapter,
+				ArtifactUploads: req.ArtifactUploads,
+			})
+			if err != nil {
+				return err
+			}
+			candidate = prepared
+		}
+		same, err := sameRuntimeChapter(existing, candidate)
+		if err != nil {
+			return err
+		}
+		if !same {
+			return fmt.Errorf("%w: chapter ordinal %d already exists with different contents", jobdb.ErrConflict, ref.Ordinal)
+		}
+		return nil
+	}
+	if err := r.ensureNextVisibleChapterOrdinal(ctx, jobKey, ref.Ordinal); err != nil {
+		return err
+	}
+	chapter, attached, err := r.prepareChapterWrite(ctx, jobdb.PutChapterRequest{
+		LeaseID:         leaseID,
+		Ref:             ref,
+		Chapter:         *req.Chapter,
+		ArtifactUploads: req.ArtifactUploads,
+	})
+	if err != nil {
+		return err
+	}
+	schemaHash := jobmetadata.SchemaHashFromStoredMetadata(detail.Metadata)
+	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
+		return err
+	}
+	body, err := EncodeChapter(chapter)
+	if err != nil {
+		return err
+	}
+	builder := story.NewChapter().WithOrdinal(ref.Ordinal).WithBytes(body)
+	for _, art := range attached {
+		builder.AddArtifact(art)
+	}
+	err = r.strataClient.SaveChapter(ctx, StoryKeyForJob(jobKey), builder)
+	if err != nil {
+		if errors.Is(err, core.ErrConflict) {
+			return fmt.Errorf("%w: chapter ordinal %d already exists or is not appendable", jobdb.ErrConflict, ref.Ordinal)
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *Runtime) existingCompletionChapter(ctx context.Context, ref jobdb.ChapterRef) (jobdb.Chapter, bool, error) {
+	chapter, err := r.loadChapter(ctx, storyKeyForJob(ref.JobKey), ref.Ordinal)
+	if err != nil {
+		if errors.Is(err, core.ErrNotFound) {
+			return jobdb.Chapter{}, false, nil
+		}
+		return jobdb.Chapter{}, false, err
+	}
+	stored, err := ChapterFromStoryChapter(chapter)
+	if err != nil {
+		return jobdb.Chapter{}, false, err
+	}
+	return stored, true, nil
+}
+
+func sameRuntimeChapter(left jobdb.Chapter, right jobdb.Chapter) (bool, error) {
+	leftBody, err := EncodeChapter(left)
+	if err != nil {
+		return false, err
+	}
+	rightBody, err := EncodeChapter(right)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(leftBody, rightBody) {
+		return false, nil
+	}
+	return reflect.DeepEqual(normalizeStoredArtifacts(left.Artifacts), normalizeStoredArtifacts(right.Artifacts)), nil
+}
+
+func normalizeStoredArtifacts(in []jobdb.StoredArtifact) []jobdb.StoredArtifact {
+	out := append([]jobdb.StoredArtifact(nil), in...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 func (r *Runtime) OpenArtifact(ctx context.Context, ref jobdb.ArtifactRef) (jobdb.ArtifactReader, error) {
 	if err := r.validate(); err != nil {
 		return nil, err
@@ -906,6 +1029,7 @@ func (a artifactReader) Size() int64                  { return a.art.Size() }
 func (a artifactReader) Name() string                 { return a.art.Name() }
 
 type executionLease struct {
+	runtime    *Runtime
 	lease      *pgwf.Lease
 	udb        *sql.DB
 	workerID   string
@@ -955,6 +1079,12 @@ func (l *executionLease) StopKeepAlive() {
 }
 
 func (l *executionLease) Complete(ctx context.Context, req jobdb.CompleteExecutionRequest) error {
+	if l.runtime == nil {
+		return fmt.Errorf("runtime is required for lease completion")
+	}
+	if err := l.runtime.ensureCompletionChapter(ctx, l.Job().JobKey, l.LeaseID(), l.workerID, req); err != nil {
+		return err
+	}
 	status := completionStatusSuccess
 	switch req.Status {
 	case "", "success", "succeeded":

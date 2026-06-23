@@ -155,9 +155,7 @@ func TestRemoteRuntimeChapterAndArtifactRoundTripAcrossExistingRuntimes(t *testi
 				t.Fatalf("unexpected artifact bytes %q", string(data))
 			}
 
-			if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, lease, 2)
 		})
 	}
 }
@@ -229,9 +227,7 @@ func TestRemoteRuntimeLeaseOperationsAcrossExistingRuntimes(t *testing.T) {
 			if payload["kind"] != "rescheduled" {
 				t.Fatalf("unexpected lease payload %+v", payload)
 			}
-			if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, leases[0], 1)
 
 			jobdbtest.WaitForRuntimeStatus(t, ctx, built.Runtime, handle.JobKey, jobdb.JobStatusCompleted)
 		})
@@ -300,9 +296,7 @@ func TestRemoteRuntimeConflictBehaviorAcrossExistingRuntimes(t *testing.T) {
 					t.Fatalf("expected non-appendable chapter conflict, got %v", err)
 				}
 
-				if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-					t.Fatalf("complete conflict test lease: %v", err)
-				}
+				completeLeaseForTest(t, ctx, lease, 2)
 			})
 
 			t.Run("commit_if_waiting_conflicts_after_completion", func(t *testing.T) {
@@ -417,9 +411,7 @@ func TestRemoteRuntimePollWorkMetadataFilteringAcrossExistingRuntimes(t *testing
 			if leases[0].Job().JobKey != matching.JobKey {
 				t.Fatalf("unexpected metadata-filtered lease job %+v", leases[0].Job().JobKey)
 			}
-			if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete metadata-filtered lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, leases[0], 1)
 
 			misses, err := built.Runtime.PollWork(ctx, jobdb.PollWorkRequest{
 				TenantId:     matching.JobKey.TenantId,

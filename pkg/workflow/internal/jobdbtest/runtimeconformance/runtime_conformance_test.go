@@ -12,8 +12,8 @@ import (
 
 	"github.com/colony-2/jobdb/pkg/internal/runtimecodec"
 	"github.com/colony-2/jobdb/pkg/jobdb"
-	jobdbtest "github.com/colony-2/jobdb/pkg/workflow/internal/jobdbtest"
 	"github.com/colony-2/jobdb/pkg/workflow"
+	jobdbtest "github.com/colony-2/jobdb/pkg/workflow/internal/jobdbtest"
 )
 
 func appTaskAttemptChapterForTest(t *testing.T, ordinal int64, taskType string, inputHash string, data []byte, metadata json.RawMessage) jobdb.Chapter {
@@ -273,9 +273,7 @@ func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *test
 				t.Fatalf("unexpected artifact bytes %q", string(data))
 			}
 
-			if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, lease, 2)
 		})
 	}
 }
@@ -416,9 +414,7 @@ func TestWorkflowRuntimeLeaseOperationsOnSupportingRuntimes(t *testing.T) {
 			if payload["kind"] != "rescheduled" {
 				t.Fatalf("unexpected lease payload %+v", payload)
 			}
-			if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, leases[0], 1)
 
 			jobdbtest.WaitForRuntimeStatus(t, ctx, built.Runtime, handle.JobKey, jobdb.JobStatusCompleted)
 		})
@@ -509,9 +505,7 @@ func TestWorkflowRuntimeConflictBehaviorAcrossBuiltInRuntimes(t *testing.T) {
 					t.Fatalf("expected non-appendable chapter conflict, got %v", err)
 				}
 
-				if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-					t.Fatalf("complete conflict test lease: %v", err)
-				}
+				completeLeaseForTest(t, ctx, lease, 2)
 			})
 
 			t.Run("commit_if_waiting_conflicts_after_completion", func(t *testing.T) {
@@ -1079,9 +1073,7 @@ func TestWorkflowRuntimePollWorkMetadataFilteringAcrossBuiltInRuntimes(t *testin
 			if leases[0].Job().JobKey != matching.JobKey {
 				t.Fatalf("unexpected metadata-filtered lease job %+v", leases[0].Job().JobKey)
 			}
-			if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete metadata-filtered lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, leases[0], 1)
 
 			misses, err := built.Runtime.PollWork(ctx, jobdb.PollWorkRequest{
 				TenantId:     matching.JobKey.TenantId,
@@ -1157,9 +1149,7 @@ func TestWorkflowRuntimeGetJobLeaseAcrossBuiltInRuntimes(t *testing.T) {
 				t.Fatalf("expected nil lease while job is already leased, got %+v", miss.Job().JobKey)
 			}
 
-			if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete targeted lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, lease, 1)
 			jobdbtest.WaitForRuntimeStatus(t, ctx, built.Runtime, handle.JobKey, jobdb.JobStatusCompleted)
 
 			miss, err = built.Runtime.GetJobLease(ctx, jobdb.GetJobLeaseRequest{
@@ -1410,9 +1400,7 @@ func TestGetJobForRunAcrossBuiltInRuntimes(t *testing.T) {
 					t.Fatalf("unexpected job status %+v", outcome.JobStatus)
 				}
 
-				if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-					t.Fatalf("complete held lease: %v", err)
-				}
+				completeLeaseForTest(t, ctx, lease, 1)
 			})
 		})
 	}

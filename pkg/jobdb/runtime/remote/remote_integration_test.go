@@ -25,6 +25,24 @@ func leaseTokenForTest(lease jobdb.ExecutionLease) string {
 	return ""
 }
 
+func completeLeaseForTest(t *testing.T, ctx context.Context, lease jobdb.ExecutionLease, ordinal int64) {
+	t.Helper()
+	chapter := jobdb.Chapter{
+		Ordinal:   ordinal,
+		TaskType:  lease.Capability(),
+		CreatedAt: time.Now().UTC(),
+		Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.ApplicationOutputOutcome{
+			Output: jobdb.ApplicationOutputBytes{Data: []byte(`{"ok":true}`)},
+		}},
+	}
+	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{
+		Status:  "succeeded",
+		Chapter: &chapter,
+	}); err != nil {
+		t.Fatalf("complete lease: %v", err)
+	}
+}
+
 func TestRemoteRuntimeLeaseAndMetadataRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -128,9 +146,7 @@ func TestRemoteRuntimeLeaseAndMetadataRoundTrip(t *testing.T) {
 				t.Fatalf("unexpected payload %+v", payload)
 			}
 
-			if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, leases[0], 1)
 			waitForRuntimeStatus(t, ctx, runtime, handle.JobKey, jobdb.JobStatusCompleted)
 		})
 	}
@@ -342,9 +358,7 @@ func TestRemoteRuntimeChapterAndArtifactRoundTrip(t *testing.T) {
 				t.Fatalf("unexpected artifact size %d", reader.Size())
 			}
 
-			if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, lease, 2)
 		})
 	}
 }

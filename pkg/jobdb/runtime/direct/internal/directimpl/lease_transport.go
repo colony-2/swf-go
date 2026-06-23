@@ -69,6 +69,9 @@ func (r *Runtime) CompleteJobWithLeaseByID(ctx context.Context, jobKey jobdb.Job
 	if leaseID == "" || workerID == "" {
 		return jobdb.ErrExecutionLeaseLost
 	}
+	if err := r.ensureCompletionChapter(ctx, jobKey, leaseID, workerID, req); err != nil {
+		return err
+	}
 	status := completionStatusSuccess
 	switch req.Status {
 	case "", "success", "succeeded":

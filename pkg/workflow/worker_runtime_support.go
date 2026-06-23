@@ -210,12 +210,35 @@ func chapterToTaskData(runtime WorkflowRuntime, jobKey JobKey, ch Chapter) (Task
 }
 
 func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease ExecutionLease, ref ChapterRef, taskType string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMeta, payload json.RawMessage, artifacts []Artifact) (TaskData, error) {
-	uploads, storedArtifacts, err := artifactUploadsForChapterWrite(ctx, artifacts)
+	if lease == nil {
+		return nil, fmt.Errorf("lease is required")
+	}
+	chapter, uploads, err := prepareTaskDataChapterWrite(ctx, ref, taskType, chapterType, payloadKind, inputHash, createdAt, meta, payload, artifacts)
 	if err != nil {
 		return nil, err
 	}
-	if lease == nil {
-		return nil, fmt.Errorf("lease is required")
+	if err := runtime.PutChapter(ctx, PutChapterRequest{
+		LeaseID:         lease.LeaseID(),
+		LeaseToken:      executionLeaseToken(lease),
+		Ref:             ref,
+		Chapter:         chapter,
+		ArtifactUploads: uploads,
+	}); err != nil {
+		return nil, err
+	}
+
+	assignArtifactKeysForChapter(ref, artifacts)
+
+	if payloadKind != payloadKindApp {
+		return nil, nil
+	}
+	return chapterToTaskData(runtime, ref.JobKey, chapter)
+}
+
+func prepareTaskDataChapterWrite(ctx context.Context, ref ChapterRef, taskType string, chapterType string, payloadKind string, inputHash string, createdAt time.Time, meta chapterMeta, payload json.RawMessage, artifacts []Artifact) (Chapter, []ArtifactUpload, error) {
+	uploads, storedArtifacts, err := artifactUploadsForChapterWrite(ctx, artifacts)
+	if err != nil {
+		return Chapter{}, nil, err
 	}
 
 	meta.Version = envelopeVersion
@@ -229,15 +252,15 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease 
 	}
 	metaJSON, err := json.Marshal(meta)
 	if err != nil {
-		return nil, err
+		return Chapter{}, nil, err
 	}
 	metadata, err := chapterMetadataFromJSON(metaJSON)
 	if err != nil {
-		return nil, err
+		return Chapter{}, nil, err
 	}
 	body, err := chapterBodyFromWire(chapterType, payloadKind, payload)
 	if err != nil {
-		return nil, err
+		return Chapter{}, nil, err
 	}
 
 	chapter := Chapter{
@@ -249,16 +272,10 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease 
 		Metadata:  metadata,
 		Artifacts: storedArtifacts,
 	}
-	if err := runtime.PutChapter(ctx, PutChapterRequest{
-		LeaseID:         lease.LeaseID(),
-		LeaseToken:      executionLeaseToken(lease),
-		Ref:             ref,
-		Chapter:         chapter,
-		ArtifactUploads: uploads,
-	}); err != nil {
-		return nil, err
-	}
+	return chapter, uploads, nil
+}
 
+func assignArtifactKeysForChapter(ref ChapterRef, artifacts []Artifact) {
 	for _, art := range artifacts {
 		if art == nil || art.Name() == "" {
 			continue
@@ -270,11 +287,6 @@ func persistTaskDataChapter(ctx context.Context, runtime WorkflowRuntime, lease 
 			SizeBytes:   art.Size(),
 		})
 	}
-
-	if payloadKind != payloadKindApp {
-		return nil, nil
-	}
-	return chapterToTaskData(runtime, ref.JobKey, chapter)
 }
 
 func executionLeaseToken(lease ExecutionLease) string {

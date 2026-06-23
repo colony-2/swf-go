@@ -246,10 +246,11 @@ func TestJobRunnableRunDoesNotBlockOnListener(t *testing.T) {
 	jobKey := JobKey{TenantId: "tenant-runnable", JobId: "job-runnable"}
 	runtime := &runJobIfLeaseableLeaseRuntime{
 		runnerTestRuntime: newRunnerTestRuntime(),
-		leaseResp: &fakeExecutionLease{
-			job:        JobHandle{JobKey: jobKey},
-			capability: "lease-job",
-		},
+	}
+	runtime.leaseResp = &fakeExecutionLease{
+		runtime:    runtime.runnerTestRuntime,
+		job:        JobHandle{JobKey: jobKey},
+		capability: "lease-job",
 	}
 	runtime.checkJobStatusHook = func(key JobKey) (JobStatus, error) {
 		runtime.mu.Lock()

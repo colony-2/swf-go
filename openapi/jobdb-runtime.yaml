@@ -1604,13 +1604,24 @@ components:
           $ref: '#/components/schemas/JobSchemaHash'
     CompleteExecutionRequest:
       type: object
-      required: [status]
+      required: [status, chapter]
       additionalProperties: false
       properties:
         status:
           type: string
         detail:
           type: string
+        chapter:
+          $ref: '#/components/schemas/ChapterRecord'
+        artifactUploads:
+          type: array
+          description: |
+            Artifact payloads attached to the final chapter written as part of
+            lease completion. Missing and empty arrays are both treated as no
+            uploads; artifacts do not exist as durable resources unless the
+            complete operation succeeds.
+          items:
+            $ref: '#/components/schemas/ArtifactWrite'
     RescheduleExecutionRequest:
       type: object
       additionalProperties: false
@@ -1805,7 +1816,7 @@ components:
             $ref: '#/components/schemas/ChapterRecord'
     AddChapterRequest:
       type: object
-      required: [chapter, artifactUploads]
+      required: [chapter]
       additionalProperties: false
       properties:
         chapter:
@@ -1813,8 +1824,9 @@ components:
         artifactUploads:
           type: array
           description: |
-            Artifact payloads attached to this chapter write. They do not exist
-            as independent durable resources until the chapter commit succeeds.
+            Artifact payloads attached to this chapter write. Missing and empty
+            arrays are both treated as no uploads; artifacts do not exist as
+            independent durable resources until the chapter commit succeeds.
           items:
             $ref: '#/components/schemas/ArtifactWrite'
     JobInfo:

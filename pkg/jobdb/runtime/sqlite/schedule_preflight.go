@@ -94,10 +94,24 @@ func (r *Runtime) cancelScheduledLease(ctx context.Context, lease *executionLeas
 	if err != nil {
 		return false, err
 	}
-	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "cancelled", Detail: string(raw)}); err != nil {
+	chapter := schedulePreflightCancelChapter(lease.Capability(), detail)
+	if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "cancelled", Detail: string(raw), Chapter: &chapter}); err != nil {
 		return false, err
 	}
 	return false, nil
+}
+
+func schedulePreflightCancelChapter(taskType string, detail scheduleCancelDetail) jobdb.Chapter {
+	return jobdb.Chapter{
+		Ordinal:   1,
+		TaskType:  taskType,
+		CreatedAt: time.Now().UTC(),
+		Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.SystemErrorOutcome{Error: jobdb.SystemErrorPayload{
+			Message:   detail.Message,
+			Component: "jobdb.schedule_preflight",
+			Code:      detail.ReasonCode,
+		}}},
+	}
 }
 
 type scheduleCancelDetail struct {

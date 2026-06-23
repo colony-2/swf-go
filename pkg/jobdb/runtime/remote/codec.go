@@ -813,7 +813,7 @@ func runtimeChapterToAddRequest(ctx context.Context, chapter jobdb.Chapter, uplo
 	if len(storedArtifacts) > 0 {
 		record.Artifacts = storedArtifacts
 	}
-	return runtimeapi.AddChapterRequest{Chapter: record, ArtifactUploads: artifacts}, nil
+	return runtimeapi.AddChapterRequest{Chapter: record, ArtifactUploads: optionalArtifactWrites(artifacts)}, nil
 }
 
 func taskOutcomeFromTaskData(data jobdb.TaskData, payloadErr error, raw json.RawMessage) (runtimeapi.TaskOutcome, error) {

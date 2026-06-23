@@ -488,17 +488,62 @@ func (r *workerRunner) validatePostExecutionTimeouts(jobErr error, attemptInvoca
 	return nil
 }
 
-func (r *workerRunner) completeLease(ctx context.Context, err error) {
-	if r.lease == nil || r.replay {
-		return
+func (r *workerRunner) completeLeaseWithChapter(ctx context.Context, chapter Chapter, err error) error {
+	if r.replay {
+		return ErrReplayShouldNeverMutate
+	}
+	if r.lease == nil {
+		return fmt.Errorf("lease is required")
 	}
 	status, detail := completionStatusAndDetail(err)
 	if completeErr := r.lease.Complete(ctx, CompleteExecutionRequest{
-		Status: status,
-		Detail: detail,
-	}); completeErr != nil && !IsExecutionLeaseLost(completeErr) {
-		r.logger.Warn("complete lease failed", "error", completeErr, "job", r.GetJobKey())
+		Status:          status,
+		Detail:          detail,
+		Chapter:         &chapter,
+		ArtifactUploads: nil,
+	}); completeErr != nil {
+		return completeErr
 	}
+	return nil
+}
+
+func (r *workerRunner) completeJobOutcome(ctx context.Context, ordinal int64, payload json.RawMessage, artifacts []Artifact, payloadKind string, inputHash string, attempt int, inputRef *InputReference, startedAt *time.Time, finishedAt *time.Time, jobErr error) (TaskData, error) {
+	if r.replay {
+		return nil, ErrReplayShouldNeverMutate
+	}
+	if r.lease == nil {
+		return nil, fmt.Errorf("lease is required")
+	}
+	ref := ChapterRef{
+		JobKey:  r.GetJobKey(),
+		Ordinal: ordinal,
+	}
+	meta := chapterMeta{
+		Attempt:    attempt,
+		InputRef:   inputRef,
+		StartedAt:  startedAt,
+		FinishedAt: finishedAt,
+	}
+	chapter, uploads, err := prepareTaskDataChapterWrite(ctx, ref, r.worker.JobWorker.Name(), chapterTypeJobAttemptOutcome, payloadKind, inputHash, time.Now().UTC(), meta, payload, artifacts)
+	if err != nil {
+		return nil, err
+	}
+	status, detail := completionStatusAndDetail(jobErr)
+	if err := r.lease.Complete(ctx, CompleteExecutionRequest{
+		Status:          status,
+		Detail:          detail,
+		Chapter:         &chapter,
+		ArtifactUploads: uploads,
+	}); err != nil {
+		return nil, err
+	}
+
+	assignArtifactKeysForChapter(ref, artifacts)
+
+	if payloadKind != payloadKindApp {
+		return nil, nil
+	}
+	return chapterToTaskData(r.runtime, r.GetJobKey(), chapter)
 }
 
 func (r *workerRunner) currentLeaseID() string {
@@ -564,7 +609,7 @@ func (r *workerRunner) failJobPrerequisites(ctx context.Context, inputData JobDa
 	if prepErr != nil {
 		return nil, prepErr
 	}
-	if _, saveErr := r.persistJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &startAt, &startAt); saveErr != nil {
+	if _, saveErr := r.completeJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &startAt, &startAt, err); saveErr != nil {
 		return nil, saveErr
 	}
 	r.markStoryOrdinalConsumed(ordinal)
@@ -572,7 +617,6 @@ func (r *workerRunner) failJobPrerequisites(ctx context.Context, inputData JobDa
 	if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
 		cleanupArtifacts(inputArtifacts, r.logger)
 	}
-	r.completeLease(ctx, err)
 	r.emitJobEnd(attempt, nil, err, startAt)
 	return nil, err
 }
@@ -1091,7 +1135,7 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 				return nil, prepErr
 			}
 			ordinal := r.storyCounter
-			if _, saveErr := r.persistJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, nil, nil); saveErr != nil {
+			if _, saveErr := r.completeJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, nil, nil, err); saveErr != nil {
 				return nil, saveErr
 			}
 			r.markStoryOrdinalConsumed(ordinal)
@@ -1099,25 +1143,25 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 			if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
 				cleanupArtifacts(inputArtifacts, r.logger)
 			}
-			r.completeLease(ctx, err)
 			r.emitJobEnd(attempt, nil, err, startAt)
 			return nil, err
 		}
 
 		var (
-			outputCached JobData
-			nextAttempt  int
-			cached       bool
-			terminal     bool
-			priorErr     error
-			cachedErr    error
-			cachedEndAt  *time.Time
-			nextStartAt  *time.Time
+			outputCached  JobData
+			nextAttempt   int
+			cached        bool
+			terminal      bool
+			priorErr      error
+			cachedErr     error
+			cachedEndAt   *time.Time
+			nextStartAt   *time.Time
+			cachedChapter Chapter
 		)
-		if cachedChapter, _, err := r.getChapter(ctx, r.storyCounter); err == nil {
+		if ch, _, err := r.getChapter(ctx, r.storyCounter); err == nil {
+			cachedChapter = ch
 			if chapterIs(cachedChapter, chapterTypeJobAttemptOutcome) {
 				ordinal := r.storyCounter
-				r.markStoryOrdinalConsumed(ordinal)
 				outputCached, nextAttempt, cached, terminal, priorErr, cachedErr, cachedEndAt, nextStartAt = r.checkCachedJobResult(ctx, ordinal, config.inputRef.Hash, config.retryCfg, config.totalDeadline, config.totalTimeout, config.inputRef)
 				if cachedErr != nil {
 					return nil, cachedErr
@@ -1128,13 +1172,19 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 						at = *cachedEndAt
 					}
 					if terminal {
-						r.completeLease(ctx, priorErr)
+						if !r.replay {
+							if err := r.completeLeaseWithChapter(ctx, cachedChapter, priorErr); err != nil {
+								return nil, err
+							}
+						}
+						r.markStoryOrdinalConsumed(ordinal)
 						r.emitJobEnd(attempt, outputCached, priorErr, at)
 						if priorErr != nil {
 							return nil, priorErr
 						}
 						return outputCached, nil
 					}
+					r.markStoryOrdinalConsumed(ordinal)
 					r.emitJobEnd(attempt, nil, priorErr, at)
 					nextAttemptStartAt = nextStartAt
 					attempt = nextAttempt
@@ -1165,9 +1215,17 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 			return nil, cachedErr
 		}
 		if cached {
-			r.markStoryOrdinalConsumed(ordinal)
 			if terminal {
-				r.completeLease(ctx, priorErr)
+				cachedChapter, _, err := r.getChapter(ctx, ordinal)
+				if err != nil {
+					return nil, err
+				}
+				if !r.replay {
+					if err := r.completeLeaseWithChapter(ctx, cachedChapter, priorErr); err != nil {
+						return nil, err
+					}
+				}
+				r.markStoryOrdinalConsumed(ordinal)
 				at := attemptFinishedAt
 				if cachedEndAt != nil {
 					at = *cachedEndAt
@@ -1178,6 +1236,7 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 				}
 				return outputCached, nil
 			}
+			r.markStoryOrdinalConsumed(ordinal)
 			at := attemptFinishedAt
 			if cachedEndAt != nil {
 				at = *cachedEndAt
@@ -1201,30 +1260,39 @@ func (r *workerRunner) DoJob(ctx context.Context) (JobData, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		if jobErr == nil {
+			persistedOutput, err := r.completeJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &attemptStartAt, &attemptFinishedAt, nil)
+			if err != nil {
+				return nil, err
+			}
+			r.markStoryOrdinalConsumed(ordinal)
+			cleanupArtifacts(artifacts, r.logger)
+			if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
+				cleanupArtifacts(inputArtifacts, r.logger)
+			}
+			r.emitJobEnd(attempt, persistedOutput, nil, attemptFinishedAt)
+			return persistedOutput, nil
+		}
+
+		if retryable := isRetryable(jobErr, config.retryCfg); !retryable || attempt >= maxAttempts {
+			if _, err := r.completeJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &attemptStartAt, &attemptFinishedAt, jobErr); err != nil {
+				return nil, err
+			}
+			r.markStoryOrdinalConsumed(ordinal)
+			cleanupArtifacts(artifacts, r.logger)
+			if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
+				cleanupArtifacts(inputArtifacts, r.logger)
+			}
+			r.emitJobEnd(attempt, nil, jobErr, attemptFinishedAt)
+			return nil, jobErr
+		}
+
 		if _, err := r.persistJobOutcome(ctx, ordinal, payload, artifacts, payloadKind, config.inputRef.Hash, attempt, config.inputRef, &attemptStartAt, &attemptFinishedAt); err != nil {
 			return nil, err
 		}
 		r.markStoryOrdinalConsumed(ordinal)
 		cleanupArtifacts(artifacts, r.logger)
-
-		if jobErr == nil {
-			if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
-				cleanupArtifacts(inputArtifacts, r.logger)
-			}
-			r.completeLease(ctx, nil)
-			r.emitJobEnd(attempt, output, nil, attemptFinishedAt)
-			return output, nil
-		}
-
-		if retryable := isRetryable(jobErr, config.retryCfg); !retryable || attempt >= maxAttempts {
-			if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
-				cleanupArtifacts(inputArtifacts, r.logger)
-			}
-			r.completeLease(ctx, jobErr)
-			r.emitJobEnd(attempt, nil, jobErr, attemptFinishedAt)
-			return nil, jobErr
-		}
-
 		if inputArtifacts, _ := inputData.GetArtifacts(); len(inputArtifacts) > 0 {
 			cleanupArtifacts(inputArtifacts, r.logger)
 		}

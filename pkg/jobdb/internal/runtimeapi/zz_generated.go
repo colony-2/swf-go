@@ -174,10 +174,11 @@ const (
 
 // AddChapterRequest defines model for AddChapterRequest.
 type AddChapterRequest struct {
-	// ArtifactUploads Artifact payloads attached to this chapter write. They do not exist
-	// as independent durable resources until the chapter commit succeeds.
-	ArtifactUploads []ArtifactWrite `json:"artifactUploads"`
-	Chapter         ChapterRecord   `json:"chapter"`
+	// ArtifactUploads Artifact payloads attached to this chapter write. Missing and empty
+	// arrays are both treated as no uploads; artifacts do not exist as
+	// independent durable resources until the chapter commit succeeds.
+	ArtifactUploads *[]ArtifactWrite `json:"artifactUploads,omitempty"`
+	Chapter         ChapterRecord    `json:"chapter"`
 }
 
 // AppErrorPayload defines model for AppErrorPayload.
@@ -265,8 +266,14 @@ type CommitChapterIfWaitingRequest struct {
 
 // CompleteExecutionRequest defines model for CompleteExecutionRequest.
 type CompleteExecutionRequest struct {
-	Detail *string `json:"detail,omitempty"`
-	Status string  `json:"status"`
+	// ArtifactUploads Artifact payloads attached to the final chapter written as part of
+	// lease completion. Missing and empty arrays are both treated as no
+	// uploads; artifacts do not exist as durable resources unless the
+	// complete operation succeeds.
+	ArtifactUploads *[]ArtifactWrite `json:"artifactUploads,omitempty"`
+	Chapter         ChapterRecord    `json:"chapter"`
+	Detail          *string          `json:"detail,omitempty"`
+	Status          string           `json:"status"`
 }
 
 // ErrorCode defines model for ErrorCode.

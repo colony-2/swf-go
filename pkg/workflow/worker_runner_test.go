@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -287,6 +288,7 @@ func (r runnerTestArtifactReader) Size() int64  { return int64(len(r.data)) }
 func (r runnerTestArtifactReader) Name() string { return r.name }
 
 type fakeExecutionLease struct {
+	runtime    *runnerTestRuntime
 	leaseID    string
 	job        JobHandle
 	capability string
@@ -321,10 +323,42 @@ func (l *fakeExecutionLease) StopKeepAlive() {
 	l.stopKeepAliveCalls++
 }
 
-func (l *fakeExecutionLease) Complete(_ context.Context, req CompleteExecutionRequest) error {
+func (l *fakeExecutionLease) Complete(ctx context.Context, req CompleteExecutionRequest) error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.completeCalls = append(l.completeCalls, req)
+	l.mu.Unlock()
+	if IsExecutionLeaseLost(l.completeErr) {
+		return l.completeErr
+	}
+	if l.runtime != nil && req.Chapter != nil {
+		ref := ChapterRef{
+			JobKey:  l.job.JobKey,
+			Ordinal: req.Chapter.Ordinal,
+		}
+		existing, err := l.runtime.GetChapter(ctx, ref)
+		switch {
+		case err == nil:
+			if !reflect.DeepEqual(cloneChapterForTest(existing), cloneChapterForTest(*req.Chapter)) {
+				return errors.New("chapter already created")
+			}
+			if chapterIs(existing, chapterTypeJobAttemptOutcome) {
+				l.runtime.mu.Lock()
+				delete(l.runtime.activeJobs, ref.JobKey)
+				l.runtime.mu.Unlock()
+			}
+		case errors.Is(err, ErrChapterNotFound):
+			if err := l.runtime.PutChapter(ctx, PutChapterRequest{
+				LeaseID:         l.leaseID,
+				Ref:             ref,
+				Chapter:         *req.Chapter,
+				ArtifactUploads: req.ArtifactUploads,
+			}); err != nil {
+				return err
+			}
+		default:
+			return err
+		}
+	}
 	return l.completeErr
 }
 
@@ -624,13 +658,13 @@ func TestWorkerRunnerJobRestartUsesCache(t *testing.T) {
 	input := NewTaskDataOrPanic(map[string]string{"ok": "yes"})
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), input, RunPolicy{})
 
-	lease1 := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease1 := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner1 := newWorkerRunner(runtime, ws, lease1, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner1.DoJob(context.Background()); err != nil {
 		t.Fatalf("first do job: %v", err)
 	}
 
-	lease2 := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease2 := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner2 := newWorkerRunner(runtime, ws, lease2, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner2.DoJob(context.Background()); err != nil {
 		t.Fatalf("second do job: %v", err)
@@ -651,13 +685,13 @@ func TestWorkerRunnerTaskRestartUsesCache(t *testing.T) {
 	input := NewTaskDataOrPanic(map[string]int{"n": 1})
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), input, RunPolicy{})
 
-	lease1 := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease1 := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner1 := newWorkerRunner(runtime, ws, lease1, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner1.DoJob(context.Background()); err != nil {
 		t.Fatalf("first do job: %v", err)
 	}
 
-	lease2 := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease2 := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner2 := newWorkerRunner(runtime, ws, lease2, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner2.DoJob(context.Background()); err != nil {
 		t.Fatalf("second do job: %v", err)
@@ -677,7 +711,7 @@ func TestWorkerRunnerSequentialTaskInputRefsUsePreviousOrdinal(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job, task1, task2)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner.DoJob(context.Background()); err != nil {
 		t.Fatalf("do job: %v", err)
@@ -717,7 +751,7 @@ func TestWorkerRunnerJobRetryWithFailures(t *testing.T) {
 	policy := RunPolicy{Retry: RetryPolicy{MaximumAttempts: 3, BackoffCoefficient: 1}}
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), input, policy)
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: policy})
 	if _, err := runner.DoJob(context.Background()); err != nil {
 		t.Fatalf("do job: %v", err)
@@ -756,7 +790,7 @@ func TestWorkerRunnerTaskRetryWithFailures(t *testing.T) {
 	input := NewTaskDataOrPanic(map[string]int{"n": 1})
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), input, RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner.DoJob(context.Background()); err != nil {
 		t.Fatalf("do job: %v", err)
@@ -805,7 +839,7 @@ func TestWorkerRunnerAwaitJobsReschedulesAndExits(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job)
 	seedJobStartForTest(t, runtime, parent, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: parent}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: parent}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	done, errCh := runRunnerAsync(context.Background(), runner)
 	select {
@@ -841,7 +875,7 @@ func TestWorkerRunnerTaskAwaitJobsReschedulesAndExits(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job, task)
 	seedJobStartForTest(t, runtime, parent, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: parent}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: parent}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	done, errCh := runRunnerAsync(context.Background(), runner)
 	select {
@@ -873,7 +907,7 @@ func TestWorkerRunnerAwaitDurationRecycleReschedulesAndExits(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}, AwaitThreshold: 50 * time.Millisecond})
 	done, errCh := runRunnerAsync(context.Background(), runner)
 	select {
@@ -910,7 +944,7 @@ func TestWorkerRunnerRescheduleSetsAlternateNeedFromInvocationTimeout(t *testing
 	ws := mustWorkSetForRunnerTest(t, job)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	done, errCh := runRunnerAsync(context.Background(), runner)
 	select {
@@ -989,22 +1023,23 @@ func TestWorkerRunnerIgnoresLeaseLossOnComplete(t *testing.T) {
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
 	lease := &fakeExecutionLease{
+		runtime:     runtime,
 		job:         JobHandle{JobKey: jobKey},
 		capability:  job.Name(),
 		payload:     json.RawMessage(`{}`),
 		completeErr: ErrExecutionLeaseLost,
 	}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
-	if _, err := runner.DoJob(context.Background()); err != nil {
-		t.Fatalf("do job: %v", err)
+	if _, err := runner.DoJob(context.Background()); !IsExecutionLeaseLost(err) {
+		t.Fatalf("expected lease lost, got %v", err)
 	}
 
 	_, _, completeCalls, _ := lease.snapshot()
 	if len(completeCalls) != 1 {
 		t.Fatalf("expected 1 complete call, got %d", len(completeCalls))
 	}
-	if _, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 1}); err != nil {
-		t.Fatalf("expected persisted output chapter: %v", err)
+	if _, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 1}); !errors.Is(err, ErrChapterNotFound) {
+		t.Fatalf("expected no persisted output chapter, got %v", err)
 	}
 }
 
@@ -1021,15 +1056,18 @@ func TestWorkerRunnerDoesNotCompleteLeaseOnPersistFailure(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner.DoJob(context.Background()); err == nil {
 		t.Fatal("expected persist error")
 	}
 
 	_, _, completeCalls, _ := lease.snapshot()
-	if len(completeCalls) != 0 {
-		t.Fatalf("expected no complete calls, got %d", len(completeCalls))
+	if len(completeCalls) != 1 {
+		t.Fatalf("expected 1 complete call, got %d", len(completeCalls))
+	}
+	if _, err := runtime.GetChapter(context.Background(), ChapterRef{JobKey: jobKey, Ordinal: 1}); !errors.Is(err, ErrChapterNotFound) {
+		t.Fatalf("expected no persisted chapter, got %v", err)
 	}
 }
 
@@ -1056,7 +1094,7 @@ func TestWorkerRunnerTaskPersistFailureWritesJobFailureAtSameOrdinal(t *testing.
 	ws := mustWorkSetForRunnerTest(t, job, task)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	_, err := runner.DoJob(context.Background())
 	if err == nil {
@@ -1114,7 +1152,7 @@ func TestWorkerRunnerStopsKeepAliveOnExit(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner.DoJob(context.Background()); err != nil {
 		t.Fatalf("do job: %v", err)
@@ -1137,7 +1175,7 @@ func TestReplayObserverUsesCachedChapterTimes(t *testing.T) {
 	ws := mustWorkSetForRunnerTest(t, job, task)
 	seedJobStartForTest(t, runtime, jobKey, job.Name(), NewTaskDataOrPanic(map[string]int{"n": 1}), RunPolicy{})
 
-	lease := &fakeExecutionLease{job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
+	lease := &fakeExecutionLease{runtime: runtime, job: JobHandle{JobKey: jobKey}, capability: job.Name(), payload: json.RawMessage(`{}`)}
 	runner := newWorkerRunner(runtime, ws, lease, workerRunnerOptions{JobPolicy: RunPolicy{}})
 	if _, err := runner.DoJob(context.Background()); err != nil {
 		t.Fatalf("do job: %v", err)

@@ -769,7 +769,7 @@ func (s *proxyServer) AddChapterWithLease(ctx context.Context, request runtimeap
 	if err != nil {
 		return nil, err
 	}
-	chapter, uploads, err := writableChapterToRuntimeChapter(request.Body.Chapter, request.Body.ArtifactUploads)
+	chapter, uploads, err := writableChapterToRuntimeChapter(request.Body.Chapter, optionalRequestArtifactWrites(request.Body.ArtifactUploads))
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
@@ -806,14 +806,27 @@ func (s *proxyServer) CompleteJobWithLease(ctx context.Context, request runtimea
 	if err != nil {
 		return nil, err
 	}
+	chapter, uploads, err := writableChapterToRuntimeChapter(request.Body.Chapter, optionalRequestArtifactWrites(request.Body.ArtifactUploads))
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
 	err = ops.CompleteJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, jobdb.CompleteExecutionRequest{
-		Status: request.Body.Status,
-		Detail: stringValue(request.Body.Detail),
+		Status:          request.Body.Status,
+		Detail:          stringValue(request.Body.Detail),
+		Chapter:         &chapter,
+		ArtifactUploads: uploads,
 	})
 	if err != nil {
 		return nil, err
 	}
 	return runtimeapi.CompleteJobWithLease204Response{}, nil
+}
+
+func optionalRequestArtifactWrites(items *[]runtimeapi.ArtifactWrite) []runtimeapi.ArtifactWrite {
+	if items == nil {
+		return nil
+	}
+	return *items
 }
 
 func (s *proxyServer) KeepAliveLease(ctx context.Context, request runtimeapi.KeepAliveLeaseRequestObject) (runtimeapi.KeepAliveLeaseResponseObject, error) {

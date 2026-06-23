@@ -145,8 +145,10 @@ type ArtifactUpload struct {
 }
 
 type CompleteExecutionRequest struct {
-	Status string
-	Detail string
+	Status          string
+	Detail          string
+	Chapter         *Chapter
+	ArtifactUploads []ArtifactUpload
 }
 
 type RescheduleExecutionRequest struct {

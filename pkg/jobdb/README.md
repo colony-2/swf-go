@@ -129,7 +129,18 @@ if len(leases) == 0 {
 }
 
 lease := leases[0]
-err = lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "success"})
+chapter := jobdb.Chapter{
+    Ordinal:   1,
+    TaskType:  lease.Capability(),
+    CreatedAt: time.Now().UTC(),
+    Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.ApplicationOutputOutcome{
+        Output: jobdb.ApplicationOutputBytes{Data: []byte(`{"ok":true}`)},
+    }},
+}
+err = lease.Complete(ctx, jobdb.CompleteExecutionRequest{
+    Status:  "success",
+    Chapter: &chapter,
+})
 ```
 
 Most applications should not implement worker execution directly against leases.

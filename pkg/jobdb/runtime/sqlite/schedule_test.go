@@ -384,7 +384,15 @@ func TestScheduleFailurePolicyCancelsSuccessorBeforeAppLease(t *testing.T) {
 	if len(leases) != 1 {
 		t.Fatalf("first leases = %d, want 1", len(leases))
 	}
-	if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "failed_app", Detail: "boom"}); err != nil {
+	failedChapter := jobdb.Chapter{
+		Ordinal:   1,
+		TaskType:  leases[0].Capability(),
+		CreatedAt: time.Now().UTC(),
+		Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.AppErrorOutcome{
+			Error: jobdb.AppErrorPayload{Message: "boom", Level: "error"},
+		}},
+	}
+	if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{Status: "failed_app", Detail: "boom", Chapter: &failedChapter}); err != nil {
 		t.Fatalf("complete first failed: %v", err)
 	}
 	time.Sleep(3 * time.Millisecond)

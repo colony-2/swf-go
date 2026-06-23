@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/colony-2/jobdb/pkg/jobdb"
-	jobdbtest "github.com/colony-2/jobdb/pkg/workflow/internal/jobdbtest"
 	"github.com/colony-2/jobdb/pkg/workflow"
+	jobdbtest "github.com/colony-2/jobdb/pkg/workflow/internal/jobdbtest"
 )
 
 type customIDJob struct{}
@@ -763,9 +763,7 @@ func TestEngineMetadataFilteredWorkersAndManualJobLeaseAcrossBuiltInRuntimes(t *
 			if lease.Job().JobKey != greenKey {
 				t.Fatalf("unexpected leased job %+v", lease.Job().JobKey)
 			}
-			if err := lease.Complete(ctx, jobdb.CompleteExecutionRequest{Status: "succeeded"}); err != nil {
-				t.Fatalf("complete manual lease: %v", err)
-			}
+			completeLeaseForTest(t, ctx, lease, 1)
 			jobdbtest.WaitForEngineStatus(t, ctx, built.Engine, greenKey, jobdb.JobStatusCompleted)
 		})
 	}

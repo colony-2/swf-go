@@ -107,6 +107,8 @@ type ChapterRef struct
 type CompleteExecutionRequest struct
   field Status string
   field Detail string
+  field Chapter *Chapter
+  field ArtifactUploads []ArtifactUpload
 type CompleteTaskIfWaitingRequest struct
   field JobKey JobKey
   field Capability string
