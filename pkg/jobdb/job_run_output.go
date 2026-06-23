@@ -2,8 +2,12 @@ package jobdb
 
 import "fmt"
 
+type ArtifactGetter interface {
+	GetArtifact(tenantId string, key ArtifactKey) (Artifact, error)
+}
+
 // GetOutput returns the final job output or a job-level error.
-func (r GetJobRunResponse) GetOutput(engine Engine, tenantId string) (JobData, error) {
+func (r GetJobRunResponse) GetOutput(getter ArtifactGetter, tenantId string) (JobData, error) {
 	if r.Job.Status == JobStatusCancelled {
 		return nil, ErrJobCancelled
 	}
@@ -25,7 +29,7 @@ func (r GetJobRunResponse) GetOutput(engine Engine, tenantId string) (JobData, e
 	}
 
 	data := append([]byte(nil), latest.Output.Data...)
-	artifacts, err := artifactsFromInfos(latest.Output.Artifacts, engine, tenantId, r.Job.JobKey, latest.Ordinal)
+	artifacts, err := artifactsFromInfos(latest.Output.Artifacts, getter, tenantId, r.Job.JobKey, latest.Ordinal)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +47,7 @@ func latestJobAttempt(attempts []JobAttempt) JobAttempt {
 	return best
 }
 
-func artifactsFromInfos(infos []ArtifactInfo, engine Engine, tenantId string, jobKey JobKey, ordinal int64) ([]Artifact, error) {
+func artifactsFromInfos(infos []ArtifactInfo, getter ArtifactGetter, tenantId string, jobKey JobKey, ordinal int64) ([]Artifact, error) {
 	if len(infos) == 0 {
 		return nil, nil
 	}
@@ -63,7 +67,7 @@ func artifactsFromInfos(infos []ArtifactInfo, engine Engine, tenantId string, jo
 		if err := key.Validate(); err != nil {
 			return nil, fmt.Errorf("%w: invalid artifact key: %v", ErrJobFailed, err)
 		}
-		artifacts = append(artifacts, key.ToLazyArtifact(engine, tenantId))
+		artifacts = append(artifacts, key.ToLazyArtifact(getter, tenantId))
 	}
 	return artifacts, nil
 }

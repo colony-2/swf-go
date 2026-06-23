@@ -1,4 +1,5 @@
 github.com/colony-2/jobdb/pkg/jobdb
+github.com/colony-2/jobdb/pkg/workflow
 github.com/colony-2/jobdb/pkg/jobdb/runtime/direct
 github.com/colony-2/jobdb/pkg/jobdb/runtime/remote
 github.com/colony-2/jobdb/pkg/jobdb/runtime/sqlite

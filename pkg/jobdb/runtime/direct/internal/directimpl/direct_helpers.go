@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
 	"sync/atomic"
 	"time"
 
@@ -20,22 +19,6 @@ func storyKeyForJob(jobKey jobdb.JobKey) story.Key {
 		AnthologyID: jobKey.TenantId,
 		StoryID:     jobKey.JobId,
 	}
-}
-
-func workSetCapabilities(workset *jobdb.WorkSet) []pgwf.Capability {
-	if workset == nil || len(workset.TaskWorkers) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(workset.TaskWorkers))
-	for name := range workset.TaskWorkers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	out := make([]pgwf.Capability, 0, len(names))
-	for _, name := range names {
-		out = append(out, pgwf.Capability(workset.JobWorker.Name()+":"+name))
-	}
-	return out
 }
 
 func metadataPredicatesToPgwf(filter jobdb.MetadataFilter) ([]pgwf.MetadataPredicate, error) {

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func getJobRunFromRuntime(ctx context.Context, runtime WorkflowRuntime, req GetJobRunRequest) (GetJobRunResponse, error) {
+func GetJobRun(ctx context.Context, runtime WorkflowRuntime, req GetJobRunRequest) (GetJobRunResponse, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}

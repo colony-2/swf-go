@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/colony-2/jobdb/pkg/internal/runtimecodec"
 	"github.com/colony-2/jobdb/pkg/jobdb"
-	"github.com/colony-2/jobdb/pkg/jobdb/internal/runtimecodec"
 	strataartifact "github.com/colony-2/strata-go/pkg/client/artifact"
 	"github.com/colony-2/strata-go/pkg/client/story"
 	"github.com/google/uuid"

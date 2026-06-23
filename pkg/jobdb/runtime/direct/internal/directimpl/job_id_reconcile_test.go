@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/colony-2/jobdb/pkg/internal/directtestsupport"
 	"github.com/colony-2/jobdb/pkg/jobdb"
-	"github.com/colony-2/jobdb/pkg/jobdb/internal/directtestsupport"
 	"github.com/colony-2/pgwf-go/pkg/pgwf"
 	_ "github.com/lib/pq"
 )

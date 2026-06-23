@@ -215,8 +215,3 @@ type TaskData interface {
 	GetDataOrPanic() Data
 	GetArtifacts() ([]Artifact, error)
 }
-
-type TaskWorker interface {
-	Name() string
-	Run(context TaskContext, input TaskData) (TaskData, error)
-}

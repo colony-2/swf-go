@@ -11,10 +11,10 @@ import (
 	"sort"
 	"time"
 
+	"github.com/colony-2/jobdb/pkg/internal/runtimecodec"
 	"github.com/colony-2/jobdb/pkg/jobdb"
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobmetadata"
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/leaseauth"
-	"github.com/colony-2/jobdb/pkg/jobdb/internal/runtimecodec"
 	"github.com/segmentio/ksuid"
 )
 
@@ -718,75 +718,6 @@ func (r *Runtime) storeRuntimeChapter(jobKey jobdb.JobKey, ordinal int64, chapte
 
 func (r *Runtime) OpenArtifact(ctx context.Context, ref jobdb.ArtifactRef) (jobdb.ArtifactReader, error) {
 	return r.engine.OpenStoredArtifact(ctx, ref)
-}
-
-func (r *Runtime) FindTasksWaitingForCapability(ctx context.Context, jobType string, taskType string, tenantIds []string) ([]jobdb.TaskHandle, error) {
-	resp, err := r.ListJobs(ctx, jobdb.ListJobsRequest{
-		TenantIds: tenantIds,
-		Statuses:  []jobdb.JobStatus{jobdb.JobStatusReady},
-		JobTasks:  []jobdb.JobTaskFilter{{JobType: jobType, TaskType: taskType}},
-		PageSize:  jobdb.MaxListJobsPageSize,
-	})
-	if err != nil {
-		return nil, err
-	}
-	handles := make([]jobdb.TaskHandle, 0, len(resp.Jobs))
-	for _, job := range resp.Jobs {
-		record := r.engine.getJobRecord(job.JobKey)
-		if record == nil {
-			continue
-		}
-		record.mu.Lock()
-		payload := cloneJSON(record.payload)
-		metadata := jobdb.AppMetadataFromStoredMetadata(record.metadata)
-		createdAt := record.createdAt
-		record.mu.Unlock()
-		wait, err := extractWorkerTaskWait(payload)
-		if err != nil || wait == nil {
-			continue
-		}
-		handles = append(handles, &runtimeTaskHandle{
-			runtime:   r,
-			jobKey:    job.JobKey,
-			payload:   payload,
-			metadata:  metadata,
-			wait:      *wait,
-			taskType:  taskType,
-			createdAt: createdAt,
-		})
-	}
-	return handles, nil
-}
-
-func (r *Runtime) GetWaitingTask(ctx context.Context, key jobdb.JobKey) (jobdb.TaskHandle, error) {
-	record := r.engine.getJobRecord(key)
-	if record == nil {
-		return nil, jobdb.ErrJobNotFound
-	}
-	record.mu.Lock()
-	payload := cloneJSON(record.payload)
-	metadata := jobdb.AppMetadataFromStoredMetadata(record.metadata)
-	createdAt := record.createdAt
-	currentCapability := record.capability
-	record.mu.Unlock()
-
-	wait, err := extractWorkerTaskWait(payload)
-	if err != nil {
-		return nil, err
-	}
-	if wait == nil {
-		return nil, jobdb.ErrJobNotFound
-	}
-	taskType := extractTaskType(currentCapability)
-	return &runtimeTaskHandle{
-		runtime:   r,
-		jobKey:    key,
-		payload:   payload,
-		metadata:  metadata,
-		wait:      *wait,
-		taskType:  taskType,
-		createdAt: createdAt,
-	}, nil
 }
 
 func (r *Runtime) materializeTaskData(ctx context.Context, jobKey jobdb.JobKey, ordinal int64, data jobdb.TaskData) (jobdb.TaskData, []jobdb.StoredArtifact, error) {

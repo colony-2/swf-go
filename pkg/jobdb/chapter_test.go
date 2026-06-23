@@ -99,7 +99,7 @@ func TestWorkflowRuntimeUsesChapterAPI(t *testing.T) {
 		CreatedAt: time.Date(2026, 6, 10, 1, 2, 3, 0, time.UTC),
 		Body:      TaskAttemptOutcomeChapter{Outcome: ApplicationOutputOutcome{Output: ApplicationOutputBytes{Data: []byte(`{"ok":true}`)}}},
 	}
-	runtime := &fakeWorkflowRuntime{
+	runtime := &chapterTestRuntime{
 		chapterResp:  chapter,
 		chaptersResp: []Chapter{chapter},
 	}
@@ -156,6 +156,27 @@ func TestWorkflowRuntimeUsesChapterAPI(t *testing.T) {
 		t.Fatalf("unexpected put payload kind: %s", payloadKind)
 	}
 	assertRawJSONEqual(t, payload, json.RawMessage(`{"again":true}`))
+}
+
+type chapterTestRuntime struct {
+	chapterRef    ChapterRef
+	putChapterReq PutChapterRequest
+	chapterResp   Chapter
+	chaptersResp  []Chapter
+}
+
+func (r *chapterTestRuntime) GetChapter(ctx context.Context, ref ChapterRef) (Chapter, error) {
+	r.chapterRef = ref
+	return r.chapterResp, nil
+}
+
+func (r *chapterTestRuntime) PutChapter(ctx context.Context, req PutChapterRequest) error {
+	r.putChapterReq = req
+	return nil
+}
+
+func (r *chapterTestRuntime) ListChapters(ctx context.Context, req ListChaptersRequest) ([]Chapter, error) {
+	return append([]Chapter(nil), r.chaptersResp...), nil
 }
 
 func assertRawJSONEqual(t *testing.T, got json.RawMessage, want json.RawMessage) {

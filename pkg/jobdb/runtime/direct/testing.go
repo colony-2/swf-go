@@ -3,31 +3,15 @@ package direct
 import (
 	"context"
 	"database/sql"
-	"log/slog"
 	"time"
 
-	"github.com/colony-2/jobdb/pkg/jobdb"
-	"github.com/colony-2/jobdb/pkg/jobdb/internal/directtestsupport"
+	"github.com/colony-2/jobdb/pkg/internal/directtestsupport"
 )
-
-type EmbeddedEngine struct {
-	jobdb.Engine
-	stopPG         func()
-	strataShutdown func()
-}
 
 type EmbeddedRuntime struct {
 	Runtime        *Runtime
 	stopPG         func()
 	strataShutdown func()
-}
-
-func (e *EmbeddedEngine) Shutdown() {
-	if e == nil {
-		return
-	}
-	e.stopPG()
-	e.strataShutdown()
 }
 
 func (e *EmbeddedRuntime) Shutdown() {
@@ -78,34 +62,5 @@ func StartEmbeddedRuntime(ctx context.Context) (*EmbeddedRuntime, error) {
 		Runtime:        rt,
 		stopPG:         cleanup,
 		strataShutdown: s.Shutdown,
-	}, nil
-}
-
-func StartEmbeddedEngine(ctx context.Context, job jobdb.JobWorker, tasks ...jobdb.TaskWorker) (*EmbeddedEngine, error) {
-	embedded, err := StartEmbeddedRuntime(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	b := jobdb.NewEngineBuilder().
-		WithRuntime(embedded.Runtime).
-		WithAwaitRecycleThreshold(5 * time.Second).
-		WithLogger(slog.Default()).
-		WithMaxActive(100)
-
-	if job != nil {
-		b.WithWorkerTenantId("default")
-		b.PlusWorkers(job, tasks...)
-	}
-	engine, err := b.BuildEngine()
-	if err != nil {
-		embedded.Shutdown()
-		return nil, err
-	}
-
-	return &EmbeddedEngine{
-		Engine:         engine,
-		stopPG:         embedded.stopPG,
-		strataShutdown: embedded.strataShutdown,
 	}, nil
 }

@@ -8,16 +8,16 @@ import (
 
 // ToLazyArtifact returns an artifact that defers retrieval until access.
 // tenantId is required because ArtifactKey does not include tenant identity.
-func (ak ArtifactKey) ToLazyArtifact(engine Engine, tenantId string) Artifact {
+func (ak ArtifactKey) ToLazyArtifact(getter ArtifactGetter, tenantId string) Artifact {
 	return &lazyArtifact{
-		engine:   engine,
+		getter:   getter,
 		tenantId: tenantId,
 		key:      ak,
 	}
 }
 
 type lazyArtifact struct {
-	engine   Engine
+	getter   ArtifactGetter
 	tenantId string
 	key      ArtifactKey
 }
@@ -72,8 +72,8 @@ func (a *lazyArtifact) Open() (io.ReadCloser, error) {
 func (a *lazyArtifact) Cleanup() error { return nil }
 
 func (a *lazyArtifact) materialize(ctx context.Context) (Artifact, error) {
-	if a.engine == nil {
-		return nil, fmt.Errorf("jobdb engine is required")
+	if a.getter == nil {
+		return nil, fmt.Errorf("artifact getter is required")
 	}
 	if a.tenantId == "" {
 		return nil, fmt.Errorf("tenantId is required")
@@ -81,5 +81,5 @@ func (a *lazyArtifact) materialize(ctx context.Context) (Artifact, error) {
 	if err := a.key.Validate(); err != nil {
 		return nil, err
 	}
-	return a.engine.GetArtifact(a.tenantId, a.key)
+	return a.getter.GetArtifact(a.tenantId, a.key)
 }

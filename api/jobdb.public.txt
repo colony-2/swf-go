@@ -31,6 +31,8 @@ type Artifact interface
   method Sha256 func(ctx context.Context) (string, error)
   method Size func() int64
   method WriteTo func(ctx context.Context, w io.Writer) error
+type ArtifactGetter interface
+  method GetArtifact func(tenantId string, key ArtifactKey) (Artifact, error)
 type ArtifactInfo struct
   field ID string
   field Name string
@@ -43,7 +45,7 @@ type ArtifactKey struct
   field TaskOrdinal int64 `json:"taskOrdinal"`
   field Name string `json:"name"`
   field SizeBytes int64 `json:"sizeBytes"`
-method ArtifactKey.ToLazyArtifact func(engine Engine, tenantId string) Artifact
+method ArtifactKey.ToLazyArtifact func(getter ArtifactGetter, tenantId string) Artifact
 method ArtifactKey.Validate func() error
 type ArtifactReader interface
   method Name func() string
@@ -59,8 +61,6 @@ type ArtifactUpload struct
   field Size int64
   field Open func() (io.ReadCloser, error)
 func AsDuration func(t time.Duration) *Duration
-func AsWorkSet func(jobWorker JobWorker, taskWorkers ...TaskWorker) (*WorkSet, error)
-func AsWorkSetWithOptions func(jobWorker JobWorker, opts WorkRegistrationOptions, taskWorkers ...TaskWorker) (*WorkSet, error)
 func AssignArtifactKey func(art Artifact, key ArtifactKey)
 func BuildJobMetadataEnvelope func(appMetadata encoding/json.RawMessage, internal RuntimeJobMetadata) (encoding/json.RawMessage, error)
 type CancelJob struct
@@ -125,24 +125,6 @@ method Duration.String func() string
 method Duration.ToDuration func() time.Duration
 method Duration.UnmarshalYAML func(unmarshal func(interface{}) error) error
 func EncodeListJobsPageToken func(createdAt time.Time, jobKey JobKey) (string, error)
-type Engine interface
-  embedded jobRunApi
-  embedded taskRunApi
-  embedded jobLeaseApi
-  embedded loopWorkerApi
-  embedded jobsListApi
-  embedded schedulesApi
-  method GetArtifact func(tenantId string, key ArtifactKey) (Artifact, error)
-  method RegisterWorkers func(workset *WorkSet) error
-type EngineBuilder struct
-method EngineBuilder.BuildEngine func() (Engine, error)
-method EngineBuilder.PlusWorkers func(jobWorker JobWorker, taskWorkers ...TaskWorker) *EngineBuilder
-method EngineBuilder.PlusWorkersWithOptions func(jobWorker JobWorker, opts WorkRegistrationOptions, taskWorkers ...TaskWorker) *EngineBuilder
-method EngineBuilder.WithAwaitRecycleThreshold func(d time.Duration) *EngineBuilder
-method EngineBuilder.WithLogger func(logger *log/slog.Logger) *EngineBuilder
-method EngineBuilder.WithMaxActive func(maxActive int) *EngineBuilder
-method EngineBuilder.WithRuntime func(runtime WorkflowRuntime) *EngineBuilder
-method EngineBuilder.WithWorkerTenantId func(tenantId string) *EngineBuilder
 type EnvelopedTaskData struct
   embedded SimpleTaskData SimpleTaskData
   field Kind string
@@ -156,7 +138,6 @@ var ErrJobFailed error
 var ErrJobNotComplete error
 var ErrJobNotFound error
 var ErrMissingInputHash error
-var ErrReplayShouldNeverMutate error
 var ErrWorkflowNotDeterministic error
 type ExecutionLease interface
   method Capability func() string
@@ -170,26 +151,12 @@ type ExecutionLease interface
 func ExtractScheduleOccurrenceMetadata func(raw encoding/json.RawMessage) (ScheduleOccurrenceMetadata, bool, error)
 func ExtractTaskDataResult func(data TaskData) (TaskData, error)
 type FieldName string
-type FindTasksWaitingRequest struct
-  field JobType string
-  field TaskType string
-  field TenantIds []string
-  field MetadataFilter MetadataFilter
-  field Limit int
-func GetJobForRun func(ctx context.Context, runtime WorkflowRuntime, req GetJobForRunRequest) (*JobRunnable, error)
-type GetJobForRunRequest struct
-  field JobKey JobKey
-  field JobWorker JobWorker
-  field TaskWorkers []TaskWorker
-  field WorkerID string
-  field LeaseDuration time.Duration
-  field Logger *log/slog.Logger
-  field AwaitThreshold time.Duration
 type GetJobLeaseRequest struct
   field JobKey JobKey
   field WorkerID string
   field Capabilities []string
   field LeaseDuration time.Duration
+func GetJobRun func(ctx context.Context, runtime WorkflowRuntime, req GetJobRunRequest) (GetJobRunResponse, error)
 type GetJobRunRequest struct
   field JobKey JobKey
   field IncludeInputs bool
@@ -200,7 +167,7 @@ type GetJobRunResponse struct
   field Job JobRunSummary
   field Start JobStart
   field Attempts []JobAttempt
-method GetJobRunResponse.GetOutput func(engine Engine, tenantId string) (JobData, error)
+method GetJobRunResponse.GetOutput func(getter ArtifactGetter, tenantId string) (JobData, error)
 func InitialScheduleFire func(trigger ScheduleTrigger, now time.Time) (*time.Time, error)
 type InputReference struct
   field Ordinal int64 `json:"ordinal"`
@@ -221,22 +188,7 @@ type JobAttempt struct
   field Tasks []TaskRun
 type JobAttemptOutcomeChapter struct
   field Outcome ChapterOutcome
-type JobContext interface
-  method AwaitDuration func(waitFor Duration) error
-  method AwaitJobs func(jobIds ...string) error
-  method DoTask func(policy RunPolicy, taskType string, data TaskData) (TaskData, error)
-  method GetJobKey func() JobKey
-  method Logger func() *log/slog.Logger
-type JobData interface
-  method GetArtifacts func() ([]Artifact, error)
-  method GetData func() (Data, error)
-  method GetDataOrPanic func() Data
-type JobEndEvent struct
-  field JobKey JobKey
-  field AttemptNumber int
-  field Output JobData
-  field Err error
-  field At time.Time
+type JobData = TaskData
 type JobFailedError struct
   field Cause error
 method JobFailedError.Error func() string
@@ -262,24 +214,6 @@ const JobPrereqSuccess JobPrereqCondition = "success"
 type JobPrerequisite struct
   field JobID string
   field Condition JobPrereqCondition
-const JobRunCompleted JobRunStatus = "COMPLETED"
-const JobRunFailed JobRunStatus = "FAILED"
-type JobRunListener interface
-  method OnJobEnd func(event JobEndEvent)
-  method OnJobStart func(event JobStartEvent)
-  method OnTaskEnd func(event TaskEndEvent)
-  method OnTaskStart func(event TaskStartEvent)
-const JobRunNotLeaseable JobRunStatus = "NOT_LEASEABLE"
-type JobRunOutcome struct
-  field Status JobRunStatus
-  field LeaseAcquired bool
-  field Output JobData
-  field JobError error
-  field JobStatus *JobStatus
-  field NextNeed *string
-  field WaitForJobIDs []string
-  field MissingCapability *string
-type JobRunStatus string
 type JobRunSummary struct
   field JobKey JobKey
   field JobType string
@@ -287,12 +221,6 @@ type JobRunSummary struct
   field CreatedAt time.Time
   field ArchivedAt *time.Time
   field Metadata encoding/json.RawMessage
-const JobRunSuspended JobRunStatus = "SUSPENDED"
-type JobRunnable struct
-method JobRunnable.JobKey func() JobKey
-method JobRunnable.LeaseAcquired func() bool
-method JobRunnable.Outcome func() (JobRunOutcome, bool)
-method JobRunnable.Run func(listener JobRunListener) (JobRunOutcome, error)
 type JobStart struct
   field Ordinal int64
   field WorkerID string
@@ -300,11 +228,6 @@ type JobStart struct
   field Input *TaskIO
 type JobStartChapter struct
   field Input ApplicationInputBytes
-type JobStartEvent struct
-  field JobKey JobKey
-  field AttemptNumber int
-  field Input JobData
-  field At time.Time
 type JobStatus string
 const JobStatusActive JobStatus = "ACTIVE"
 const JobStatusAwaitingFuture JobStatus = "AWAITING_FUTURE"
@@ -339,9 +262,6 @@ type JobTaskFilter struct
   field JobType string
   field TaskType string
 func JobTypeFromNextNeed func(nextNeed string) string
-type JobWorker interface
-  method Name func() string
-  method Run func(JobContext, JobData) (JobData, error)
 type ListChaptersRequest struct
   field JobKey JobKey
   field StartOrdinal int64
@@ -397,10 +317,8 @@ func NewArtifactFromBytes func(name string, data []byte) Artifact
 func NewArtifactFromFile func(name string, filePath string) (Artifact, error)
 func NewArtifactFromFileNoCleanup func(name string, filePath string) (Artifact, error)
 func NewArtifactFromReader func(name string, r io.Reader, size int64) Artifact
-func NewEngineBuilder func() *EngineBuilder
 func NewExistingJobMismatchError func(message string) error
 func NewSystemError func(payload SystemErrorPayload) error
-func NewTaskContext func(jobKey JobKey, step int64, logger *log/slog.Logger, await func(time.Time) error, awaitJobs func(...string) error) TaskContext
 func NewTaskData func(data any, artifacts ...Artifact) (TaskData, error)
 func NewTaskDataOrPanic func(data any, artifacts ...Artifact) TaskData
 func NewTimeoutError func(kind string, after time.Duration, scope string, inputRef *InputReference, retryable bool) error
@@ -424,27 +342,6 @@ type PutChapterRequest struct
   field Ref ChapterRef
   field Chapter Chapter
   field ArtifactUploads []ArtifactUpload
-const ReplayCacheMissAwaitJobsPending ReplayCacheMissReason = "await_jobs_pending"
-const ReplayCacheMissAwaitNotReady ReplayCacheMissReason = "await_not_ready"
-type ReplayCacheMissError struct
-  field JobKey JobKey
-  field TaskType string
-  field Ordinal int64
-  field Attempt int
-  field Reason ReplayCacheMissReason
-method ReplayCacheMissError.Error func() string
-const ReplayCacheMissJobResultMissing ReplayCacheMissReason = "job_result_missing"
-type ReplayCacheMissReason string
-const ReplayCacheMissTaskResultMissing ReplayCacheMissReason = "task_result_missing"
-type ReplayObserver interface
-  method OnJobEnd func(event JobEndEvent)
-  method OnJobStart func(event JobStartEvent)
-  method OnTaskEnd func(event TaskEndEvent)
-  method OnTaskStart func(event TaskStartEvent)
-type ReplayRunRequest struct
-  field JobKey JobKey
-  field Observer ReplayObserver
-  field JobWorker JobWorker
 type RescheduleExecutionRequest struct
   field NextNeed string
   field WaitUntil *time.Time
@@ -464,11 +361,6 @@ type RunPolicy struct
   field Retry RetryPolicy `yaml:"retry,omitempty"`
   field InvocationTimeout *Duration `yaml:"invocation_timeout,omitempty"`
   field TotalTimeout *Duration `yaml:"total_timeout,omitempty"`
-type RuntimeBuildOptions struct
-  field Logger *log/slog.Logger
-  field MaxActive int
-  field AwaitRecycleThreshold time.Duration
-  field PollTenantId string
 type RuntimeJobMetadata struct
   field Schedule *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
 type ScheduleFailureHistory struct
@@ -553,7 +445,6 @@ type ScheduleTrigger struct
 const ScheduleTriggerCron ScheduleTriggerKind = "cron"
 const ScheduleTriggerInterval ScheduleTriggerKind = "interval"
 type ScheduleTriggerKind string
-func SetTaskInputStorageEnabled func(enabled bool)
 type SimpleTaskData struct
   field Data Data
   field Artifacts []Artifact
@@ -627,16 +518,6 @@ const TaskAttemptStateReady untyped string = "READY"
 const TaskAttemptStateRunning untyped string = "RUNNING"
 const TaskAttemptStateSucceeded untyped string = "SUCCEEDED"
 const TaskAttemptStateWaiting untyped string = "WAITING"
-type TaskCompletion struct
-  field JobKey JobKey
-  field Step int64
-  field Error error
-type TaskContext struct
-  field JobKey JobKey
-  field Step int64
-  field Logger *log/slog.Logger
-method TaskContext.AwaitDuration func(waitFor Duration) error
-method TaskContext.AwaitJobs func(jobIds ...string) error
 type TaskData interface
   method GetArtifacts func() ([]Artifact, error)
   method GetData func() (Data, error)
@@ -644,29 +525,6 @@ type TaskData interface
 type TaskDataResultCarrier interface
   embedded TaskData
   method TaskDataResult func() (TaskData, error)
-type TaskDeterminismMeta struct
-  field Ordinal int64 `json:"ordinal"`
-  field TaskType string `json:"task_type"`
-  field WorkerID string `json:"worker_id,omitempty"`
-  field CreatedAt time.Time `json:"created_at,omitempty"`
-  field Attempt int `json:"attempt,omitempty"`
-  field MaxAttempts int `json:"max_attempts,omitempty"`
-  field NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
-  field BackoffMillis int64 `json:"backoff_ms,omitempty"`
-  field Retryable *bool `json:"retryable,omitempty"`
-  field InputHash string `json:"input_hash,omitempty"`
-  field InputRef *InputReference `json:"input_ref,omitempty"`
-  field RunPolicy *RunPolicy `json:"run_policy,omitempty"`
-  field InputPayload encoding/json.RawMessage `json:"input_payload,omitempty"`
-  field Version int `json:"version,omitempty"`
-type TaskEndEvent struct
-  field JobKey JobKey
-  field TaskType string
-  field Ordinal int64
-  field AttemptNumber int
-  field Output TaskData
-  field Err error
-  field At time.Time
 type TaskError struct
   field Kind string
   field Message string
@@ -682,33 +540,9 @@ type TaskError struct
 const TaskErrorKindApp untyped string = "APP"
 const TaskErrorKindSystem untyped string = "SYSTEM"
 const TaskErrorKindTimeout untyped string = "TIMEOUT"
-type TaskHandle interface
-  method CreatedAt func() time.Time
-  method Data func() (TaskData, error)
-  method Finish func(ctx context.Context, taskData TaskData) error
-  method JobKey func() JobKey
-  method Metadata func() encoding/json.RawMessage
-  method TaskOrdinalToComplete func() int64
-  method TaskType func() string
 type TaskIO struct
   field Data encoding/json.RawMessage
   field Artifacts []ArtifactInfo
-type TaskInputMismatchError struct
-  field TaskType string
-  field Ordinal int64
-  field CachedInputHash string
-  field ComputedInputHash string
-  field CachedInput encoding/json.RawMessage
-  field CachedOutput TaskData
-  field CachedOutputErr error
-  field Meta TaskDeterminismMeta
-method TaskInputMismatchError.CachedInputPayload func() encoding/json.RawMessage
-method TaskInputMismatchError.CachedTaskData func() TaskData
-method TaskInputMismatchError.CachedTaskDataErr func() error
-method TaskInputMismatchError.ChapterMeta func() TaskDeterminismMeta
-method TaskInputMismatchError.Error func() string
-method TaskInputMismatchError.Unwrap func() error
-func TaskInputStorageEnabled func() bool
 type TaskOutcome struct
   field Status string
   field PayloadKind string
@@ -725,16 +559,6 @@ type TaskRuntime struct
   field NextNeed *string
   field AvailableAt *time.Time
   field WaitFor []string
-type TaskStartEvent struct
-  field JobKey JobKey
-  field TaskType string
-  field Ordinal int64
-  field AttemptNumber int
-  field Input TaskData
-  field At time.Time
-type TaskWorker interface
-  method Name func() string
-  method Run func(context TaskContext, input TaskData) (TaskData, error)
 type TimeoutError struct
   field Payload TimeoutPayload
 method TimeoutError.As func(target any) bool
@@ -758,7 +582,6 @@ type TriggerScheduleRequest struct
   field RequestTime time.Time
   field WorkerID string
 func TxFromCtx func(ctx context.Context) (*gorm.io/gorm.DB, bool)
-func UnexpectedChapter func(err error) (TaskInputMismatchError, bool)
 type UpsertScheduleRequest struct
   field TenantId string
   field ScheduleId string
@@ -772,15 +595,7 @@ type UpsertScheduleRequest struct
   field WorkerID string
 func ValidateApplicationMetadata func(raw encoding/json.RawMessage) error
 func ValidateScheduleRequest func(req UpsertScheduleRequest) error
-func WaitForJobToComplete func(ctx context.Context, timeout time.Duration, jobKey JobKey, engine Engine) error
 func WithTx func(ctx context.Context, tx *gorm.io/gorm.DB) context.Context
-type WorkRegistrationOptions struct
-  field MetadataFilter MetadataFilter
-type WorkSet struct
-  field JobWorker JobWorker
-  field TaskWorkers map[string]TaskWorker
-  field Options WorkRegistrationOptions
-type Worker interface
 type WorkflowRuntime interface
   method ArchiveSchedule func(ctx context.Context, req ScheduleMutationRequest) (ScheduleInfo, error)
   method CancelJob func(ctx context.Context, req CancelJobRequest) error
@@ -803,17 +618,363 @@ type WorkflowRuntime interface
   method TriggerSchedule func(ctx context.Context, req TriggerScheduleRequest) (JobHandle, error)
   method UpsertSchedule func(ctx context.Context, req UpsertScheduleRequest) (ScheduleInfo, error)
 
+package github.com/colony-2/jobdb/pkg/workflow
+type AppError = github.com/colony-2/jobdb/pkg/jobdb.AppError
+type AppErrorOutcome = github.com/colony-2/jobdb/pkg/jobdb.AppErrorOutcome
+type AppErrorPayload = github.com/colony-2/jobdb/pkg/jobdb.AppErrorPayload
+type ApplicationInputBytes = github.com/colony-2/jobdb/pkg/jobdb.ApplicationInputBytes
+type ApplicationOutputBytes = github.com/colony-2/jobdb/pkg/jobdb.ApplicationOutputBytes
+type ApplicationOutputOutcome = github.com/colony-2/jobdb/pkg/jobdb.ApplicationOutputOutcome
+type Artifact = github.com/colony-2/jobdb/pkg/jobdb.Artifact
+type ArtifactInfo = github.com/colony-2/jobdb/pkg/jobdb.ArtifactInfo
+type ArtifactKey = github.com/colony-2/jobdb/pkg/jobdb.ArtifactKey
+type ArtifactReader = github.com/colony-2/jobdb/pkg/jobdb.ArtifactReader
+type ArtifactRef = github.com/colony-2/jobdb/pkg/jobdb.ArtifactRef
+type ArtifactUpload = github.com/colony-2/jobdb/pkg/jobdb.ArtifactUpload
+func AsDuration func(t time.Duration) *Duration
+func AsWorkSet func(jobWorker JobWorker, taskWorkers ...TaskWorker) (*WorkSet, error)
+func AsWorkSetWithOptions func(jobWorker JobWorker, opts WorkRegistrationOptions, taskWorkers ...TaskWorker) (*WorkSet, error)
+func AssignArtifactKey func(art Artifact, key ArtifactKey)
+type CancelJob = github.com/colony-2/jobdb/pkg/jobdb.CancelJob
+type CancelJobRequest = github.com/colony-2/jobdb/pkg/jobdb.CancelJobRequest
+type Chapter = github.com/colony-2/jobdb/pkg/jobdb.Chapter
+type ChapterBody = github.com/colony-2/jobdb/pkg/jobdb.ChapterBody
+type ChapterMetadata = github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadata
+const ChapterMetadataBool github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "bool"
+const ChapterMetadataDouble github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "double"
+const ChapterMetadataInt github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "int"
+type ChapterMetadataKind = github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind
+const ChapterMetadataList github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "list"
+const ChapterMetadataMap github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "map"
+const ChapterMetadataNull github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "null"
+const ChapterMetadataString github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataKind = "string"
+type ChapterMetadataValue = github.com/colony-2/jobdb/pkg/jobdb.ChapterMetadataValue
+type ChapterOutcome = github.com/colony-2/jobdb/pkg/jobdb.ChapterOutcome
+type ChapterRef = github.com/colony-2/jobdb/pkg/jobdb.ChapterRef
+type CompleteExecutionRequest = github.com/colony-2/jobdb/pkg/jobdb.CompleteExecutionRequest
+type CompleteTaskIfWaitingRequest = github.com/colony-2/jobdb/pkg/jobdb.CompleteTaskIfWaitingRequest
+type Data = encoding/json.RawMessage
+const DefaultListJobsPageSize untyped int = 100
+func DefaultRunPolicy func() RunPolicy
+type Duration = github.com/colony-2/jobdb/pkg/jobdb.Duration
+type Engine interface
+  embedded jobRunApi
+  embedded taskRunApi
+  embedded jobLeaseApi
+  embedded loopWorkerApi
+  embedded jobsListApi
+  embedded schedulesApi
+  method GetArtifact func(tenantId string, key ArtifactKey) (Artifact, error)
+  method RegisterWorkers func(workset *WorkSet) error
+type EngineBuilder struct
+method EngineBuilder.BuildEngine func() (Engine, error)
+method EngineBuilder.PlusWorkers func(jobWorker JobWorker, taskWorkers ...TaskWorker) *EngineBuilder
+method EngineBuilder.PlusWorkersWithOptions func(jobWorker JobWorker, opts WorkRegistrationOptions, taskWorkers ...TaskWorker) *EngineBuilder
+method EngineBuilder.WithAwaitRecycleThreshold func(d time.Duration) *EngineBuilder
+method EngineBuilder.WithLogger func(logger *log/slog.Logger) *EngineBuilder
+method EngineBuilder.WithMaxActive func(maxActive int) *EngineBuilder
+method EngineBuilder.WithRuntime func(runtime WorkflowRuntime) *EngineBuilder
+method EngineBuilder.WithWorkerTenantId func(tenantId string) *EngineBuilder
+type EnvelopedTaskData = github.com/colony-2/jobdb/pkg/jobdb.EnvelopedTaskData
+var ErrArtifactKeyUnavailable error
+var ErrChapterNotFound error
+var ErrConflict error
+var ErrExecutionLeaseLost error
+var ErrExistingJobMismatch error
+var ErrJobCancelled error
+var ErrJobFailed error
+var ErrJobNotComplete error
+var ErrJobNotFound error
+var ErrMissingInputHash error
+var ErrReplayShouldNeverMutate error
+var ErrWorkflowNotDeterministic error
+type ExecutionLease = github.com/colony-2/jobdb/pkg/jobdb.ExecutionLease
+func ExtractTaskDataResult func(data TaskData) (TaskData, error)
+type FieldName = github.com/colony-2/jobdb/pkg/jobdb.FieldName
+type FindTasksWaitingRequest struct
+  field JobType string
+  field TaskType string
+  field TenantIds []string
+  field MetadataFilter MetadataFilter
+  field Limit int
+func GetJobForRun func(ctx context.Context, runtime WorkflowRuntime, req GetJobForRunRequest) (*JobRunnable, error)
+type GetJobForRunRequest struct
+  field JobKey JobKey
+  field JobWorker JobWorker
+  field TaskWorkers []TaskWorker
+  field WorkerID string
+  field LeaseDuration time.Duration
+  field Logger *log/slog.Logger
+  field AwaitThreshold time.Duration
+type GetJobLeaseRequest = github.com/colony-2/jobdb/pkg/jobdb.GetJobLeaseRequest
+func GetJobRun func(ctx context.Context, runtime WorkflowRuntime, req GetJobRunRequest) (GetJobRunResponse, error)
+type GetJobRunRequest = github.com/colony-2/jobdb/pkg/jobdb.GetJobRunRequest
+type GetJobRunResponse = github.com/colony-2/jobdb/pkg/jobdb.GetJobRunResponse
+type InputReference = github.com/colony-2/jobdb/pkg/jobdb.InputReference
+func IsAppError func(err error) bool
+func IsConflict func(err error) bool
+func IsExecutionLeaseLost func(err error) bool
+func IsExistingJobMismatch func(err error) bool
+func IsSystemError func(err error) bool
+type JobAttempt = github.com/colony-2/jobdb/pkg/jobdb.JobAttempt
+type JobAttemptOutcomeChapter = github.com/colony-2/jobdb/pkg/jobdb.JobAttemptOutcomeChapter
+type JobContext interface
+  method AwaitDuration func(waitFor Duration) error
+  method AwaitJobs func(jobIds ...string) error
+  method DoTask func(policy RunPolicy, taskType string, data TaskData) (TaskData, error)
+  method GetJobKey func() JobKey
+  method Logger func() *log/slog.Logger
+type JobData = github.com/colony-2/jobdb/pkg/jobdb.TaskData
+type JobEndEvent struct
+  field JobKey JobKey
+  field AttemptNumber int
+  field Output JobData
+  field Err error
+  field At time.Time
+type JobFailedError = github.com/colony-2/jobdb/pkg/jobdb.JobFailedError
+type JobHandle = github.com/colony-2/jobdb/pkg/jobdb.JobHandle
+type JobInfo = github.com/colony-2/jobdb/pkg/jobdb.JobInfo
+type JobKey = github.com/colony-2/jobdb/pkg/jobdb.JobKey
+const JobPrereqComplete github.com/colony-2/jobdb/pkg/jobdb.JobPrereqCondition = "complete"
+type JobPrereqCondition = github.com/colony-2/jobdb/pkg/jobdb.JobPrereqCondition
+const JobPrereqSuccess github.com/colony-2/jobdb/pkg/jobdb.JobPrereqCondition = "success"
+type JobPrerequisite = github.com/colony-2/jobdb/pkg/jobdb.JobPrerequisite
+const JobRunCompleted JobRunStatus = "COMPLETED"
+const JobRunFailed JobRunStatus = "FAILED"
+type JobRunListener interface
+  method OnJobEnd func(event JobEndEvent)
+  method OnJobStart func(event JobStartEvent)
+  method OnTaskEnd func(event TaskEndEvent)
+  method OnTaskStart func(event TaskStartEvent)
+const JobRunNotLeaseable JobRunStatus = "NOT_LEASEABLE"
+type JobRunOutcome struct
+  field Status JobRunStatus
+  field LeaseAcquired bool
+  field Output JobData
+  field JobError error
+  field JobStatus *JobStatus
+  field NextNeed *string
+  field WaitForJobIDs []string
+  field MissingCapability *string
+type JobRunStatus string
+type JobRunSummary = github.com/colony-2/jobdb/pkg/jobdb.JobRunSummary
+const JobRunSuspended JobRunStatus = "SUSPENDED"
+type JobRunnable struct
+method JobRunnable.JobKey func() JobKey
+method JobRunnable.LeaseAcquired func() bool
+method JobRunnable.Outcome func() (JobRunOutcome, bool)
+method JobRunnable.Run func(listener JobRunListener) (JobRunOutcome, error)
+type JobStart = github.com/colony-2/jobdb/pkg/jobdb.JobStart
+type JobStartChapter = github.com/colony-2/jobdb/pkg/jobdb.JobStartChapter
+type JobStartEvent struct
+  field JobKey JobKey
+  field AttemptNumber int
+  field Input JobData
+  field At time.Time
+type JobStatus = github.com/colony-2/jobdb/pkg/jobdb.JobStatus
+const JobStatusActive github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "ACTIVE"
+const JobStatusAwaitingFuture github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "AWAITING_FUTURE"
+const JobStatusCancelled github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "CANCELLED"
+const JobStatusCompleted github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "COMPLETED"
+const JobStatusCrashConcern github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "CRASH_CONCERN"
+const JobStatusExpired github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "EXPIRED"
+const JobStatusPendingJobs github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "PENDING_JOBS"
+const JobStatusReady github.com/colony-2/jobdb/pkg/jobdb.JobStatus = "READY"
+type JobStore = github.com/colony-2/jobdb/pkg/jobdb.JobStore
+type JobSummary = github.com/colony-2/jobdb/pkg/jobdb.JobSummary
+type JobTaskFilter = github.com/colony-2/jobdb/pkg/jobdb.JobTaskFilter
+func JobTypeFromNextNeed func(nextNeed string) string
+type JobWorker interface
+  method Name func() string
+  method Run func(JobContext, JobData) (JobData, error)
+type ListChaptersRequest = github.com/colony-2/jobdb/pkg/jobdb.ListChaptersRequest
+type ListJobsRequest = github.com/colony-2/jobdb/pkg/jobdb.ListJobsRequest
+type ListJobsResponse = github.com/colony-2/jobdb/pkg/jobdb.ListJobsResponse
+type ListScheduleRunsRequest = github.com/colony-2/jobdb/pkg/jobdb.ListScheduleRunsRequest
+type ListScheduleRunsResponse = github.com/colony-2/jobdb/pkg/jobdb.ListScheduleRunsResponse
+type ListSchedulesRequest = github.com/colony-2/jobdb/pkg/jobdb.ListSchedulesRequest
+type ListSchedulesResponse = github.com/colony-2/jobdb/pkg/jobdb.ListSchedulesResponse
+const MaxListJobsPageSize untyped int = 200
+func Metadata func() MetadataFilter
+type MetadataFilter = github.com/colony-2/jobdb/pkg/jobdb.MetadataFilter
+type MetadataPredicate = github.com/colony-2/jobdb/pkg/jobdb.MetadataPredicate
+func MetadataPredicates func(filter MetadataFilter) ([]MetadataPredicate, error)
+func NewArtifact func(name string, opener func() (io.ReadCloser, int64, error), cleanup func() error) Artifact
+func NewArtifactFromBytes func(name string, data []byte) Artifact
+func NewArtifactFromFile func(name string, filePath string) (Artifact, error)
+func NewArtifactFromFileNoCleanup func(name string, filePath string) (Artifact, error)
+func NewArtifactFromReader func(name string, r io.Reader, size int64) Artifact
+func NewEngineBuilder func() *EngineBuilder
+func NewSystemError func(payload SystemErrorPayload) error
+func NewTaskContext func(jobKey JobKey, step int64, logger *log/slog.Logger, await func(time.Time) error, awaitJobs func(...string) error) TaskContext
+func NewTaskData func(data any, artifacts ...Artifact) (TaskData, error)
+func NewTaskDataOrPanic func(data any, artifacts ...Artifact) TaskData
+func NewTimeoutError func(kind string, after time.Duration, scope string, inputRef *InputReference, retryable bool) error
+type NonRetryableError = github.com/colony-2/jobdb/pkg/jobdb.NonRetryableError
+type PollWorkRequest = github.com/colony-2/jobdb/pkg/jobdb.PollWorkRequest
+type PutChapterRequest = github.com/colony-2/jobdb/pkg/jobdb.PutChapterRequest
+const ReplayCacheMissAwaitJobsPending ReplayCacheMissReason = "await_jobs_pending"
+const ReplayCacheMissAwaitNotReady ReplayCacheMissReason = "await_not_ready"
+type ReplayCacheMissError struct
+  field JobKey JobKey
+  field TaskType string
+  field Ordinal int64
+  field Attempt int
+  field Reason ReplayCacheMissReason
+method ReplayCacheMissError.Error func() string
+const ReplayCacheMissJobResultMissing ReplayCacheMissReason = "job_result_missing"
+type ReplayCacheMissReason string
+const ReplayCacheMissTaskResultMissing ReplayCacheMissReason = "task_result_missing"
+type ReplayObserver interface
+  method OnJobEnd func(event JobEndEvent)
+  method OnJobStart func(event JobStartEvent)
+  method OnTaskEnd func(event TaskEndEvent)
+  method OnTaskStart func(event TaskStartEvent)
+type ReplayRunRequest struct
+  field JobKey JobKey
+  field Observer ReplayObserver
+  field JobWorker JobWorker
+type RescheduleExecutionRequest = github.com/colony-2/jobdb/pkg/jobdb.RescheduleExecutionRequest
+type RestartExtraChapter = github.com/colony-2/jobdb/pkg/jobdb.RestartExtraChapter
+type RetryPolicy = github.com/colony-2/jobdb/pkg/jobdb.RetryPolicy
+type RunPolicy = github.com/colony-2/jobdb/pkg/jobdb.RunPolicy
+type RuntimeBuildOptions struct
+  field Logger *log/slog.Logger
+  field MaxActive int
+  field AwaitRecycleThreshold time.Duration
+  field PollTenantId string
+type ScheduleFailurePolicy = github.com/colony-2/jobdb/pkg/jobdb.ScheduleFailurePolicy
+type ScheduleInfo = github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo
+type ScheduleKey = github.com/colony-2/jobdb/pkg/jobdb.ScheduleKey
+type ScheduleMutationRequest = github.com/colony-2/jobdb/pkg/jobdb.ScheduleMutationRequest
+type ScheduleOverlapPolicy = github.com/colony-2/jobdb/pkg/jobdb.ScheduleOverlapPolicy
+type ScheduleRunSummary = github.com/colony-2/jobdb/pkg/jobdb.ScheduleRunSummary
+type ScheduleSpec = github.com/colony-2/jobdb/pkg/jobdb.ScheduleSpec
+type ScheduleState = github.com/colony-2/jobdb/pkg/jobdb.ScheduleState
+type ScheduleTarget = github.com/colony-2/jobdb/pkg/jobdb.ScheduleTarget
+type ScheduleTrigger = github.com/colony-2/jobdb/pkg/jobdb.ScheduleTrigger
+type ScheduleTriggerKind = github.com/colony-2/jobdb/pkg/jobdb.ScheduleTriggerKind
+func SetTaskInputStorageEnabled func(enabled bool)
+type SimpleTaskData = github.com/colony-2/jobdb/pkg/jobdb.SimpleTaskData
+type StoredArtifact = github.com/colony-2/jobdb/pkg/jobdb.StoredArtifact
+type SubmitJob = github.com/colony-2/jobdb/pkg/jobdb.SubmitJob
+type SubmitJobRequest = github.com/colony-2/jobdb/pkg/jobdb.SubmitJobRequest
+type SubmitRestartJob = github.com/colony-2/jobdb/pkg/jobdb.SubmitRestartJob
+type SubmitRestartJobRequest = github.com/colony-2/jobdb/pkg/jobdb.SubmitRestartJobRequest
+type SystemError = github.com/colony-2/jobdb/pkg/jobdb.SystemError
+type SystemErrorOutcome = github.com/colony-2/jobdb/pkg/jobdb.SystemErrorOutcome
+type SystemErrorPayload = github.com/colony-2/jobdb/pkg/jobdb.SystemErrorPayload
+type TaskAttempt = github.com/colony-2/jobdb/pkg/jobdb.TaskAttempt
+type TaskAttemptOutcomeChapter = github.com/colony-2/jobdb/pkg/jobdb.TaskAttemptOutcomeChapter
+const TaskAttemptStateFailed untyped string = "FAILED"
+const TaskAttemptStateLeased untyped string = "LEASED"
+const TaskAttemptStateReady untyped string = "READY"
+const TaskAttemptStateRunning untyped string = "RUNNING"
+const TaskAttemptStateSucceeded untyped string = "SUCCEEDED"
+const TaskAttemptStateWaiting untyped string = "WAITING"
+type TaskCompletion struct
+  field JobKey JobKey
+  field Step int64
+  field Error error
+type TaskContext struct
+  field JobKey JobKey
+  field Step int64
+  field Logger *log/slog.Logger
+method TaskContext.AwaitDuration func(waitFor Duration) error
+method TaskContext.AwaitJobs func(jobIds ...string) error
+type TaskData = github.com/colony-2/jobdb/pkg/jobdb.TaskData
+type TaskDeterminismMeta struct
+  field Ordinal int64 `json:"ordinal"`
+  field TaskType string `json:"task_type"`
+  field WorkerID string `json:"worker_id,omitempty"`
+  field CreatedAt time.Time `json:"created_at,omitempty"`
+  field Attempt int `json:"attempt,omitempty"`
+  field MaxAttempts int `json:"max_attempts,omitempty"`
+  field NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+  field BackoffMillis int64 `json:"backoff_ms,omitempty"`
+  field Retryable *bool `json:"retryable,omitempty"`
+  field InputHash string `json:"input_hash,omitempty"`
+  field InputRef *InputReference `json:"input_ref,omitempty"`
+  field RunPolicy *RunPolicy `json:"run_policy,omitempty"`
+  field InputPayload encoding/json.RawMessage `json:"input_payload,omitempty"`
+  field Version int `json:"version,omitempty"`
+type TaskEndEvent struct
+  field JobKey JobKey
+  field TaskType string
+  field Ordinal int64
+  field AttemptNumber int
+  field Output TaskData
+  field Err error
+  field At time.Time
+type TaskError = github.com/colony-2/jobdb/pkg/jobdb.TaskError
+const TaskErrorKindApp untyped string = "APP"
+const TaskErrorKindSystem untyped string = "SYSTEM"
+const TaskErrorKindTimeout untyped string = "TIMEOUT"
+type TaskHandle interface
+  method CreatedAt func() time.Time
+  method Data func() (TaskData, error)
+  method Finish func(ctx context.Context, taskData TaskData) error
+  method JobKey func() JobKey
+  method Metadata func() encoding/json.RawMessage
+  method TaskOrdinalToComplete func() int64
+  method TaskType func() string
+type TaskIO = github.com/colony-2/jobdb/pkg/jobdb.TaskIO
+type TaskInputMismatchError struct
+  field TaskType string
+  field Ordinal int64
+  field CachedInputHash string
+  field ComputedInputHash string
+  field CachedInput encoding/json.RawMessage
+  field CachedOutput TaskData
+  field CachedOutputErr error
+  field Meta TaskDeterminismMeta
+method TaskInputMismatchError.CachedInputPayload func() encoding/json.RawMessage
+method TaskInputMismatchError.CachedTaskData func() TaskData
+method TaskInputMismatchError.CachedTaskDataErr func() error
+method TaskInputMismatchError.ChapterMeta func() TaskDeterminismMeta
+method TaskInputMismatchError.Error func() string
+method TaskInputMismatchError.Unwrap func() error
+func TaskInputStorageEnabled func() bool
+type TaskOutcome = github.com/colony-2/jobdb/pkg/jobdb.TaskOutcome
+const TaskOutcomeStatusFailed untyped string = "FAILED"
+const TaskOutcomeStatusSucceeded untyped string = "SUCCEEDED"
+type TaskRun = github.com/colony-2/jobdb/pkg/jobdb.TaskRun
+type TaskRuntime = github.com/colony-2/jobdb/pkg/jobdb.TaskRuntime
+type TaskStartEvent struct
+  field JobKey JobKey
+  field TaskType string
+  field Ordinal int64
+  field AttemptNumber int
+  field Input TaskData
+  field At time.Time
+type TaskWorker interface
+  method Name func() string
+  method Run func(context TaskContext, input TaskData) (TaskData, error)
+type TimeoutError = github.com/colony-2/jobdb/pkg/jobdb.TimeoutError
+type TimeoutOutcome = github.com/colony-2/jobdb/pkg/jobdb.TimeoutOutcome
+type TimeoutPayload = github.com/colony-2/jobdb/pkg/jobdb.TimeoutPayload
+const TimeoutScopeInvocation untyped string = "invocation"
+const TimeoutScopeTotal untyped string = "total"
+type TriggerScheduleRequest = github.com/colony-2/jobdb/pkg/jobdb.TriggerScheduleRequest
+func UnexpectedChapter func(err error) (TaskInputMismatchError, bool)
+type UpsertScheduleRequest = github.com/colony-2/jobdb/pkg/jobdb.UpsertScheduleRequest
+func WaitForJobToComplete func(ctx context.Context, timeout time.Duration, jobKey JobKey, engine Engine) error
+type WorkRegistrationOptions struct
+  field MetadataFilter MetadataFilter
+type WorkSet struct
+  field JobWorker JobWorker
+  field TaskWorkers map[string]TaskWorker
+  field Options WorkRegistrationOptions
+type Worker interface
+type WorkflowRuntime = github.com/colony-2/jobdb/pkg/jobdb.WorkflowRuntime
+
 package github.com/colony-2/jobdb/pkg/jobdb/runtime/direct
-type EmbeddedEngine struct
-  embedded Engine github.com/colony-2/jobdb/pkg/jobdb.Engine
-method EmbeddedEngine.Shutdown func()
 type EmbeddedRuntime struct
   field Runtime *Runtime
 method EmbeddedRuntime.Shutdown func()
 func New func(db *gorm.io/gorm.DB, strataClient *github.com/colony-2/strata-go/pkg/client.Client) *Runtime
 func NewFromConfig func(postgresDSN string, strataBaseURL string, strataAPIKey string) (*Runtime, error)
 type Runtime = github.com/colony-2/jobdb/pkg/jobdb/runtime/direct/internal/directimpl.Runtime
-func StartEmbeddedEngine func(ctx context.Context, job github.com/colony-2/jobdb/pkg/jobdb.JobWorker, tasks ...github.com/colony-2/jobdb/pkg/jobdb.TaskWorker) (*EmbeddedEngine, error)
 func StartEmbeddedRuntime func(ctx context.Context) (*EmbeddedRuntime, error)
 
 package github.com/colony-2/jobdb/pkg/jobdb/runtime/remote
@@ -848,9 +1009,6 @@ type Config struct
   field BlobDir string
   field Logger *log/slog.Logger
   field WorkerID string
-type EmbeddedEngine struct
-  embedded Engine github.com/colony-2/jobdb/pkg/jobdb.Engine
-method EmbeddedEngine.Shutdown func()
 type EmbeddedRuntime struct
   field Runtime *Runtime
 method EmbeddedRuntime.Shutdown func()
@@ -883,7 +1041,6 @@ method Runtime.SubmitJob func(ctx context.Context, req github.com/colony-2/jobdb
 method Runtime.SubmitRestartJob func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.SubmitRestartJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
 method Runtime.TriggerSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.TriggerScheduleRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
 method Runtime.UpsertSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.UpsertScheduleRequest) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
-func StartEmbeddedEngine func(ctx context.Context, job github.com/colony-2/jobdb/pkg/jobdb.JobWorker, tasks ...github.com/colony-2/jobdb/pkg/jobdb.TaskWorker) (*EmbeddedEngine, error)
 func StartEmbeddedRuntime func(ctx context.Context) (*EmbeddedRuntime, error)
 func WithLogger func(logger *log/slog.Logger) Option
 func WithWorkerID func(workerID string) Option

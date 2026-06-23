@@ -231,8 +231,6 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req jobdb.CompleteT
 	return nil
 }
 
-var _ jobdb.TaskHandle = &taskHandleImpl{}
-
 func chapterToTaskData(chapter story.Chapter, jobKey jobdb.JobKey) (jobdb.TaskData, error) {
 	artifacts := make([]jobdb.Artifact, 0, len(chapter.Artifacts()))
 	for _, a := range chapter.Artifacts() {

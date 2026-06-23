@@ -60,6 +60,7 @@ import (
     "log"
 
     "github.com/colony-2/jobdb/pkg/jobdb"
+    "github.com/colony-2/jobdb/pkg/workflow"
     toyruntime "github.com/colony-2/jobdb/pkg/jobdb/runtime/toy"
 )
 
@@ -68,7 +69,7 @@ type DataProcessingJob struct{}
 
 func (j DataProcessingJob) Name() string { return "data_processing" }
 
-func (j DataProcessingJob) Run(ctx jobdb.JobContext, input jobdb.JobData) (jobdb.JobData, error) {
+func (j DataProcessingJob) Run(ctx workflow.JobContext, input jobdb.JobData) (jobdb.JobData, error) {
     // Execute tasks in sequence
     result, err := ctx.DoTask(jobdb.DefaultRunPolicy(), "validate", input)
     if err != nil {
@@ -88,7 +89,7 @@ type ValidateTask struct{}
 
 func (t ValidateTask) Name() string { return "validate" }
 
-func (t ValidateTask) Run(ctx jobdb.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
+func (t ValidateTask) Run(ctx workflow.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
     // Your validation logic here
     return input, nil
 }
@@ -97,7 +98,7 @@ type TransformTask struct{}
 
 func (t TransformTask) Name() string { return "transform" }
 
-func (t TransformTask) Run(ctx jobdb.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
+func (t TransformTask) Run(ctx workflow.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
     // Your transformation logic here
     return input, nil
 }
@@ -107,7 +108,7 @@ func main() {
     runtime := toyruntime.New()
 
     // Build the engine
-    engine, err := jobdb.NewEngineBuilder().
+    engine, err := workflow.NewEngineBuilder().
         WithRuntime(runtime).
         WithWorkerTenantId("my-tenant").
         PlusWorkers(DataProcessingJob{}, ValidateTask{}, TransformTask{}).
@@ -141,21 +142,21 @@ func main() {
 - **Jobs** are the top-level workflows that orchestrate tasks. A job worker defines the workflow logic.
 - **Tasks** are individual units of work within a job. Task workers implement specific operations.
 
-Jobs use `JobContext` to execute tasks, wait, and spawn child workflows. Tasks receive `TaskContext` for execution context.
+Jobs use `workflow.JobContext` to execute tasks, wait, and spawn child workflows. Tasks receive `workflow.TaskContext` for execution context.
 
 ### JobWorker Interface
 
 ```go
 type JobWorker interface {
     Name() string
-    Run(JobContext, JobData) (JobData, error)
+    Run(workflow.JobContext, jobdb.JobData) (jobdb.JobData, error)
 }
 ```
 
 Your job worker orchestrates the workflow:
 
 ```go
-func (j MyJob) Run(ctx jobdb.JobContext, input jobdb.JobData) (jobdb.JobData, error) {
+func (j MyJob) Run(ctx workflow.JobContext, input jobdb.JobData) (jobdb.JobData, error) {
     // Execute tasks
     result, err := ctx.DoTask(policy, "task-name", taskInput)
     if err != nil {
@@ -181,14 +182,14 @@ func (j MyJob) Run(ctx jobdb.JobContext, input jobdb.JobData) (jobdb.JobData, er
 ```go
 type TaskWorker interface {
     Name() string
-    Run(TaskContext, TaskData) (TaskData, error)
+    Run(workflow.TaskContext, jobdb.TaskData) (jobdb.TaskData, error)
 }
 ```
 
 Your task worker implements a specific operation:
 
 ```go
-func (t MyTask) Run(ctx jobdb.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
+func (t MyTask) Run(ctx workflow.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
     // Access job context
     ctx.Logger.Info("processing task", "job", ctx.JobKey, "step", ctx.Step)
 
@@ -221,7 +222,7 @@ data, err := jobdb.NewTaskData(payload, artifact1, artifact2)
 ### Reading TaskData
 
 ```go
-func (t MyTask) Run(ctx jobdb.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
+func (t MyTask) Run(ctx workflow.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
     // Get raw JSON data
     rawData, err := input.GetData()
     if err != nil {
@@ -306,7 +307,7 @@ hash, err := artifact.Sha256(ctx)
 ### Artifacts in Tasks
 
 ```go
-func (t ProcessFileTask) Run(ctx jobdb.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
+func (t ProcessFileTask) Run(ctx workflow.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
     artifacts, err := input.GetArtifacts()
     if err != nil {
         return nil, err
@@ -380,7 +381,7 @@ result, err := ctx.DoTask(jobdb.DefaultRunPolicy(), "my-task", input)
 Regular errors returned from your workers are treated as application errors and will trigger retries according to the retry policy:
 
 ```go
-func (t MyTask) Run(ctx jobdb.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
+func (t MyTask) Run(ctx workflow.TaskContext, input jobdb.TaskData) (jobdb.TaskData, error) {
     if err := validateInput(input); err != nil {
         return nil, fmt.Errorf("validation failed: %w", err)
     }
@@ -441,7 +442,7 @@ if jobdb.IsSystemError(err) {
 Wait for previously submitted jobs before continuing:
 
 ```go
-func (j ParentJob) Run(ctx jobdb.JobContext, input jobdb.JobData) (jobdb.JobData, error) {
+func (j ParentJob) Run(ctx workflow.JobContext, input jobdb.JobData) (jobdb.JobData, error) {
     if err := ctx.AwaitJobs(childJobID); err != nil {
         return nil, err
     }
@@ -595,7 +596,7 @@ for _, handle := range handles {
 ```go
 runtime := toyruntime.New()
 
-engine, err := jobdb.NewEngineBuilder().
+engine, err := workflow.NewEngineBuilder().
     WithRuntime(runtime).                                  // Required
     WithWorkerTenantId("tenant-1").                        // Required when running workers
     WithMaxActive(10).                                      // Concurrent task limit
@@ -613,7 +614,7 @@ engine, err := jobdb.NewEngineBuilder().
 Workers can be registered during engine construction:
 
 ```go
-builder := jobdb.NewEngineBuilder().
+builder := workflow.NewEngineBuilder().
     WithRuntime(runtime).
     WithWorkerTenantId("tenant-1")
 
@@ -642,7 +643,7 @@ Workers can also be registered after the engine has started:
 go engine.Run(ctx)
 
 // Create a workset
-workset, err := jobdb.AsWorkSet(
+workset, err := workflow.AsWorkSet(
     NewJobWorker{},
     NewTask1{},
     NewTask2{},

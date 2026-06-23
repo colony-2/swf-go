@@ -4,27 +4,39 @@
 
 **Current reference** | Author: Codex | Updated: 2026-06-23
 
-This document defines which importable packages are intentionally public before
-the protobuf storage migration. The API snapshot should track only packages
+This document defines which importable packages are intentionally public after
+the `jobdb` / `workflow` split. The API snapshot should track only packages
 listed here as supported public API.
 
 ## Supported Public Packages
 
 ### `github.com/colony-2/jobdb/pkg/jobdb`
 
-Primary application SDK and engine API. This package is public and should stay
-source-compatible through the protobuf storage migration.
+Runtime Go API and REST-compatible data model. This package is public, but no
+longer contains the worker SDK or engine builder.
 
-This includes task/job data APIs, artifact APIs, engine construction, job
-lifecycle APIs, replay/job-run inspection APIs, list-jobs APIs, first-class
-schedule APIs, error types, and the `WorkflowRuntime` interface currently used
-by runtime adapters and advanced consumers.
+This includes task/job data APIs, artifact APIs, runtime request/response
+types, job lifecycle APIs, job-run inspection APIs, list-jobs APIs, first-class
+schedule APIs, error types, and the `WorkflowRuntime` interface used by runtime
+adapters and advanced consumers.
 
 The schedule surface includes `UpsertSchedule`, `GetSchedule`,
 `ListSchedules`, `PauseSchedule`, `ResumeSchedule`, `ArchiveSchedule`,
 `TriggerSchedule`, `ListScheduleRuns`, and their request/response structs.
 `ScheduleTarget` is intentionally job-start-like: it carries target job type,
 input `TaskData` including artifacts, run policy, and app metadata.
+
+### `github.com/colony-2/jobdb/pkg/workflow`
+
+Higher-level workflow SDK built on top of `pkg/jobdb`. This package owns the
+worker-facing API and engine orchestration surface.
+
+This includes `Engine`, `EngineBuilder`, `JobWorker`, `TaskWorker`,
+`JobContext`, `TaskContext`, worker loops, replay execution, task discovery,
+run-if-leaseable helpers, and worker-level determinism errors.
+
+This package may alias stable lower-level `jobdb` data types for ergonomics,
+but moved worker symbols are not re-exported from `pkg/jobdb`.
 
 ### `github.com/colony-2/jobdb/pkg/jobdb/runtime/remote`
 
@@ -68,6 +80,11 @@ methods are runtime-adapter API, not application workflow API.
 Internal implementation and test support. These packages are not part of the
 public API snapshot.
 
+### `github.com/colony-2/jobdb/pkg/internal/...`
+
+Shared implementation and test support used by multiple top-level packages.
+These packages are not part of the public API snapshot.
+
 ### `github.com/colony-2/jobdb/pkg/jobdb/runtime/*/internal/...`
 
 Runtime implementation details. These packages are not part of the public API
@@ -79,7 +96,7 @@ snapshot.
 
 This package was test infrastructure for embedded Postgres/Strata setup. It is
 not used by c2j and is not intended for downstream runtime construction. It has
-been moved under `pkg/jobdb/internal/directtestsupport`.
+been moved under `pkg/internal/directtestsupport`.
 
 ## API Snapshot Packages
 
@@ -87,6 +104,7 @@ The API snapshot should include:
 
 ```text
 github.com/colony-2/jobdb/pkg/jobdb
+github.com/colony-2/jobdb/pkg/workflow
 github.com/colony-2/jobdb/pkg/jobdb/runtime/direct
 github.com/colony-2/jobdb/pkg/jobdb/runtime/remote
 github.com/colony-2/jobdb/pkg/jobdb/runtime/sqlite

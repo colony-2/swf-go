@@ -5,8 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/colony-2/jobdb/pkg/internal/runtimecodec"
 	"github.com/colony-2/jobdb/pkg/jobdb"
-	"github.com/colony-2/jobdb/pkg/jobdb/internal/runtimecodec"
 	remoteruntime "github.com/colony-2/jobdb/pkg/jobdb/runtime/remote"
 )
 

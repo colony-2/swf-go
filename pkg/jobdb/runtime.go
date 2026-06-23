@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"time"
 )
 
@@ -42,15 +41,6 @@ type WorkflowRuntime interface {
 
 	// Artifact access
 	OpenArtifact(ctx context.Context, ref ArtifactRef) (ArtifactReader, error)
-}
-
-// RuntimeBuildOptions configures the shared worker engine built on top of a
-// WorkflowRuntime.
-type RuntimeBuildOptions struct {
-	Logger                *slog.Logger
-	MaxActive             int
-	AwaitRecycleThreshold time.Duration
-	PollTenantId          string
 }
 
 // JobHandle identifies a job owned by a runtime implementation.
