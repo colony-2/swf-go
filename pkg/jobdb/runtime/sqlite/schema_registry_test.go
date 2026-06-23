@@ -53,6 +53,13 @@ func TestSchemaRegistryLifecycle(t *testing.T) {
 	if len(list.Schemas) != 0 {
 		t.Fatalf("active schemas after archive = %d, want 0", len(list.Schemas))
 	}
+	_, err = embedded.Runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
+		TenantId: "tenant-schema",
+		Schema:   []byte(`{"type":"not-a-real-type"}`),
+	})
+	if !errors.Is(err, jobdb.ErrJobSchemaValidation) {
+		t.Fatalf("register invalid schema error = %v, want ErrJobSchemaValidation", err)
+	}
 }
 
 func TestSchemaRegistryMissing(t *testing.T) {

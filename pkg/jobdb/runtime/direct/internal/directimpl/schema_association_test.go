@@ -148,6 +148,22 @@ func TestSubmitJobSchemaAssociation(t *testing.T) {
 	}
 }
 
+func TestRegisterJobSchemaRejectsInvalidSchema(t *testing.T) {
+	rt, shutdown := newEmbeddedDirectRuntimeForTest(t)
+	defer shutdown()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, err := rt.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
+		TenantId: "tenant-schema",
+		Schema:   []byte(`{"type":"not-a-real-type"}`),
+	})
+	if !errors.Is(err, jobdb.ErrJobSchemaValidation) {
+		t.Fatalf("register invalid schema error = %v, want ErrJobSchemaValidation", err)
+	}
+}
+
 func chapterValidationSchemaForTest() []byte {
 	return []byte(`{
 		"type":"object",

@@ -489,6 +489,14 @@ func TestRemoteRuntimeSchemaRegistryRoundTrip(t *testing.T) {
 	if !errors.Is(err, jobdb.ErrJobSchemaNotFound) {
 		t.Fatalf("expected schema not found, got %v", err)
 	}
+
+	_, err = runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
+		TenantId: "tenant-schema-remote",
+		Schema:   []byte(`{"type":"not-a-real-type"}`),
+	})
+	if !errors.Is(err, jobdb.ErrJobSchemaValidation) {
+		t.Fatalf("register invalid schema error = %v, want ErrJobSchemaValidation", err)
+	}
 }
 
 func TestRemoteRuntimeSchemaValidationErrors(t *testing.T) {

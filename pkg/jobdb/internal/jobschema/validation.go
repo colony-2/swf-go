@@ -63,6 +63,13 @@ func Prime(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobS
 	return err
 }
 
+func ValidateSchemaDocument(schemaHash string, raw json.RawMessage) error {
+	if _, err := compileSchema(schemaHash, raw); err != nil {
+		return fmt.Errorf("%w: invalid schema %s: %v", jobdb.ErrJobSchemaValidation, schemaHash, err)
+	}
+	return nil
+}
+
 func (c *validatorCache) schema(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey) (*jsonschema.Schema, error) {
 	c.mu.RLock()
 	schema := c.schemas[key]

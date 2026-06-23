@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/colony-2/jobdb/pkg/jobdb"
+	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobschema"
 )
 
 var _ jobdb.JobSchemaRegistry = (*Runtime)(nil)
@@ -50,6 +51,9 @@ func (r *Runtime) RegisterJobSchema(ctx context.Context, req jobdb.RegisterJobSc
 	}
 	hash, canonical, err := jobdb.JobSchemaHash(req.Schema)
 	if err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	if err := jobschema.ValidateSchemaDocument(hash, canonical); err != nil {
 		return jobdb.JobSchemaInfo{}, err
 	}
 	key := jobdb.JobSchemaKey{TenantId: req.TenantId, SchemaHash: hash}

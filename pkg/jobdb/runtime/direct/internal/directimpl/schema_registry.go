@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/colony-2/jobdb/pkg/jobdb"
+	"github.com/colony-2/jobdb/pkg/jobdb/internal/jobschema"
 )
 
 const jobSchemaSQL = `
@@ -89,6 +90,9 @@ func (r *Runtime) RegisterJobSchema(ctx context.Context, req jobdb.RegisterJobSc
 	}
 	hash, canonical, err := jobdb.JobSchemaHash(req.Schema)
 	if err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	if err := jobschema.ValidateSchemaDocument(hash, canonical); err != nil {
 		return jobdb.JobSchemaInfo{}, err
 	}
 	now := time.Now().UTC()
