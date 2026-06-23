@@ -13,6 +13,9 @@ var (
 	ErrExecutionLeaseLost       = errors.New("execution lease lost")
 	ErrConflict                 = errors.New("workflow state conflict")
 	ErrExistingJobMismatch      = errors.New("existing job does not match request")
+	ErrJobSchemaNotFound        = errors.New("job schema not found")
+	ErrJobSchemaArchived        = errors.New("job schema is archived")
+	ErrJobSchemaValidation      = errors.New("job schema validation failed")
 )
 
 type existingJobMismatchError struct {
@@ -150,4 +153,22 @@ func IsConflict(err error) bool {
 // already exists with durable state inconsistent with the current request.
 func IsExistingJobMismatch(err error) bool {
 	return errors.Is(err, ErrExistingJobMismatch)
+}
+
+// IsJobSchemaNotFound reports whether err represents an unknown tenant-local
+// job schema hash.
+func IsJobSchemaNotFound(err error) bool {
+	return errors.Is(err, ErrJobSchemaNotFound)
+}
+
+// IsJobSchemaArchived reports whether err represents an attempt to create a new
+// job using an archived schema.
+func IsJobSchemaArchived(err error) bool {
+	return errors.Is(err, ErrJobSchemaArchived)
+}
+
+// IsJobSchemaValidation reports whether err represents a schema validation
+// failure for a job or chapter document.
+func IsJobSchemaValidation(err error) bool {
+	return errors.Is(err, ErrJobSchemaValidation)
 }

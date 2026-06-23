@@ -24,6 +24,7 @@ type JobSummary struct {
 	ArchivedAt        *time.Time
 	Payload           json.RawMessage
 	Metadata          json.RawMessage
+	SchemaHash        string
 	TaskWaitInput     *int64
 	TaskWaitOutput    *int64
 	TaskWaitInputHash *string

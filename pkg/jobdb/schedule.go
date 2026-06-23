@@ -178,7 +178,8 @@ type ScheduleFailureHistory struct {
 }
 
 type RuntimeJobMetadata struct {
-	Schedule *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
+	Schedule   *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
+	SchemaHash string                      `json:"schemaHash,omitempty"`
 }
 
 type JobMetadataEnvelope struct {
@@ -388,7 +389,8 @@ func storedInternalMetadataKnown(raw json.RawMessage) bool {
 		return false
 	}
 	_, hasSchedule := internal["schedule"]
-	return hasSchedule
+	_, hasSchemaHash := internal["schemaHash"]
+	return hasSchedule || hasSchemaHash
 }
 
 func MergeScheduleOccurrenceMetadata(appMetadata json.RawMessage, occurrence ScheduleOccurrenceMetadata, manual bool) (json.RawMessage, error) {
@@ -419,7 +421,7 @@ func BuildJobMetadataEnvelope(appMetadata json.RawMessage, internal RuntimeJobMe
 }
 
 func runtimeJobMetadataEmpty(meta RuntimeJobMetadata) bool {
-	return meta.Schedule == nil
+	return meta.Schedule == nil && strings.TrimSpace(meta.SchemaHash) == ""
 }
 
 func ExtractScheduleOccurrenceMetadata(raw json.RawMessage) (ScheduleOccurrenceMetadata, bool, error) {

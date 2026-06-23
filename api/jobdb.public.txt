@@ -70,6 +70,7 @@ type CancelJobRequest struct
   field JobKey JobKey
   field Reason string
   field WorkerID string
+func CanonicalJobSchema func(schema encoding/json.RawMessage) (encoding/json.RawMessage, error)
 type Chapter struct
   field Ordinal int64
   field TaskType string
@@ -137,6 +138,9 @@ var ErrJobCancelled error
 var ErrJobFailed error
 var ErrJobNotComplete error
 var ErrJobNotFound error
+var ErrJobSchemaArchived error
+var ErrJobSchemaNotFound error
+var ErrJobSchemaValidation error
 var ErrMissingInputHash error
 var ErrWorkflowNotDeterministic error
 type ExecutionLease interface
@@ -176,6 +180,9 @@ func IsAppError func(err error) bool
 func IsConflict func(err error) bool
 func IsExecutionLeaseLost func(err error) bool
 func IsExistingJobMismatch func(err error) bool
+func IsJobSchemaArchived func(err error) bool
+func IsJobSchemaNotFound func(err error) bool
+func IsJobSchemaValidation func(err error) bool
 func IsSystemError func(err error) bool
 type JobAttempt struct
   field Ordinal int64
@@ -199,6 +206,7 @@ type JobHandle struct
 type JobInfo struct
   field Status JobStatus
   field Data TaskData
+  field SchemaHash string
 type JobKey struct
   field TenantId string `json:"tenantId"`
   field JobId string `json:"jobId"`
@@ -221,6 +229,33 @@ type JobRunSummary struct
   field CreatedAt time.Time
   field ArchivedAt *time.Time
   field Metadata encoding/json.RawMessage
+func JobSchemaHash func(schema encoding/json.RawMessage) (string, encoding/json.RawMessage, error)
+type JobSchemaInfo struct
+  field TenantId string
+  field SchemaHash string
+  field Schema encoding/json.RawMessage
+  field State JobSchemaState
+  field CreatedAt time.Time
+  field ArchivedAt *time.Time
+type JobSchemaKey struct
+  field TenantId string
+  field SchemaHash string
+method JobSchemaKey.Validate func() error
+type JobSchemaListState string
+const JobSchemaListStateActive JobSchemaListState = "ACTIVE"
+const JobSchemaListStateAll JobSchemaListState = "ALL"
+const JobSchemaListStateArchived JobSchemaListState = "ARCHIVED"
+type JobSchemaRegistry interface
+  method ArchiveJobSchema func(ctx context.Context, key JobSchemaKey) (JobSchemaInfo, error)
+  method GetJobSchema func(ctx context.Context, key JobSchemaKey) (JobSchemaInfo, error)
+  method ListJobSchemas func(ctx context.Context, req ListJobSchemasRequest) (ListJobSchemasResponse, error)
+  method RegisterJobSchema func(ctx context.Context, req RegisterJobSchemaRequest) (JobSchemaInfo, error)
+type JobSchemaSelector struct
+  field Hash string
+  field Schema encoding/json.RawMessage
+type JobSchemaState string
+const JobSchemaStateActive JobSchemaState = "ACTIVE"
+const JobSchemaStateArchived JobSchemaState = "ARCHIVED"
 type JobStart struct
   field Ordinal int64
   field WorkerID string
@@ -254,6 +289,7 @@ type JobSummary struct
   field ArchivedAt *time.Time
   field Payload encoding/json.RawMessage
   field Metadata encoding/json.RawMessage
+  field SchemaHash string
   field TaskWaitInput *int64
   field TaskWaitOutput *int64
   field TaskWaitInputHash *string
@@ -266,6 +302,11 @@ type ListChaptersRequest struct
   field JobKey JobKey
   field StartOrdinal int64
   field EndOrdinal *int64
+type ListJobSchemasRequest struct
+  field TenantId string
+  field State JobSchemaListState
+type ListJobSchemasResponse struct
+  field Schemas []JobSchemaInfo
 type ListJobsRequest struct
   field TenantIds []string
   field Statuses []JobStatus
@@ -342,6 +383,9 @@ type PutChapterRequest struct
   field Ref ChapterRef
   field Chapter Chapter
   field ArtifactUploads []ArtifactUpload
+type RegisterJobSchemaRequest struct
+  field TenantId string
+  field Schema encoding/json.RawMessage
 type RescheduleExecutionRequest struct
   field NextNeed string
   field WaitUntil *time.Time
@@ -349,6 +393,7 @@ type RescheduleExecutionRequest struct
   field Payload encoding/json.RawMessage
   field AlternateNeed string
   field AlternateAfter *time.Duration
+func ResolveJobSchemaSelector func(selector *JobSchemaSelector) (hash string, schema encoding/json.RawMessage, hasInline bool, err error)
 type RestartExtraChapter struct
   field Output ApplicationOutputBytes
 type RetryPolicy struct
@@ -363,6 +408,7 @@ type RunPolicy struct
   field TotalTimeout *Duration `yaml:"total_timeout,omitempty"`
 type RuntimeJobMetadata struct
   field Schedule *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
+  field SchemaHash string `json:"schemaHash,omitempty"`
 type ScheduleFailureHistory struct
   field Bits string `json:"bits,omitempty"`
   field WindowSize int `json:"windowSize,omitempty"`
@@ -463,6 +509,7 @@ type SubmitJob struct
   field Data JobData
   field RunPolicy RunPolicy
   field Metadata encoding/json.RawMessage
+  field Schema *JobSchemaSelector
   field AvailableAt *time.Time
   field Prerequisites []JobPrerequisite
 type SubmitJobRequest struct
@@ -475,6 +522,7 @@ type SubmitRestartJob struct
   field JobID string
   field ExtraTaskInput TaskData
   field ExtraTaskOutput TaskData
+  field Schema *JobSchemaSelector
   field Prerequisites []JobPrerequisite
 type SubmitRestartJobRequest struct
   field Job SubmitRestartJob
@@ -594,6 +642,7 @@ type UpsertScheduleRequest struct
   field RequestTime time.Time
   field WorkerID string
 func ValidateApplicationMetadata func(raw encoding/json.RawMessage) error
+func ValidateJobSchemaHash func(hash string) error
 func ValidateScheduleRequest func(req UpsertScheduleRequest) error
 func WithTx func(ctx context.Context, tx *gorm.io/gorm.DB) context.Context
 type WorkflowRuntime interface

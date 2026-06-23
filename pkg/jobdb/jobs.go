@@ -8,23 +8,25 @@ import (
 // SubmitJob defines the parameters for starting a new workflow job.
 // If JobID is provided, it will be used as the job identifier; otherwise, a new unique ID will be generated.
 type SubmitJob struct {
-	TenantId      string            // REQUIRED: Tenant for this job
-	JobType       string            // The type of job to start
-	JobID         string            // Optional job identifier. If empty, a new unique ID will be generated.
-	Data          JobData           // Input data for the job
-	RunPolicy     RunPolicy         // Runtime policy for retries, timeouts, etc.
-	Metadata      json.RawMessage   // Optional metadata persisted with the job
-	AvailableAt   *time.Time        // Optional time before which the job is not leaseable
-	Prerequisites []JobPrerequisite // Optional prerequisites that must complete before this job starts
+	TenantId      string             // REQUIRED: Tenant for this job
+	JobType       string             // The type of job to start
+	JobID         string             // Optional job identifier. If empty, a new unique ID will be generated.
+	Data          JobData            // Input data for the job
+	RunPolicy     RunPolicy          // Runtime policy for retries, timeouts, etc.
+	Metadata      json.RawMessage    // Optional metadata persisted with the job
+	Schema        *JobSchemaSelector // Optional schema used to validate visible chapters
+	AvailableAt   *time.Time         // Optional time before which the job is not leaseable
+	Prerequisites []JobPrerequisite  // Optional prerequisites that must complete before this job starts
 }
 
 type SubmitRestartJob struct {
 	PriorJobKey     JobKey
 	LastStepToKeep  int64
-	JobID           string            // optional override for new job id
-	ExtraTaskInput  TaskData          // optional input used to compute hash for ExtraTaskOutput
-	ExtraTaskOutput TaskData          // optional cached task/job output to append at LastStepToKeep+1
-	Prerequisites   []JobPrerequisite // Optional prerequisites that must complete before this job starts
+	JobID           string             // optional override for new job id
+	ExtraTaskInput  TaskData           // optional input used to compute hash for ExtraTaskOutput
+	ExtraTaskOutput TaskData           // optional cached task/job output to append at LastStepToKeep+1
+	Schema          *JobSchemaSelector // Optional schema used to validate visible chapters
+	Prerequisites   []JobPrerequisite  // Optional prerequisites that must complete before this job starts
 }
 
 // JobPrereqCondition defines how a prerequisite is evaluated.
@@ -60,8 +62,9 @@ const (
 )
 
 type JobInfo struct {
-	Status JobStatus
-	Data   TaskData
+	Status     JobStatus
+	Data       TaskData
+	SchemaHash string
 }
 
 type JobData = TaskData
