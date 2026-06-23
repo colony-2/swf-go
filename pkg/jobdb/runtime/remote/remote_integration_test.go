@@ -405,6 +405,92 @@ func TestRemoteRuntimeSupportsExplicitJobIDs(t *testing.T) {
 	}
 }
 
+func TestRemoteRuntimeSchemaRegistryRoundTrip(t *testing.T) {
+	underlying := toyruntime.New()
+	server := httptest.NewServer(NewServer(underlying))
+	defer server.Close()
+
+	runtime, err := New(server.URL, server.Client())
+	if err != nil {
+		t.Fatalf("new remote runtime: %v", err)
+	}
+
+	ctx := context.Background()
+	schema := json.RawMessage(`{
+		"$schema":"https://json-schema.org/draft/2020-12/schema",
+		"type":"object",
+		"properties":{"kind":{"const":"jobStart"}},
+		"required":["kind"]
+	}`)
+	registered, err := runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
+		TenantId: "tenant-schema-remote",
+		Schema:   schema,
+	})
+	if err != nil {
+		t.Fatalf("register schema: %v", err)
+	}
+	if registered.SchemaHash == "" || registered.State != jobdb.JobSchemaStateActive {
+		t.Fatalf("unexpected registered schema %+v", registered)
+	}
+
+	got, err := runtime.GetJobSchema(ctx, jobdb.JobSchemaKey{
+		TenantId:   "tenant-schema-remote",
+		SchemaHash: registered.SchemaHash,
+	})
+	if err != nil {
+		t.Fatalf("get schema: %v", err)
+	}
+	if got.SchemaHash != registered.SchemaHash || got.State != jobdb.JobSchemaStateActive {
+		t.Fatalf("unexpected loaded schema %+v", got)
+	}
+
+	active, err := runtime.ListJobSchemas(ctx, jobdb.ListJobSchemasRequest{TenantId: "tenant-schema-remote"})
+	if err != nil {
+		t.Fatalf("list active schemas: %v", err)
+	}
+	if len(active.Schemas) != 1 || active.Schemas[0].SchemaHash != registered.SchemaHash {
+		t.Fatalf("unexpected active schema list %+v", active.Schemas)
+	}
+
+	archived, err := runtime.ArchiveJobSchema(ctx, jobdb.JobSchemaKey{
+		TenantId:   "tenant-schema-remote",
+		SchemaHash: registered.SchemaHash,
+	})
+	if err != nil {
+		t.Fatalf("archive schema: %v", err)
+	}
+	if archived.State != jobdb.JobSchemaStateArchived || archived.ArchivedAt == nil {
+		t.Fatalf("unexpected archived schema %+v", archived)
+	}
+
+	active, err = runtime.ListJobSchemas(ctx, jobdb.ListJobSchemasRequest{TenantId: "tenant-schema-remote"})
+	if err != nil {
+		t.Fatalf("list active schemas after archive: %v", err)
+	}
+	if len(active.Schemas) != 0 {
+		t.Fatalf("archived schema included in active list: %+v", active.Schemas)
+	}
+
+	all, err := runtime.ListJobSchemas(ctx, jobdb.ListJobSchemasRequest{
+		TenantId: "tenant-schema-remote",
+		State:    jobdb.JobSchemaListStateAll,
+	})
+	if err != nil {
+		t.Fatalf("list all schemas: %v", err)
+	}
+	if len(all.Schemas) != 1 || all.Schemas[0].State != jobdb.JobSchemaStateArchived {
+		t.Fatalf("unexpected all schema list %+v", all.Schemas)
+	}
+
+	_, err = runtime.GetJobSchema(ctx, jobdb.JobSchemaKey{
+		TenantId:   "tenant-schema-remote",
+		SchemaHash: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+	})
+	if !errors.Is(err, jobdb.ErrJobSchemaNotFound) {
+		t.Fatalf("expected schema not found, got %v", err)
+	}
+}
+
 func waitForRuntimeStatus(t *testing.T, ctx context.Context, runtime jobdb.WorkflowRuntime, jobKey jobdb.JobKey, want jobdb.JobStatus) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)

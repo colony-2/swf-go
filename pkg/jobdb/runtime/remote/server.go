@@ -28,16 +28,18 @@ type leaseRenewalRuntime interface {
 }
 
 type proxyServer struct {
-	runtime  jobdb.WorkflowRuntime
-	leaseOps leaseOperationRuntime
-	tokens   *leaseTokenSigner
+	runtime        jobdb.WorkflowRuntime
+	leaseOps       leaseOperationRuntime
+	schemaRegistry jobdb.JobSchemaRegistry
+	tokens         *leaseTokenSigner
 }
 
 func NewServer(runtime jobdb.WorkflowRuntime) http.Handler {
 	server := &proxyServer{
-		runtime:  runtime,
-		leaseOps: runtimeLeaseOps(runtime),
-		tokens:   newLeaseTokenSigner(),
+		runtime:        runtime,
+		leaseOps:       runtimeLeaseOps(runtime),
+		schemaRegistry: runtimeSchemaRegistry(runtime),
+		tokens:         newLeaseTokenSigner(),
 	}
 	strict := runtimeapi.NewStrictHandlerWithOptions(server, nil, runtimeapi.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
@@ -59,8 +61,14 @@ func NewServer(runtime jobdb.WorkflowRuntime) http.Handler {
 				switch {
 				case errors.Is(err, jobdb.ErrJobNotFound), errors.Is(err, jobdb.ErrChapterNotFound):
 					status = http.StatusNotFound
+				case errors.Is(err, jobdb.ErrJobSchemaNotFound):
+					status = http.StatusNotFound
 				case errors.Is(err, jobdb.ErrExecutionLeaseLost), errors.Is(err, jobdb.ErrConflict):
 					status = http.StatusConflict
+				case errors.Is(err, jobdb.ErrJobSchemaArchived):
+					status = http.StatusConflict
+				case errors.Is(err, jobdb.ErrJobSchemaValidation):
+					status = http.StatusBadRequest
 				}
 			}
 			http.Error(w, err.Error(), status)
@@ -159,6 +167,7 @@ func (s *proxyServer) SubmitJob(ctx context.Context, request runtimeapi.SubmitJo
 			RunPolicy:     runPolicy,
 			Metadata:      metadata,
 			Prerequisites: fromAPIPrerequisites(request.Body.Job.Prerequisites),
+			Schema:        jobSchemaSelectorFromAPI(request.Body.Job.Schema),
 		},
 		RequestTime: derefTime(request.Body.RequestTime),
 		WorkerID:    stringValue(request.Body.WorkerId),
@@ -195,6 +204,7 @@ func (s *proxyServer) PutJob(ctx context.Context, request runtimeapi.PutJobReque
 			RunPolicy:     runPolicy,
 			Metadata:      metadata,
 			Prerequisites: fromAPIPrerequisites(request.Body.Job.Prerequisites),
+			Schema:        jobSchemaSelectorFromAPI(request.Body.Job.Schema),
 		},
 		RequestTime: derefTime(request.Body.RequestTime),
 		WorkerID:    stringValue(request.Body.WorkerId),
@@ -266,6 +276,82 @@ func (s *proxyServer) ListJobs(ctx context.Context, request runtimeapi.ListJobsR
 		out.NextPageToken = stringPtr(resp.NextPageToken)
 	}
 	return runtimeapi.ListJobs200JSONResponse(out), nil
+}
+
+func (s *proxyServer) RegisterJobSchema(ctx context.Context, request runtimeapi.RegisterJobSchemaRequestObject) (runtimeapi.RegisterJobSchemaResponseObject, error) {
+	if request.Body == nil {
+		return nil, badRequest("register job schema body is required")
+	}
+	registry, err := s.requireSchemaRegistry()
+	if err != nil {
+		return nil, err
+	}
+	info, err := registry.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
+		TenantId: request.TenantId,
+		Schema:   cloneRawMessage(request.Body.Schema),
+	})
+	if errors.Is(err, jobdb.ErrConflict) {
+		return runtimeapi.RegisterJobSchema409JSONResponse{
+			Code:    runtimeapi.Conflict,
+			Message: err.Error(),
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.RegisterJobSchema200JSONResponse(jobSchemaInfoToAPI(info)), nil
+}
+
+func (s *proxyServer) GetJobSchema(ctx context.Context, request runtimeapi.GetJobSchemaRequestObject) (runtimeapi.GetJobSchemaResponseObject, error) {
+	registry, err := s.requireSchemaRegistry()
+	if err != nil {
+		return nil, err
+	}
+	info, err := registry.GetJobSchema(ctx, jobdb.JobSchemaKey{
+		TenantId:   request.TenantId,
+		SchemaHash: request.SchemaHash,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.GetJobSchema200JSONResponse(jobSchemaInfoToAPI(info)), nil
+}
+
+func (s *proxyServer) ListJobSchemas(ctx context.Context, request runtimeapi.ListJobSchemasRequestObject) (runtimeapi.ListJobSchemasResponseObject, error) {
+	registry, err := s.requireSchemaRegistry()
+	if err != nil {
+		return nil, err
+	}
+	req := jobdb.ListJobSchemasRequest{TenantId: request.TenantId}
+	if request.Params.State != nil {
+		req.State = jobdb.JobSchemaListState(*request.Params.State)
+	}
+	resp, err := registry.ListJobSchemas(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	out := runtimeapi.ListJobSchemasResponse{
+		Schemas: make([]runtimeapi.JobSchemaInfo, 0, len(resp.Schemas)),
+	}
+	for _, schema := range resp.Schemas {
+		out.Schemas = append(out.Schemas, jobSchemaInfoToAPI(schema))
+	}
+	return runtimeapi.ListJobSchemas200JSONResponse(out), nil
+}
+
+func (s *proxyServer) ArchiveJobSchema(ctx context.Context, request runtimeapi.ArchiveJobSchemaRequestObject) (runtimeapi.ArchiveJobSchemaResponseObject, error) {
+	registry, err := s.requireSchemaRegistry()
+	if err != nil {
+		return nil, err
+	}
+	info, err := registry.ArchiveJobSchema(ctx, jobdb.JobSchemaKey{
+		TenantId:   request.TenantId,
+		SchemaHash: request.SchemaHash,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.ArchiveJobSchema200JSONResponse(jobSchemaInfoToAPI(info)), nil
 }
 
 func (s *proxyServer) UpsertSchedule(ctx context.Context, request runtimeapi.UpsertScheduleRequestObject) (runtimeapi.UpsertScheduleResponseObject, error) {
@@ -448,6 +534,7 @@ func (s *proxyServer) SubmitRestartJob(ctx context.Context, request runtimeapi.S
 		PriorJobKey:    fromAPIJobKey(request.Body.Job.PriorJobKey),
 		LastStepToKeep: request.Body.Job.LastStepToKeep,
 		Prerequisites:  fromAPIPrerequisites(request.Body.Job.Prerequisites),
+		Schema:         jobSchemaSelectorFromAPI(request.Body.Job.Schema),
 	}
 	if job.PriorJobKey.TenantId != request.TenantId {
 		return nil, badRequest("priorJobKey tenantId must match path tenantId")
@@ -486,6 +573,7 @@ func (s *proxyServer) PutRestartJob(ctx context.Context, request runtimeapi.PutR
 		LastStepToKeep: request.Body.Job.LastStepToKeep,
 		JobID:          request.JobId,
 		Prerequisites:  fromAPIPrerequisites(request.Body.Job.Prerequisites),
+		Schema:         jobSchemaSelectorFromAPI(request.Body.Job.Schema),
 	}
 	if job.PriorJobKey.TenantId != request.TenantId {
 		return nil, badRequest("priorJobKey tenantId must match path tenantId")
@@ -810,6 +898,7 @@ func (s *proxyServer) toAPIExecutionLease(lease jobdb.ExecutionLease, requestedD
 		LeaseId:    lease.LeaseID(),
 		LeaseToken: token,
 		Payload:    payload,
+		SchemaHash: schemaHashPtr(leaseSchemaHash(lease)),
 	}, nil
 }
 
@@ -891,11 +980,29 @@ func runtimeLeaseOps(runtime jobdb.WorkflowRuntime) leaseOperationRuntime {
 	return ops
 }
 
+func runtimeSchemaRegistry(runtime jobdb.WorkflowRuntime) jobdb.JobSchemaRegistry {
+	if runtime == nil {
+		return nil
+	}
+	registry, _ := runtime.(jobdb.JobSchemaRegistry)
+	return registry
+}
+
 func (s *proxyServer) requireLeaseOps() (leaseOperationRuntime, error) {
 	if s == nil || s.leaseOps == nil {
 		return nil, errors.New("runtime does not support tokenized lease operations")
 	}
 	return s.leaseOps, nil
+}
+
+func (s *proxyServer) requireSchemaRegistry() (jobdb.JobSchemaRegistry, error) {
+	if s == nil || s.schemaRegistry == nil {
+		return nil, &httpStatusError{
+			status: http.StatusNotImplemented,
+			err:    errors.New("runtime does not support job schema registry operations"),
+		}
+	}
+	return s.schemaRegistry, nil
 }
 
 func (s *proxyServer) validatedLeaseClaims(token string, jobKey jobdb.JobKey, leaseID string) (leaseTokenClaims, error) {

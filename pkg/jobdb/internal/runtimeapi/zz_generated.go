@@ -26,16 +26,19 @@ const (
 
 // Defines values for ErrorCode.
 const (
-	ChapterNotFound          ErrorCode = "chapter_not_found"
-	Conflict                 ErrorCode = "conflict"
-	ExecutionLeaseLost       ErrorCode = "execution_lease_lost"
-	ExistingJobMismatch      ErrorCode = "existing_job_mismatch"
-	Internal                 ErrorCode = "internal"
-	InvalidRequest           ErrorCode = "invalid_request"
-	JobNotComplete           ErrorCode = "job_not_complete"
-	JobNotFound              ErrorCode = "job_not_found"
-	NotFound                 ErrorCode = "not_found"
-	WorkflowNotDeterministic ErrorCode = "workflow_not_deterministic"
+	ChapterNotFound           ErrorCode = "chapter_not_found"
+	Conflict                  ErrorCode = "conflict"
+	ExecutionLeaseLost        ErrorCode = "execution_lease_lost"
+	ExistingJobMismatch       ErrorCode = "existing_job_mismatch"
+	Internal                  ErrorCode = "internal"
+	InvalidRequest            ErrorCode = "invalid_request"
+	JobNotComplete            ErrorCode = "job_not_complete"
+	JobNotFound               ErrorCode = "job_not_found"
+	JobSchemaArchived         ErrorCode = "job_schema_archived"
+	JobSchemaNotFound         ErrorCode = "job_schema_not_found"
+	JobSchemaValidationFailed ErrorCode = "job_schema_validation_failed"
+	NotFound                  ErrorCode = "not_found"
+	WorkflowNotDeterministic  ErrorCode = "workflow_not_deterministic"
 )
 
 // Defines values for JobAttemptOutcomeChapterKind.
@@ -47,6 +50,19 @@ const (
 const (
 	JobPrerequisiteConditionComplete JobPrerequisiteCondition = "complete"
 	JobPrerequisiteConditionSuccess  JobPrerequisiteCondition = "success"
+)
+
+// Defines values for JobSchemaListState.
+const (
+	JobSchemaListStateACTIVE   JobSchemaListState = "ACTIVE"
+	JobSchemaListStateALL      JobSchemaListState = "ALL"
+	JobSchemaListStateARCHIVED JobSchemaListState = "ARCHIVED"
+)
+
+// Defines values for JobSchemaState.
+const (
+	JobSchemaStateACTIVE   JobSchemaState = "ACTIVE"
+	JobSchemaStateARCHIVED JobSchemaState = "ARCHIVED"
 )
 
 // Defines values for JobStartChapterKind.
@@ -269,6 +285,7 @@ type ExecutionLease struct {
 	LeaseId    string           `json:"leaseId"`
 	LeaseToken string           `json:"leaseToken"`
 	Payload    SchedulerPayload `json:"payload"`
+	SchemaHash *JobSchemaHash   `json:"schemaHash,omitempty"`
 }
 
 // GetJobLeaseRequest defines model for GetJobLeaseRequest.
@@ -311,8 +328,9 @@ type JobInfo struct {
 	// Data Terminal task data when materialized. A `null` value should be
 	// treated as a lazily unavailable `TaskData`, for example when the job
 	// has not completed yet.
-	Data   *StoredTaskData `json:"data"`
-	Status JobStatus       `json:"status"`
+	Data       *StoredTaskData `json:"data"`
+	SchemaHash *JobSchemaHash  `json:"schemaHash,omitempty"`
+	Status     JobStatus       `json:"status"`
 }
 
 // JobKey defines model for JobKey.
@@ -329,6 +347,37 @@ type JobPrerequisite struct {
 
 // JobPrerequisiteCondition defines model for JobPrerequisite.Condition.
 type JobPrerequisiteCondition string
+
+// JobSchemaDocument JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+type JobSchemaDocument = json.RawMessage
+
+// JobSchemaHash defines model for JobSchemaHash.
+type JobSchemaHash = string
+
+// JobSchemaInfo defines model for JobSchemaInfo.
+type JobSchemaInfo struct {
+	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
+	CreatedAt  time.Time  `json:"createdAt"`
+
+	// Schema JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+	Schema     JobSchemaDocument `json:"schema"`
+	SchemaHash JobSchemaHash     `json:"schemaHash"`
+	State      JobSchemaState    `json:"state"`
+	TenantId   string            `json:"tenantId"`
+}
+
+// JobSchemaListState defines model for JobSchemaListState.
+type JobSchemaListState string
+
+// JobSchemaSelector defines model for JobSchemaSelector.
+type JobSchemaSelector struct {
+	// Schema JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+	Schema     *JobSchemaDocument `json:"schema,omitempty"`
+	SchemaHash *JobSchemaHash     `json:"schemaHash,omitempty"`
+}
+
+// JobSchemaState defines model for JobSchemaState.
+type JobSchemaState string
 
 // JobStartChapter defines model for JobStartChapter.
 type JobStartChapter struct {
@@ -362,6 +411,7 @@ type JobSummary struct {
 	Metadata          *Metadata         `json:"metadata,omitempty"`
 	NextNeed          *string           `json:"nextNeed,omitempty"`
 	Payload           *SchedulerPayload `json:"payload,omitempty"`
+	SchemaHash        *JobSchemaHash    `json:"schemaHash,omitempty"`
 	Status            JobStatus         `json:"status"`
 	TaskWaitInput     *int64            `json:"taskWaitInput,omitempty"`
 	TaskWaitInputHash *string           `json:"taskWaitInputHash,omitempty"`
@@ -384,6 +434,11 @@ type KeepAliveLeaseResponse struct {
 // ListChaptersResponse defines model for ListChaptersResponse.
 type ListChaptersResponse struct {
 	Chapters []ChapterRecord `json:"chapters"`
+}
+
+// ListJobSchemasResponse defines model for ListJobSchemasResponse.
+type ListJobSchemasResponse struct {
+	Schemas []JobSchemaInfo `json:"schemas"`
 }
 
 // ListJobsRequest defines model for ListJobsRequest.
@@ -540,6 +595,12 @@ type PollWorkRequest struct {
 	WorkerId string `json:"workerId"`
 }
 
+// RegisterJobSchemaRequest defines model for RegisterJobSchemaRequest.
+type RegisterJobSchemaRequest struct {
+	// Schema JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+	Schema JobSchemaDocument `json:"schema"`
+}
+
 // RescheduleExecutionRequest defines model for RescheduleExecutionRequest.
 type RescheduleExecutionRequest struct {
 	// AlternateAfter Duration string.
@@ -689,6 +750,7 @@ type SubmitJob struct {
 	Metadata      *Metadata          `json:"metadata,omitempty"`
 	Prerequisites *[]JobPrerequisite `json:"prerequisites,omitempty"`
 	RunPolicy     *RunPolicy         `json:"runPolicy,omitempty"`
+	Schema        *JobSchemaSelector `json:"schema,omitempty"`
 }
 
 // SubmitJobRequest defines model for SubmitJobRequest.
@@ -705,6 +767,7 @@ type SubmitRestartJob struct {
 	LastStepToKeep  int64              `json:"lastStepToKeep"`
 	Prerequisites   *[]JobPrerequisite `json:"prerequisites,omitempty"`
 	PriorJobKey     JobKey             `json:"priorJobKey"`
+	Schema          *JobSchemaSelector `json:"schema,omitempty"`
 }
 
 // SubmitRestartJobRequest defines model for SubmitRestartJobRequest.
@@ -882,6 +945,11 @@ type RescheduleJobWithLeaseParams struct {
 	XJobDBLeaseToken LeaseTokenHeader `json:"X-JobDB-Lease-Token"`
 }
 
+// ListJobSchemasParams defines parameters for ListJobSchemas.
+type ListJobSchemasParams struct {
+	State *JobSchemaListState `form:"state,omitempty" json:"state,omitempty"`
+}
+
 // PollWorkJSONRequestBody defines body for PollWork for application/json ContentType.
 type PollWorkJSONRequestBody = PollWorkRequest
 
@@ -938,6 +1006,9 @@ type ListScheduleRunsJSONRequestBody = ListScheduleRunsRequest
 
 // TriggerScheduleJSONRequestBody defines body for TriggerSchedule for application/json ContentType.
 type TriggerScheduleJSONRequestBody = TriggerScheduleRequest
+
+// RegisterJobSchemaJSONRequestBody defines body for RegisterJobSchema for application/json ContentType.
+type RegisterJobSchemaJSONRequestBody = RegisterJobSchemaRequest
 
 // AsJobStartChapter returns the union data inside the ChapterBody as a JobStartChapter
 func (t ChapterBody) AsJobStartChapter() (JobStartChapter, error) {
@@ -1661,6 +1732,20 @@ type ClientInterface interface {
 	TriggerScheduleWithBody(ctx context.Context, tenantId TenantId, scheduleId ScheduleId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	TriggerSchedule(ctx context.Context, tenantId TenantId, scheduleId ScheduleId, body TriggerScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListJobSchemas request
+	ListJobSchemas(ctx context.Context, tenantId TenantId, params *ListJobSchemasParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RegisterJobSchemaWithBody request with any body
+	RegisterJobSchemaWithBody(ctx context.Context, tenantId TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	RegisterJobSchema(ctx context.Context, tenantId TenantId, body RegisterJobSchemaJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetJobSchema request
+	GetJobSchema(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ArchiveJobSchema request
+	ArchiveJobSchema(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*http.Response, error)
 }
 
 func (c *Client) PollWorkWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
@@ -2181,6 +2266,66 @@ func (c *Client) TriggerScheduleWithBody(ctx context.Context, tenantId TenantId,
 
 func (c *Client) TriggerSchedule(ctx context.Context, tenantId TenantId, scheduleId ScheduleId, body TriggerScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewTriggerScheduleRequest(c.Server, tenantId, scheduleId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListJobSchemas(ctx context.Context, tenantId TenantId, params *ListJobSchemasParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListJobSchemasRequest(c.Server, tenantId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RegisterJobSchemaWithBody(ctx context.Context, tenantId TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRegisterJobSchemaRequestWithBody(c.Server, tenantId, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RegisterJobSchema(ctx context.Context, tenantId TenantId, body RegisterJobSchemaJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRegisterJobSchemaRequest(c.Server, tenantId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetJobSchema(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetJobSchemaRequest(c.Server, tenantId, schemaHash)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ArchiveJobSchema(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewArchiveJobSchemaRequest(c.Server, tenantId, schemaHash)
 	if err != nil {
 		return nil, err
 	}
@@ -3563,6 +3708,191 @@ func NewTriggerScheduleRequestWithBody(server string, tenantId TenantId, schedul
 	return req, nil
 }
 
+// NewListJobSchemasRequest generates requests for ListJobSchemas
+func NewListJobSchemasRequest(server string, tenantId TenantId, params *ListJobSchemasParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/schemas", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.State != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "state", runtime.ParamLocationQuery, *params.State); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewRegisterJobSchemaRequest calls the generic RegisterJobSchema builder with application/json body
+func NewRegisterJobSchemaRequest(server string, tenantId TenantId, body RegisterJobSchemaJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewRegisterJobSchemaRequestWithBody(server, tenantId, "application/json", bodyReader)
+}
+
+// NewRegisterJobSchemaRequestWithBody generates requests for RegisterJobSchema with any type of body
+func NewRegisterJobSchemaRequestWithBody(server string, tenantId TenantId, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/schemas", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	return req, nil
+}
+
+// NewGetJobSchemaRequest generates requests for GetJobSchema
+func NewGetJobSchemaRequest(server string, tenantId TenantId, schemaHash JobSchemaHash) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "schemaHash", runtime.ParamLocationPath, schemaHash)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/schemas/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewArchiveJobSchemaRequest generates requests for ArchiveJobSchema
+func NewArchiveJobSchemaRequest(server string, tenantId TenantId, schemaHash JobSchemaHash) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "schemaHash", runtime.ParamLocationPath, schemaHash)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/schemas/%s/archive", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 func (c *Client) applyEditors(ctx context.Context, req *http.Request, additionalEditors []RequestEditorFn) error {
 	for _, r := range c.RequestEditors {
 		if err := r(ctx, req); err != nil {
@@ -3718,6 +4048,20 @@ type ClientWithResponsesInterface interface {
 	TriggerScheduleWithBodyWithResponse(ctx context.Context, tenantId TenantId, scheduleId ScheduleId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*TriggerScheduleHTTPResponse, error)
 
 	TriggerScheduleWithResponse(ctx context.Context, tenantId TenantId, scheduleId ScheduleId, body TriggerScheduleJSONRequestBody, reqEditors ...RequestEditorFn) (*TriggerScheduleHTTPResponse, error)
+
+	// ListJobSchemasWithResponse request
+	ListJobSchemasWithResponse(ctx context.Context, tenantId TenantId, params *ListJobSchemasParams, reqEditors ...RequestEditorFn) (*ListJobSchemasHTTPResponse, error)
+
+	// RegisterJobSchemaWithBodyWithResponse request with any body
+	RegisterJobSchemaWithBodyWithResponse(ctx context.Context, tenantId TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RegisterJobSchemaHTTPResponse, error)
+
+	RegisterJobSchemaWithResponse(ctx context.Context, tenantId TenantId, body RegisterJobSchemaJSONRequestBody, reqEditors ...RequestEditorFn) (*RegisterJobSchemaHTTPResponse, error)
+
+	// GetJobSchemaWithResponse request
+	GetJobSchemaWithResponse(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*GetJobSchemaHTTPResponse, error)
+
+	// ArchiveJobSchemaWithResponse request
+	ArchiveJobSchemaWithResponse(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*ArchiveJobSchemaHTTPResponse, error)
 }
 
 type PollWorkHTTPResponse struct {
@@ -4268,6 +4612,95 @@ func (r TriggerScheduleHTTPResponse) StatusCode() int {
 	return 0
 }
 
+type ListJobSchemasHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ListJobSchemasResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListJobSchemasHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListJobSchemasHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RegisterJobSchemaHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobSchemaInfo
+	JSON409      *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r RegisterJobSchemaHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RegisterJobSchemaHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetJobSchemaHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobSchemaInfo
+}
+
+// Status returns HTTPResponse.Status
+func (r GetJobSchemaHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetJobSchemaHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ArchiveJobSchemaHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobSchemaInfo
+}
+
+// Status returns HTTPResponse.Status
+func (r ArchiveJobSchemaHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ArchiveJobSchemaHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 // PollWorkWithBodyWithResponse request with arbitrary body returning *PollWorkHTTPResponse
 func (c *ClientWithResponses) PollWorkWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PollWorkHTTPResponse, error) {
 	rsp, err := c.PollWorkWithBody(ctx, contentType, body, reqEditors...)
@@ -4643,6 +5076,50 @@ func (c *ClientWithResponses) TriggerScheduleWithResponse(ctx context.Context, t
 		return nil, err
 	}
 	return ParseTriggerScheduleHTTPResponse(rsp)
+}
+
+// ListJobSchemasWithResponse request returning *ListJobSchemasHTTPResponse
+func (c *ClientWithResponses) ListJobSchemasWithResponse(ctx context.Context, tenantId TenantId, params *ListJobSchemasParams, reqEditors ...RequestEditorFn) (*ListJobSchemasHTTPResponse, error) {
+	rsp, err := c.ListJobSchemas(ctx, tenantId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListJobSchemasHTTPResponse(rsp)
+}
+
+// RegisterJobSchemaWithBodyWithResponse request with arbitrary body returning *RegisterJobSchemaHTTPResponse
+func (c *ClientWithResponses) RegisterJobSchemaWithBodyWithResponse(ctx context.Context, tenantId TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*RegisterJobSchemaHTTPResponse, error) {
+	rsp, err := c.RegisterJobSchemaWithBody(ctx, tenantId, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRegisterJobSchemaHTTPResponse(rsp)
+}
+
+func (c *ClientWithResponses) RegisterJobSchemaWithResponse(ctx context.Context, tenantId TenantId, body RegisterJobSchemaJSONRequestBody, reqEditors ...RequestEditorFn) (*RegisterJobSchemaHTTPResponse, error) {
+	rsp, err := c.RegisterJobSchema(ctx, tenantId, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRegisterJobSchemaHTTPResponse(rsp)
+}
+
+// GetJobSchemaWithResponse request returning *GetJobSchemaHTTPResponse
+func (c *ClientWithResponses) GetJobSchemaWithResponse(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*GetJobSchemaHTTPResponse, error) {
+	rsp, err := c.GetJobSchema(ctx, tenantId, schemaHash, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetJobSchemaHTTPResponse(rsp)
+}
+
+// ArchiveJobSchemaWithResponse request returning *ArchiveJobSchemaHTTPResponse
+func (c *ClientWithResponses) ArchiveJobSchemaWithResponse(ctx context.Context, tenantId TenantId, schemaHash JobSchemaHash, reqEditors ...RequestEditorFn) (*ArchiveJobSchemaHTTPResponse, error) {
+	rsp, err := c.ArchiveJobSchema(ctx, tenantId, schemaHash, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseArchiveJobSchemaHTTPResponse(rsp)
 }
 
 // ParsePollWorkHTTPResponse parses an HTTP response from a PollWorkWithResponse call
@@ -5251,6 +5728,117 @@ func ParseTriggerScheduleHTTPResponse(rsp *http.Response) (*TriggerScheduleHTTPR
 	return response, nil
 }
 
+// ParseListJobSchemasHTTPResponse parses an HTTP response from a ListJobSchemasWithResponse call
+func ParseListJobSchemasHTTPResponse(rsp *http.Response) (*ListJobSchemasHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListJobSchemasHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ListJobSchemasResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRegisterJobSchemaHTTPResponse parses an HTTP response from a RegisterJobSchemaWithResponse call
+func ParseRegisterJobSchemaHTTPResponse(rsp *http.Response) (*RegisterJobSchemaHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RegisterJobSchemaHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobSchemaInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetJobSchemaHTTPResponse parses an HTTP response from a GetJobSchemaWithResponse call
+func ParseGetJobSchemaHTTPResponse(rsp *http.Response) (*GetJobSchemaHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetJobSchemaHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobSchemaInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseArchiveJobSchemaHTTPResponse parses an HTTP response from a ArchiveJobSchemaWithResponse call
+func ParseArchiveJobSchemaHTTPResponse(rsp *http.Response) (*ArchiveJobSchemaHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ArchiveJobSchemaHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobSchemaInfo
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// Poll work
@@ -5328,6 +5916,18 @@ type ServerInterface interface {
 	// Trigger schedule now
 	// (POST /v1/tenants/{tenantId}/schedules/{scheduleId}/trigger)
 	TriggerSchedule(w http.ResponseWriter, r *http.Request, tenantId TenantId, scheduleId ScheduleId)
+	// List job schemas
+	// (GET /v1/tenants/{tenantId}/schemas)
+	ListJobSchemas(w http.ResponseWriter, r *http.Request, tenantId TenantId, params ListJobSchemasParams)
+	// Register job schema
+	// (POST /v1/tenants/{tenantId}/schemas)
+	RegisterJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId)
+	// Get job schema
+	// (GET /v1/tenants/{tenantId}/schemas/{schemaHash})
+	GetJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId, schemaHash JobSchemaHash)
+	// Archive job schema
+	// (POST /v1/tenants/{tenantId}/schemas/{schemaHash}/archive)
+	ArchiveJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId, schemaHash JobSchemaHash)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -5481,6 +6081,30 @@ func (_ Unimplemented) ListScheduleRuns(w http.ResponseWriter, r *http.Request, 
 // Trigger schedule now
 // (POST /v1/tenants/{tenantId}/schedules/{scheduleId}/trigger)
 func (_ Unimplemented) TriggerSchedule(w http.ResponseWriter, r *http.Request, tenantId TenantId, scheduleId ScheduleId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List job schemas
+// (GET /v1/tenants/{tenantId}/schemas)
+func (_ Unimplemented) ListJobSchemas(w http.ResponseWriter, r *http.Request, tenantId TenantId, params ListJobSchemasParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Register job schema
+// (POST /v1/tenants/{tenantId}/schemas)
+func (_ Unimplemented) RegisterJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Get job schema
+// (GET /v1/tenants/{tenantId}/schemas/{schemaHash})
+func (_ Unimplemented) GetJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId, schemaHash JobSchemaHash) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Archive job schema
+// (POST /v1/tenants/{tenantId}/schemas/{schemaHash}/archive)
+func (_ Unimplemented) ArchiveJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId, schemaHash JobSchemaHash) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6647,6 +7271,159 @@ func (siw *ServerInterfaceWrapper) TriggerSchedule(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListJobSchemas operation middleware
+func (siw *ServerInterfaceWrapper) ListJobSchemas(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListJobSchemasParams
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "state", r.URL.Query(), &params.State)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "state", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListJobSchemas(w, r, tenantId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RegisterJobSchema operation middleware
+func (siw *ServerInterfaceWrapper) RegisterJobSchema(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RegisterJobSchema(w, r, tenantId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetJobSchema operation middleware
+func (siw *ServerInterfaceWrapper) GetJobSchema(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "schemaHash" -------------
+	var schemaHash JobSchemaHash
+
+	err = runtime.BindStyledParameterWithOptions("simple", "schemaHash", chi.URLParam(r, "schemaHash"), &schemaHash, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "schemaHash", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetJobSchema(w, r, tenantId, schemaHash)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ArchiveJobSchema operation middleware
+func (siw *ServerInterfaceWrapper) ArchiveJobSchema(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "schemaHash" -------------
+	var schemaHash JobSchemaHash
+
+	err = runtime.BindStyledParameterWithOptions("simple", "schemaHash", chi.URLParam(r, "schemaHash"), &schemaHash, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "schemaHash", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ArchiveJobSchema(w, r, tenantId, schemaHash)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -6834,6 +7611,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/tenants/{tenantId}/schedules/{scheduleId}/trigger", wrapper.TriggerSchedule)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/tenants/{tenantId}/schemas", wrapper.ListJobSchemas)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/tenants/{tenantId}/schemas", wrapper.RegisterJobSchema)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/tenants/{tenantId}/schemas/{schemaHash}", wrapper.GetJobSchema)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/tenants/{tenantId}/schemas/{schemaHash}/archive", wrapper.ArchiveJobSchema)
 	})
 
 	return r
@@ -7364,6 +8153,87 @@ func (response TriggerSchedule200JSONResponse) VisitTriggerScheduleResponse(w ht
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ListJobSchemasRequestObject struct {
+	TenantId TenantId `json:"tenantId"`
+	Params   ListJobSchemasParams
+}
+
+type ListJobSchemasResponseObject interface {
+	VisitListJobSchemasResponse(w http.ResponseWriter) error
+}
+
+type ListJobSchemas200JSONResponse ListJobSchemasResponse
+
+func (response ListJobSchemas200JSONResponse) VisitListJobSchemasResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RegisterJobSchemaRequestObject struct {
+	TenantId TenantId `json:"tenantId"`
+	Body     *RegisterJobSchemaJSONRequestBody
+}
+
+type RegisterJobSchemaResponseObject interface {
+	VisitRegisterJobSchemaResponse(w http.ResponseWriter) error
+}
+
+type RegisterJobSchema200JSONResponse JobSchemaInfo
+
+func (response RegisterJobSchema200JSONResponse) VisitRegisterJobSchemaResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type RegisterJobSchema409JSONResponse ErrorResponse
+
+func (response RegisterJobSchema409JSONResponse) VisitRegisterJobSchemaResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetJobSchemaRequestObject struct {
+	TenantId   TenantId      `json:"tenantId"`
+	SchemaHash JobSchemaHash `json:"schemaHash"`
+}
+
+type GetJobSchemaResponseObject interface {
+	VisitGetJobSchemaResponse(w http.ResponseWriter) error
+}
+
+type GetJobSchema200JSONResponse JobSchemaInfo
+
+func (response GetJobSchema200JSONResponse) VisitGetJobSchemaResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ArchiveJobSchemaRequestObject struct {
+	TenantId   TenantId      `json:"tenantId"`
+	SchemaHash JobSchemaHash `json:"schemaHash"`
+}
+
+type ArchiveJobSchemaResponseObject interface {
+	VisitArchiveJobSchemaResponse(w http.ResponseWriter) error
+}
+
+type ArchiveJobSchema200JSONResponse JobSchemaInfo
+
+func (response ArchiveJobSchema200JSONResponse) VisitArchiveJobSchemaResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// Poll work
@@ -7441,6 +8311,18 @@ type StrictServerInterface interface {
 	// Trigger schedule now
 	// (POST /v1/tenants/{tenantId}/schedules/{scheduleId}/trigger)
 	TriggerSchedule(ctx context.Context, request TriggerScheduleRequestObject) (TriggerScheduleResponseObject, error)
+	// List job schemas
+	// (GET /v1/tenants/{tenantId}/schemas)
+	ListJobSchemas(ctx context.Context, request ListJobSchemasRequestObject) (ListJobSchemasResponseObject, error)
+	// Register job schema
+	// (POST /v1/tenants/{tenantId}/schemas)
+	RegisterJobSchema(ctx context.Context, request RegisterJobSchemaRequestObject) (RegisterJobSchemaResponseObject, error)
+	// Get job schema
+	// (GET /v1/tenants/{tenantId}/schemas/{schemaHash})
+	GetJobSchema(ctx context.Context, request GetJobSchemaRequestObject) (GetJobSchemaResponseObject, error)
+	// Archive job schema
+	// (POST /v1/tenants/{tenantId}/schemas/{schemaHash}/archive)
+	ArchiveJobSchema(ctx context.Context, request ArchiveJobSchemaRequestObject) (ArchiveJobSchemaResponseObject, error)
 }
 
 type StrictHandlerFunc = strictnethttp.StrictHTTPHandlerFunc
@@ -8279,6 +9161,120 @@ func (sh *strictHandler) TriggerSchedule(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(TriggerScheduleResponseObject); ok {
 		if err := validResponse.VisitTriggerScheduleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListJobSchemas operation middleware
+func (sh *strictHandler) ListJobSchemas(w http.ResponseWriter, r *http.Request, tenantId TenantId, params ListJobSchemasParams) {
+	var request ListJobSchemasRequestObject
+
+	request.TenantId = tenantId
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListJobSchemas(ctx, request.(ListJobSchemasRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListJobSchemas")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListJobSchemasResponseObject); ok {
+		if err := validResponse.VisitListJobSchemasResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RegisterJobSchema operation middleware
+func (sh *strictHandler) RegisterJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId) {
+	var request RegisterJobSchemaRequestObject
+
+	request.TenantId = tenantId
+
+	var body RegisterJobSchemaJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RegisterJobSchema(ctx, request.(RegisterJobSchemaRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RegisterJobSchema")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RegisterJobSchemaResponseObject); ok {
+		if err := validResponse.VisitRegisterJobSchemaResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetJobSchema operation middleware
+func (sh *strictHandler) GetJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId, schemaHash JobSchemaHash) {
+	var request GetJobSchemaRequestObject
+
+	request.TenantId = tenantId
+	request.SchemaHash = schemaHash
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetJobSchema(ctx, request.(GetJobSchemaRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetJobSchema")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetJobSchemaResponseObject); ok {
+		if err := validResponse.VisitGetJobSchemaResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ArchiveJobSchema operation middleware
+func (sh *strictHandler) ArchiveJobSchema(w http.ResponseWriter, r *http.Request, tenantId TenantId, schemaHash JobSchemaHash) {
+	var request ArchiveJobSchemaRequestObject
+
+	request.TenantId = tenantId
+	request.SchemaHash = schemaHash
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ArchiveJobSchema(ctx, request.(ArchiveJobSchemaRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ArchiveJobSchema")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ArchiveJobSchemaResponseObject); ok {
+		if err := validResponse.VisitArchiveJobSchemaResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

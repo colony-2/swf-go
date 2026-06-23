@@ -1371,7 +1371,8 @@ func chapterMetadataFromAPIRecord(chapter runtimeapi.ChapterRecord) (jobdb.Chapt
 
 func jobInfoToAPI(ctx context.Context, info jobdb.JobInfo) (runtimeapi.JobInfo, error) {
 	out := runtimeapi.JobInfo{
-		Status: runtimeapi.JobStatus(info.Status),
+		SchemaHash: schemaHashPtr(info.SchemaHash),
+		Status:     runtimeapi.JobStatus(info.Status),
 	}
 	taskData, payloadErr := jobdb.ExtractTaskDataResult(info.Data)
 	if errors.Is(payloadErr, jobdb.ErrJobNotComplete) && taskData == nil {
@@ -1387,8 +1388,9 @@ func jobInfoToAPI(ctx context.Context, info jobdb.JobInfo) (runtimeapi.JobInfo, 
 
 func jobInfoFromAPI(runtime *Runtime, jobKey jobdb.JobKey, info runtimeapi.JobInfo) (jobdb.JobInfo, error) {
 	out := jobdb.JobInfo{
-		Status: jobdb.JobStatus(info.Status),
-		Data:   &jobInfoTaskData{err: jobdb.ErrJobNotComplete},
+		Status:     jobdb.JobStatus(info.Status),
+		Data:       &jobInfoTaskData{err: jobdb.ErrJobNotComplete},
+		SchemaHash: stringValue(info.SchemaHash),
 	}
 	if info.Data == nil {
 		return out, nil
@@ -1422,6 +1424,7 @@ func jobSummaryToAPI(summary jobdb.JobSummary) (runtimeapi.JobSummary, error) {
 		Metadata:          metadata,
 		NextNeed:          cloneString(summary.NextNeed),
 		Payload:           payload,
+		SchemaHash:        schemaHashPtr(summary.SchemaHash),
 		Status:            runtimeapi.JobStatus(summary.Status),
 		TaskWaitInput:     cloneInt64(summary.TaskWaitInput),
 		TaskWaitInputHash: cloneString(summary.TaskWaitInputHash),
@@ -1455,11 +1458,74 @@ func jobSummaryFromAPI(summary runtimeapi.JobSummary) (jobdb.JobSummary, error) 
 		ArchivedAt:        summary.ArchivedAt,
 		Payload:           payload,
 		Metadata:          metadata,
+		SchemaHash:        stringValue(summary.SchemaHash),
 		TaskWaitInput:     cloneInt64(summary.TaskWaitInput),
 		TaskWaitOutput:    cloneInt64(summary.TaskWaitOutput),
 		TaskWaitInputHash: cloneString(summary.TaskWaitInputHash),
 		TaskWaitNext:      cloneString(summary.TaskWaitNext),
 	}, nil
+}
+
+func jobSchemaSelectorToAPI(selector *jobdb.JobSchemaSelector) *runtimeapi.JobSchemaSelector {
+	if selector == nil {
+		return nil
+	}
+	out := runtimeapi.JobSchemaSelector{}
+	if selector.Hash != "" {
+		out.SchemaHash = schemaHashPtr(selector.Hash)
+	}
+	if len(selector.Schema) > 0 {
+		schema := runtimeapi.JobSchemaDocument(cloneRawMessage(selector.Schema))
+		out.Schema = &schema
+	}
+	return &out
+}
+
+func jobSchemaSelectorFromAPI(selector *runtimeapi.JobSchemaSelector) *jobdb.JobSchemaSelector {
+	if selector == nil {
+		return nil
+	}
+	out := &jobdb.JobSchemaSelector{}
+	if selector.SchemaHash != nil {
+		out.Hash = string(*selector.SchemaHash)
+	}
+	if selector.Schema != nil {
+		out.Schema = cloneRawMessage(*selector.Schema)
+	}
+	if out.Hash == "" && len(out.Schema) == 0 {
+		return nil
+	}
+	return out
+}
+
+func jobSchemaInfoToAPI(info jobdb.JobSchemaInfo) runtimeapi.JobSchemaInfo {
+	return runtimeapi.JobSchemaInfo{
+		ArchivedAt: cloneTime(info.ArchivedAt),
+		CreatedAt:  info.CreatedAt,
+		Schema:     runtimeapi.JobSchemaDocument(cloneRawMessage(info.Schema)),
+		SchemaHash: info.SchemaHash,
+		State:      runtimeapi.JobSchemaState(info.State),
+		TenantId:   info.TenantId,
+	}
+}
+
+func jobSchemaInfoFromAPI(info runtimeapi.JobSchemaInfo) jobdb.JobSchemaInfo {
+	return jobdb.JobSchemaInfo{
+		TenantId:   info.TenantId,
+		SchemaHash: info.SchemaHash,
+		Schema:     cloneRawMessage(info.Schema),
+		State:      jobdb.JobSchemaState(info.State),
+		CreatedAt:  info.CreatedAt,
+		ArchivedAt: cloneTime(info.ArchivedAt),
+	}
+}
+
+func schemaHashPtr(hash string) *runtimeapi.JobSchemaHash {
+	if hash == "" {
+		return nil
+	}
+	value := runtimeapi.JobSchemaHash(hash)
+	return &value
 }
 
 func scheduleTriggerToAPI(trigger jobdb.ScheduleTrigger) runtimeapi.ScheduleTrigger {

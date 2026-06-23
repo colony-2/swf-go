@@ -1030,14 +1030,17 @@ package github.com/colony-2/jobdb/pkg/jobdb/runtime/remote
 func New func(baseURL string, httpClient *net/http.Client) (*Runtime, error)
 func NewServer func(runtime github.com/colony-2/jobdb/pkg/jobdb.WorkflowRuntime) net/http.Handler
 type Runtime struct
+method Runtime.ArchiveJobSchema func(ctx context.Context, key github.com/colony-2/jobdb/pkg/jobdb.JobSchemaKey) (github.com/colony-2/jobdb/pkg/jobdb.JobSchemaInfo, error)
 method Runtime.ArchiveSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ScheduleMutationRequest) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
 method Runtime.CancelJob func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.CancelJobRequest) error
 method Runtime.CompleteTaskIfWaiting func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.CompleteTaskIfWaitingRequest) error
 method Runtime.GetChapter func(ctx context.Context, ref github.com/colony-2/jobdb/pkg/jobdb.ChapterRef) (github.com/colony-2/jobdb/pkg/jobdb.Chapter, error)
 method Runtime.GetJob func(ctx context.Context, jobKey github.com/colony-2/jobdb/pkg/jobdb.JobKey) (github.com/colony-2/jobdb/pkg/jobdb.JobInfo, error)
 method Runtime.GetJobLease func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.GetJobLeaseRequest) (github.com/colony-2/jobdb/pkg/jobdb.ExecutionLease, error)
+method Runtime.GetJobSchema func(ctx context.Context, key github.com/colony-2/jobdb/pkg/jobdb.JobSchemaKey) (github.com/colony-2/jobdb/pkg/jobdb.JobSchemaInfo, error)
 method Runtime.GetSchedule func(ctx context.Context, key github.com/colony-2/jobdb/pkg/jobdb.ScheduleKey) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
 method Runtime.ListChapters func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ListChaptersRequest) ([]github.com/colony-2/jobdb/pkg/jobdb.Chapter, error)
+method Runtime.ListJobSchemas func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ListJobSchemasRequest) (github.com/colony-2/jobdb/pkg/jobdb.ListJobSchemasResponse, error)
 method Runtime.ListJobs func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ListJobsRequest) (github.com/colony-2/jobdb/pkg/jobdb.ListJobsResponse, error)
 method Runtime.ListScheduleRuns func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ListScheduleRunsRequest) (github.com/colony-2/jobdb/pkg/jobdb.ListScheduleRunsResponse, error)
 method Runtime.ListSchedules func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ListSchedulesRequest) (github.com/colony-2/jobdb/pkg/jobdb.ListSchedulesResponse, error)
@@ -1045,6 +1048,7 @@ method Runtime.OpenArtifact func(ctx context.Context, ref github.com/colony-2/jo
 method Runtime.PauseSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ScheduleMutationRequest) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
 method Runtime.PollWork func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.PollWorkRequest) ([]github.com/colony-2/jobdb/pkg/jobdb.ExecutionLease, error)
 method Runtime.PutChapter func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.PutChapterRequest) error
+method Runtime.RegisterJobSchema func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.RegisterJobSchemaRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobSchemaInfo, error)
 method Runtime.ResumeSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ScheduleMutationRequest) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
 method Runtime.SubmitJob func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.SubmitJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
 method Runtime.SubmitRestartJob func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.SubmitRestartJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)

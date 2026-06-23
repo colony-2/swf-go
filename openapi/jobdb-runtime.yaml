@@ -22,6 +22,8 @@ tags:
     description: Job lifecycle and job-level read APIs.
   - name: schedules
     description: Schedule lifecycle, projection, and run APIs.
+  - name: schemas
+    description: Tenant-local JSON Schema registry for optional job validation.
   - name: leases
     description: Worker polling and lease lifecycle operations.
   - name: chapters
@@ -353,6 +355,86 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListScheduleRunsResponse'
+  /v1/tenants/{tenantId}/schemas:
+    post:
+      tags: [schemas]
+      operationId: registerJobSchema
+      summary: Register job schema
+      description: |
+        Registers an immutable tenant-local JSON Schema. Registering identical
+        content is idempotent and returns the existing schema row.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterJobSchemaRequest'
+      responses:
+        '200':
+          description: Schema registered or already present
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobSchemaInfo'
+        '409':
+          description: Existing schema hash conflicts with different content
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [schemas]
+      operationId: listJobSchemas
+      summary: List job schemas
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: state
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/JobSchemaListState'
+      responses:
+        '200':
+          description: Schemas listed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListJobSchemasResponse'
+  /v1/tenants/{tenantId}/schemas/{schemaHash}:
+    get:
+      tags: [schemas]
+      operationId: getJobSchema
+      summary: Get job schema
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/JobSchemaHash'
+      responses:
+        '200':
+          description: Schema loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobSchemaInfo'
+  /v1/tenants/{tenantId}/schemas/{schemaHash}/archive:
+    post:
+      tags: [schemas]
+      operationId: archiveJobSchema
+      summary: Archive job schema
+      description: |
+        Archives a schema for future job creation. Existing mutable jobs that
+        already reference the schema may continue to validate writes with it.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/JobSchemaHash'
+      responses:
+        '200':
+          description: Schema archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobSchemaInfo'
   /v1/jobs/poll:
     post:
       tags: [leases]
@@ -651,6 +733,12 @@ components:
       required: true
       schema:
         type: string
+    JobSchemaHash:
+      name: schemaHash
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/JobSchemaHash'
     LeaseTokenHeader:
       name: X-JobDB-Lease-Token
       in: header
@@ -669,6 +757,9 @@ components:
         - chapter_not_found
         - job_not_found
         - job_not_complete
+        - job_schema_not_found
+        - job_schema_archived
+        - job_schema_validation_failed
         - workflow_not_deterministic
         - internal
     ErrorResponse:
@@ -703,6 +794,69 @@ components:
       enum:
         - ACTIVE
         - ARCHIVED
+    JobSchemaHash:
+      type: string
+      pattern: '^sha256:[0-9a-f]{64}$'
+    JobSchemaDocument:
+      description: JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+      x-go-type: json.RawMessage
+    JobSchemaSelector:
+      type: object
+      additionalProperties: false
+      properties:
+        schemaHash:
+          $ref: '#/components/schemas/JobSchemaHash'
+        schema:
+          $ref: '#/components/schemas/JobSchemaDocument'
+    JobSchemaState:
+      type: string
+      enum:
+        - ACTIVE
+        - ARCHIVED
+    JobSchemaListState:
+      type: string
+      enum:
+        - ACTIVE
+        - ARCHIVED
+        - ALL
+    JobSchemaInfo:
+      type: object
+      required: [tenantId, schemaHash, schema, state, createdAt]
+      additionalProperties: false
+      properties:
+        tenantId:
+          type: string
+        schemaHash:
+          $ref: '#/components/schemas/JobSchemaHash'
+        schema:
+          $ref: '#/components/schemas/JobSchemaDocument'
+        state:
+          $ref: '#/components/schemas/JobSchemaState'
+        createdAt:
+          type: string
+          format: date-time
+        archivedAt:
+          x-go-type: time.Time
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+    RegisterJobSchemaRequest:
+      type: object
+      required: [schema]
+      additionalProperties: false
+      properties:
+        schema:
+          $ref: '#/components/schemas/JobSchemaDocument'
+    ListJobSchemasResponse:
+      type: object
+      required: [schemas]
+      additionalProperties: false
+      properties:
+        schemas:
+          type: array
+          items:
+            $ref: '#/components/schemas/JobSchemaInfo'
     CompletionStatus:
       type: string
       enum:
@@ -1265,6 +1419,8 @@ components:
           $ref: '#/components/schemas/RunPolicy'
         metadata:
           $ref: '#/components/schemas/Metadata'
+        schema:
+          $ref: '#/components/schemas/JobSchemaSelector'
         prerequisites:
           type: array
           items:
@@ -1298,6 +1454,8 @@ components:
           $ref: '#/components/schemas/TaskDataWrite'
         extraTaskOutput:
           $ref: '#/components/schemas/TaskDataWrite'
+        schema:
+          $ref: '#/components/schemas/JobSchemaSelector'
         prerequisites:
           type: array
           items:
@@ -1442,6 +1600,8 @@ components:
           type: string
         payload:
           $ref: '#/components/schemas/SchedulerPayload'
+        schemaHash:
+          $ref: '#/components/schemas/JobSchemaHash'
     CompleteExecutionRequest:
       type: object
       required: [status]
@@ -1673,6 +1833,8 @@ components:
             Terminal task data when materialized. A `null` value should be
             treated as a lazily unavailable `TaskData`, for example when the job
             has not completed yet.
+        schemaHash:
+          $ref: '#/components/schemas/JobSchemaHash'
     JobTaskFilter:
       type: object
       required: [jobType, taskType]
@@ -1776,6 +1938,8 @@ components:
           $ref: '#/components/schemas/SchedulerPayload'
         metadata:
           $ref: '#/components/schemas/Metadata'
+        schemaHash:
+          $ref: '#/components/schemas/JobSchemaHash'
         taskWaitInput:
           x-go-type: int64
           oneOf:

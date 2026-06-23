@@ -63,6 +63,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 			Metadata:      metadata,
 			Prerequisites: toAPIPrerequisites(req.Job.Prerequisites),
 			RunPolicy:     runPolicy,
+			Schema:        jobSchemaSelectorToAPI(req.Job.Schema),
 		},
 		RequestTime: timePtr(req.RequestTime),
 		WorkerId:    stringPtrOrNil(req.WorkerID),
@@ -96,6 +97,7 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJ
 			LastStepToKeep: req.Job.LastStepToKeep,
 			PriorJobKey:    toAPIJobKey(req.Job.PriorJobKey),
 			Prerequisites:  toAPIPrerequisites(req.Job.Prerequisites),
+			Schema:         jobSchemaSelectorToAPI(req.Job.Schema),
 		},
 		RequestTime: timePtr(req.RequestTime),
 		WorkerId:    stringPtrOrNil(req.WorkerID),
@@ -308,6 +310,76 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 		out.Jobs = append(out.Jobs, converted)
 	}
 	return out, nil
+}
+
+func (r *Runtime) RegisterJobSchema(ctx context.Context, req jobdb.RegisterJobSchemaRequest) (jobdb.JobSchemaInfo, error) {
+	if req.TenantId == "" {
+		return jobdb.JobSchemaInfo{}, fmt.Errorf("tenantId is required")
+	}
+	body := runtimeapi.RegisterJobSchemaRequest{
+		Schema: runtimeapi.JobSchemaDocument(cloneRawMessage(req.Schema)),
+	}
+	resp, err := r.client.RegisterJobSchemaWithResponse(ctx, req.TenantId, body)
+	if err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return jobdb.JobSchemaInfo{}, responseError("register job schema", resp.StatusCode(), resp.Body, jobdb.ErrConflict)
+	}
+	return jobSchemaInfoFromAPI(*resp.JSON200), nil
+}
+
+func (r *Runtime) GetJobSchema(ctx context.Context, key jobdb.JobSchemaKey) (jobdb.JobSchemaInfo, error) {
+	if err := key.Validate(); err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	resp, err := r.client.GetJobSchemaWithResponse(ctx, key.TenantId, runtimeapi.JobSchemaHash(key.SchemaHash))
+	if err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return jobdb.JobSchemaInfo{}, responseError("get job schema", resp.StatusCode(), resp.Body, jobdb.ErrJobSchemaNotFound)
+	}
+	return jobSchemaInfoFromAPI(*resp.JSON200), nil
+}
+
+func (r *Runtime) ListJobSchemas(ctx context.Context, req jobdb.ListJobSchemasRequest) (jobdb.ListJobSchemasResponse, error) {
+	if req.TenantId == "" {
+		return jobdb.ListJobSchemasResponse{}, fmt.Errorf("tenantId is required")
+	}
+	params := &runtimeapi.ListJobSchemasParams{}
+	if req.State != "" {
+		state := runtimeapi.JobSchemaListState(req.State)
+		params.State = &state
+	}
+	resp, err := r.client.ListJobSchemasWithResponse(ctx, req.TenantId, params)
+	if err != nil {
+		return jobdb.ListJobSchemasResponse{}, err
+	}
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return jobdb.ListJobSchemasResponse{}, responseError("list job schemas", resp.StatusCode(), resp.Body, nil)
+	}
+	out := jobdb.ListJobSchemasResponse{
+		Schemas: make([]jobdb.JobSchemaInfo, 0, len(resp.JSON200.Schemas)),
+	}
+	for _, schema := range resp.JSON200.Schemas {
+		out.Schemas = append(out.Schemas, jobSchemaInfoFromAPI(schema))
+	}
+	return out, nil
+}
+
+func (r *Runtime) ArchiveJobSchema(ctx context.Context, key jobdb.JobSchemaKey) (jobdb.JobSchemaInfo, error) {
+	if err := key.Validate(); err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	resp, err := r.client.ArchiveJobSchemaWithResponse(ctx, key.TenantId, runtimeapi.JobSchemaHash(key.SchemaHash))
+	if err != nil {
+		return jobdb.JobSchemaInfo{}, err
+	}
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return jobdb.JobSchemaInfo{}, responseError("archive job schema", resp.StatusCode(), resp.Body, jobdb.ErrJobSchemaNotFound)
+	}
+	return jobSchemaInfoFromAPI(*resp.JSON200), nil
 }
 
 func (r *Runtime) UpsertSchedule(ctx context.Context, req jobdb.UpsertScheduleRequest) (jobdb.ScheduleInfo, error) {
@@ -584,6 +656,7 @@ type remoteExecutionLease struct {
 	leaseID     string
 	jobKey      jobdb.JobKey
 	capability  string
+	schemaHash  string
 	payloadJSON json.RawMessage
 	mu          sync.RWMutex
 	leaseToken  string
@@ -592,7 +665,10 @@ type remoteExecutionLease struct {
 func (l *remoteExecutionLease) LeaseID() string      { return l.leaseID }
 func (l *remoteExecutionLease) Job() jobdb.JobHandle { return jobdb.JobHandle{JobKey: l.jobKey} }
 func (l *remoteExecutionLease) Capability() string   { return l.capability }
-func (l *remoteExecutionLease) StopKeepAlive()       {}
+func (l *remoteExecutionLease) LeaseSchemaHash() string {
+	return l.schemaHash
+}
+func (l *remoteExecutionLease) StopKeepAlive() {}
 func (l *remoteExecutionLease) LeaseToken() string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -690,6 +766,7 @@ func (r *Runtime) executionLeaseFromAPI(lease runtimeapi.ExecutionLease) (jobdb.
 		leaseID:     lease.LeaseId,
 		jobKey:      fromAPIJobKey(lease.Job.JobKey),
 		capability:  lease.Capability,
+		schemaHash:  stringValue(lease.SchemaHash),
 		payloadJSON: payload,
 		leaseToken:  lease.LeaseToken,
 	}, nil
