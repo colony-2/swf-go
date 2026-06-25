@@ -355,7 +355,7 @@ type JobPrerequisite struct {
 // JobPrerequisiteCondition defines model for JobPrerequisite.Condition.
 type JobPrerequisiteCondition string
 
-// JobSchemaDocument JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+// JobSchemaDocument JobDB schema envelope. Each shape is a JSON Schema draft 2020-12 schema fragment that validates a visible chapter record.
 type JobSchemaDocument = json.RawMessage
 
 // JobSchemaHash defines model for JobSchemaHash.
@@ -366,7 +366,7 @@ type JobSchemaInfo struct {
 	ArchivedAt *time.Time `json:"archivedAt,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 
-	// Schema JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+	// Schema JobDB schema envelope. Each shape is a JSON Schema draft 2020-12 schema fragment that validates a visible chapter record.
 	Schema     JobSchemaDocument `json:"schema"`
 	SchemaHash JobSchemaHash     `json:"schemaHash"`
 	State      JobSchemaState    `json:"state"`
@@ -378,7 +378,7 @@ type JobSchemaListState string
 
 // JobSchemaSelector defines model for JobSchemaSelector.
 type JobSchemaSelector struct {
-	// Schema JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+	// Schema JobDB schema envelope. Each shape is a JSON Schema draft 2020-12 schema fragment that validates a visible chapter record.
 	Schema     *JobSchemaDocument `json:"schema,omitempty"`
 	SchemaHash *JobSchemaHash     `json:"schemaHash,omitempty"`
 }
@@ -432,6 +432,9 @@ type JobTaskFilter struct {
 	JobType  string `json:"jobType"`
 	TaskType string `json:"taskType"`
 }
+
+// JsonSchemaFragment JSON Schema draft 2020-12 object or boolean schema fragment.
+type JsonSchemaFragment = json.RawMessage
 
 // KeepAliveLeaseResponse defines model for KeepAliveLeaseResponse.
 type KeepAliveLeaseResponse struct {
@@ -604,7 +607,7 @@ type PollWorkRequest struct {
 
 // RegisterJobSchemaRequest defines model for RegisterJobSchemaRequest.
 type RegisterJobSchemaRequest struct {
-	// Schema JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+	// Schema JobDB schema envelope. Each shape is a JSON Schema draft 2020-12 schema fragment that validates a visible chapter record.
 	Schema JobSchemaDocument `json:"schema"`
 }
 

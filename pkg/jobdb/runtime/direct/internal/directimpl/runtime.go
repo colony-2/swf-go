@@ -192,7 +192,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, initialStoredChapter); err != nil {
+	if err := jobschema.ValidateFirstChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, initialStoredChapter); err != nil {
 		return jobdb.JobHandle{}, err
 	}
 	if _, err := r.chapterStore.CreateStory(ctx, storyKeyForJob(jobKey), co); err != nil {
@@ -320,8 +320,14 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJ
 			if err != nil {
 				return jobdb.JobHandle{}, err
 			}
-			if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, storedChapter); err != nil {
-				return jobdb.JobHandle{}, err
+			var validationErr error
+			if ordinal == 0 {
+				validationErr = jobschema.ValidateFirstChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, storedChapter)
+			} else {
+				validationErr = jobschema.ValidateOrdinaryChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, storedChapter)
+			}
+			if validationErr != nil {
+				return jobdb.JobHandle{}, validationErr
 			}
 		}
 		if createOptions.InitialChapter != nil {
@@ -329,7 +335,7 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJ
 			if err != nil {
 				return jobdb.JobHandle{}, err
 			}
-			if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, storedChapter); err != nil {
+			if err := jobschema.ValidateOrdinaryChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, storedChapter); err != nil {
 				return jobdb.JobHandle{}, err
 			}
 		}
@@ -732,7 +738,7 @@ func (r *Runtime) PutChapter(ctx context.Context, req jobdb.PutChapterRequest) e
 	if err != nil {
 		return err
 	}
-	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: req.Ref.JobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
+	if err := jobschema.ValidateOrdinaryChapter(ctx, r, jobdb.JobSchemaKey{TenantId: req.Ref.JobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
 		return err
 	}
 	body, err := EncodeChapter(chapter)
@@ -815,7 +821,7 @@ func (r *Runtime) ensureCompletionChapter(ctx context.Context, jobKey jobdb.JobK
 		return err
 	}
 	schemaHash := jobmetadata.SchemaHashFromStoredMetadata(detail.Metadata)
-	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
+	if err := jobschema.ValidateLastChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: schemaHash}, chapter); err != nil {
 		return err
 	}
 	body, err := EncodeChapter(chapter)

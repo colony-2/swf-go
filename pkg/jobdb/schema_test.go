@@ -7,7 +7,7 @@ import (
 
 func TestResolveJobSchemaSelectorInline(t *testing.T) {
 	hash, schema, hasInline, err := ResolveJobSchemaSelector(&JobSchemaSelector{
-		Schema: json.RawMessage(`{"type":"object","properties":{"ordinal":{"type":"integer"}}}`),
+		Schema: json.RawMessage(`{"chapterShape":{"type":"object","properties":{"ordinal":{"type":"integer"}}}}`),
 	})
 	if err != nil {
 		t.Fatalf("resolve selector: %v", err)
@@ -29,7 +29,7 @@ func TestResolveJobSchemaSelectorInline(t *testing.T) {
 func TestResolveJobSchemaSelectorHashMismatch(t *testing.T) {
 	_, _, _, err := ResolveJobSchemaSelector(&JobSchemaSelector{
 		Hash:   "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-		Schema: json.RawMessage(`{"type":"object"}`),
+		Schema: json.RawMessage(`{"chapterShape":{"type":"object"}}`),
 	})
 	if err == nil {
 		t.Fatal("expected hash mismatch error")

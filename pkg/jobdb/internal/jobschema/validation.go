@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"sync"
 	"time"
@@ -15,15 +16,63 @@ import (
 )
 
 var defaultValidator = &validatorCache{
-	schemas: make(map[string]*jsonschema.Schema),
+	schemas: make(map[string]*compiledJobSchema),
 }
 
 type validatorCache struct {
 	mu      sync.RWMutex
-	schemas map[string]*jsonschema.Schema
+	schemas map[string]*compiledJobSchema
 }
 
-func ValidateChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey, chapter jobdb.Chapter) error {
+type ChapterRole int
+
+const (
+	ChapterRoleDefault ChapterRole = iota
+	ChapterRoleFirst
+	ChapterRoleLast
+)
+
+func (r ChapterRole) String() string {
+	switch r {
+	case ChapterRoleFirst:
+		return "first"
+	case ChapterRoleLast:
+		return "last"
+	default:
+		return "chapter"
+	}
+}
+
+type ParsedJobSchema struct {
+	ChapterShape      json.RawMessage
+	FirstChapterShape json.RawMessage
+	LastChapterShape  json.RawMessage
+}
+
+type compiledJobSchema struct {
+	chapter *jsonschema.Schema
+	first   *jsonschema.Schema
+	last    *jsonschema.Schema
+}
+
+func (s *compiledJobSchema) validator(role ChapterRole) *jsonschema.Schema {
+	if s == nil {
+		return nil
+	}
+	switch role {
+	case ChapterRoleFirst:
+		if s.first != nil {
+			return s.first
+		}
+	case ChapterRoleLast:
+		if s.last != nil {
+			return s.last
+		}
+	}
+	return s.chapter
+}
+
+func ValidateChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey, role ChapterRole, chapter jobdb.Chapter) error {
 	if key.SchemaHash == "" {
 		return nil
 	}
@@ -33,6 +82,10 @@ func ValidateChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key 
 	schema, err := defaultValidator.schema(ctx, registry, key)
 	if err != nil {
 		return err
+	}
+	validator := schema.validator(role)
+	if validator == nil {
+		return fmt.Errorf("schema %s has no %s validator", key.SchemaHash, role)
 	}
 	document, err := ChapterDocument(chapter)
 	if err != nil {
@@ -46,10 +99,22 @@ func ValidateChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key 
 	if err != nil {
 		return fmt.Errorf("decode chapter document for schema validation: %w", err)
 	}
-	if err := schema.Validate(instance); err != nil {
-		return fmt.Errorf("%w: schema %s rejected chapter %d: %v", jobdb.ErrJobSchemaValidation, key.SchemaHash, chapter.Ordinal, err)
+	if err := validator.Validate(instance); err != nil {
+		return fmt.Errorf("%w: schema %s rejected %s chapter %d: %v", jobdb.ErrJobSchemaValidation, key.SchemaHash, role, chapter.Ordinal, err)
 	}
 	return nil
+}
+
+func ValidateFirstChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey, chapter jobdb.Chapter) error {
+	return ValidateChapter(ctx, registry, key, ChapterRoleFirst, chapter)
+}
+
+func ValidateOrdinaryChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey, chapter jobdb.Chapter) error {
+	return ValidateChapter(ctx, registry, key, ChapterRoleDefault, chapter)
+}
+
+func ValidateLastChapter(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey, chapter jobdb.Chapter) error {
+	return ValidateChapter(ctx, registry, key, ChapterRoleLast, chapter)
 }
 
 func Prime(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey) error {
@@ -64,13 +129,13 @@ func Prime(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobS
 }
 
 func ValidateSchemaDocument(schemaHash string, raw json.RawMessage) error {
-	if _, err := compileSchema(schemaHash, raw); err != nil {
+	if _, err := compileJobSchema(schemaHash, raw); err != nil {
 		return fmt.Errorf("%w: invalid schema %s: %v", jobdb.ErrJobSchemaValidation, schemaHash, err)
 	}
 	return nil
 }
 
-func (c *validatorCache) schema(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey) (*jsonschema.Schema, error) {
+func (c *validatorCache) schema(ctx context.Context, registry jobdb.JobSchemaRegistry, key jobdb.JobSchemaKey) (*compiledJobSchema, error) {
 	c.mu.RLock()
 	schema := c.schemas[key.SchemaHash]
 	c.mu.RUnlock()
@@ -84,7 +149,7 @@ func (c *validatorCache) schema(ctx context.Context, registry jobdb.JobSchemaReg
 	if err != nil {
 		return nil, err
 	}
-	compiled, err := compileSchema(key.SchemaHash, info.Schema)
+	compiled, err := compileJobSchema(key.SchemaHash, info.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -98,22 +163,153 @@ func (c *validatorCache) schema(ctx context.Context, registry jobdb.JobSchemaReg
 	return compiled, nil
 }
 
-func compileSchema(schemaHash string, raw json.RawMessage) (*jsonschema.Schema, error) {
+func ParseJobSchemaDocument(raw json.RawMessage) (ParsedJobSchema, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return ParsedJobSchema{}, fmt.Errorf("schema is required")
+	}
+	var decoded map[string]json.RawMessage
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
+		return ParsedJobSchema{}, fmt.Errorf("schema must be a JSON object: %w", err)
+	}
+	if decoded == nil {
+		return ParsedJobSchema{}, fmt.Errorf("schema must be a JSON object")
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err == nil {
+		return ParsedJobSchema{}, fmt.Errorf("schema must contain exactly one JSON value")
+	} else if err != io.EOF {
+		return ParsedJobSchema{}, fmt.Errorf("schema must be valid JSON: %w", err)
+	}
+
+	for name := range decoded {
+		switch name {
+		case "$schema", "description", "chapterShape", "firstChapterShape", "lastChapterShape":
+		default:
+			return ParsedJobSchema{}, fmt.Errorf("unknown schema field %q", name)
+		}
+	}
+	if err := validateOptionalString("$schema", decoded["$schema"]); err != nil {
+		return ParsedJobSchema{}, err
+	}
+	if err := validateOptionalString("description", decoded["description"]); err != nil {
+		return ParsedJobSchema{}, err
+	}
+
+	parsed := ParsedJobSchema{
+		ChapterShape:      cloneRaw(decoded["chapterShape"]),
+		FirstChapterShape: cloneRaw(decoded["firstChapterShape"]),
+		LastChapterShape:  cloneRaw(decoded["lastChapterShape"]),
+	}
+	if len(bytes.TrimSpace(parsed.ChapterShape)) == 0 {
+		return ParsedJobSchema{}, fmt.Errorf("chapterShape is required")
+	}
+	if err := validateShapeValue("chapterShape", parsed.ChapterShape); err != nil {
+		return ParsedJobSchema{}, err
+	}
+	if len(bytes.TrimSpace(parsed.FirstChapterShape)) > 0 {
+		if err := validateShapeValue("firstChapterShape", parsed.FirstChapterShape); err != nil {
+			return ParsedJobSchema{}, err
+		}
+	}
+	if len(bytes.TrimSpace(parsed.LastChapterShape)) > 0 {
+		if err := validateShapeValue("lastChapterShape", parsed.LastChapterShape); err != nil {
+			return ParsedJobSchema{}, err
+		}
+	}
+	return parsed, nil
+}
+
+func validateOptionalString(name string, raw json.RawMessage) error {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil
+	}
+	var decoded string
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if err := dec.Decode(&decoded); err != nil {
+		return fmt.Errorf("%s must be a string: %w", name, err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err == nil {
+		return fmt.Errorf("%s must contain exactly one JSON value", name)
+	} else if err != io.EOF {
+		return fmt.Errorf("%s must be valid JSON: %w", name, err)
+	}
+	return nil
+}
+
+func validateShapeValue(name string, raw json.RawMessage) error {
+	var decoded any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
+		return fmt.Errorf("%s must be a JSON Schema object or boolean: %w", name, err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err == nil {
+		return fmt.Errorf("%s must contain exactly one JSON value", name)
+	} else if err != io.EOF {
+		return fmt.Errorf("%s must be valid JSON: %w", name, err)
+	}
+	switch decoded.(type) {
+	case map[string]any, bool:
+		return nil
+	default:
+		return fmt.Errorf("%s must be a JSON Schema object or boolean", name)
+	}
+}
+
+func compileJobSchema(schemaHash string, raw json.RawMessage) (*compiledJobSchema, error) {
+	parsed, err := ParseJobSchemaDocument(raw)
+	if err != nil {
+		return nil, err
+	}
+	chapter, err := compileSchemaFragment(schemaHash, "chapter", parsed.ChapterShape)
+	if err != nil {
+		return nil, err
+	}
+	out := &compiledJobSchema{chapter: chapter}
+	if len(bytes.TrimSpace(parsed.FirstChapterShape)) > 0 {
+		first, err := compileSchemaFragment(schemaHash, "first", parsed.FirstChapterShape)
+		if err != nil {
+			return nil, err
+		}
+		out.first = first
+	}
+	if len(bytes.TrimSpace(parsed.LastChapterShape)) > 0 {
+		last, err := compileSchemaFragment(schemaHash, "last", parsed.LastChapterShape)
+		if err != nil {
+			return nil, err
+		}
+		out.last = last
+	}
+	return out, nil
+}
+
+func compileSchemaFragment(schemaHash string, role string, raw json.RawMessage) (*jsonschema.Schema, error) {
 	document, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
 	if err != nil {
-		return nil, fmt.Errorf("decode schema %s: %w", schemaHash, err)
+		return nil, fmt.Errorf("decode %s schema %s: %w", role, schemaHash, err)
 	}
-	location := "jobdb-schema:///" + url.PathEscape(schemaHash)
+	location := "jobdb-schema:///" + url.PathEscape(schemaHash) + "/" + role
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
 	if err := compiler.AddResource(location, document); err != nil {
-		return nil, fmt.Errorf("add schema %s: %w", schemaHash, err)
+		return nil, fmt.Errorf("add %s schema %s: %w", role, schemaHash, err)
 	}
 	schema, err := compiler.Compile(location)
 	if err != nil {
-		return nil, fmt.Errorf("compile schema %s: %w", schemaHash, err)
+		return nil, fmt.Errorf("compile %s schema %s: %w", role, schemaHash, err)
 	}
 	return schema, nil
+}
+
+func cloneRaw(raw json.RawMessage) json.RawMessage {
+	if raw == nil {
+		return nil
+	}
+	return append(json.RawMessage(nil), raw...)
 }
 
 func ChapterDocument(chapter jobdb.Chapter) (map[string]any, error) {

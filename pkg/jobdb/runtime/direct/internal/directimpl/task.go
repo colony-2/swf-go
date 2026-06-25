@@ -194,7 +194,7 @@ func (r *Runtime) CompleteTaskIfWaiting(ctx context.Context, req jobdb.CompleteT
 	if err != nil {
 		return err
 	}
-	if err := jobschema.ValidateChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: jobmetadata.SchemaHashFromStoredMetadata(job.Metadata)}, storedChapter); err != nil {
+	if err := jobschema.ValidateOrdinaryChapter(ctx, r, jobdb.JobSchemaKey{TenantId: jobKey.TenantId, SchemaHash: jobmetadata.SchemaHashFromStoredMetadata(job.Metadata)}, storedChapter); err != nil {
 		return err
 	}
 	if err := r.ensureNextVisibleChapterOrdinal(ctx, jobKey, tw.OutputStep); err != nil {

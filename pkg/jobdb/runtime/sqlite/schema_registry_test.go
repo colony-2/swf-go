@@ -17,7 +17,7 @@ func TestSchemaRegistryLifecycle(t *testing.T) {
 	}
 	defer embedded.Shutdown()
 
-	schema := []byte(`{"type":"object","properties":{"ordinal":{"type":"integer"}}}`)
+	schema := []byte(`{"chapterShape":{"type":"object","properties":{"ordinal":{"type":"integer"}}}}`)
 	registered, err := embedded.Runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
 		TenantId: "tenant-schema",
 		Schema:   schema,
@@ -55,7 +55,7 @@ func TestSchemaRegistryLifecycle(t *testing.T) {
 	}
 	_, err = embedded.Runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
 		TenantId: "tenant-schema",
-		Schema:   []byte(`{"type":"not-a-real-type"}`),
+		Schema:   []byte(`{"chapterShape":{"type":"not-a-real-type"}}`),
 	})
 	if !errors.Is(err, jobdb.ErrJobSchemaValidation) {
 		t.Fatalf("register invalid schema error = %v, want ErrJobSchemaValidation", err)
@@ -187,6 +187,33 @@ func TestSubmitJobSchemaAssociation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("put valid schema chapter after archive: %v", err)
 	}
+	err = leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{
+		Status: "succeeded",
+		Chapter: &jobdb.Chapter{
+			Ordinal:   2,
+			TaskType:  "schema-job",
+			CreatedAt: timeNowForTest(),
+			Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.ApplicationOutputOutcome{
+				Output: jobdb.ApplicationOutputBytes{Data: []byte(`{"final":false}`)},
+			}},
+		},
+	})
+	if !errors.Is(err, jobdb.ErrJobSchemaValidation) {
+		t.Fatalf("complete invalid schema chapter error = %v, want ErrJobSchemaValidation", err)
+	}
+	if err := leases[0].Complete(ctx, jobdb.CompleteExecutionRequest{
+		Status: "succeeded",
+		Chapter: &jobdb.Chapter{
+			Ordinal:   2,
+			TaskType:  "schema-job",
+			CreatedAt: timeNowForTest(),
+			Body: jobdb.JobAttemptOutcomeChapter{Outcome: jobdb.ApplicationOutputOutcome{
+				Output: jobdb.ApplicationOutputBytes{Data: []byte(`{"final":true}`)},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("complete valid schema chapter after archive: %v", err)
+	}
 	_, err = rt.SubmitJob(ctx, jobdb.SubmitJobRequest{
 		Job: jobdb.SubmitJob{
 			TenantId: tenantID,
@@ -220,27 +247,11 @@ func TestSubmitJobSchemaAssociation(t *testing.T) {
 
 func chapterValidationSchemaForTest() []byte {
 	return []byte(`{
-		"type":"object",
-		"required":["ordinal","body"],
-		"allOf":[
-			{
-				"if":{"properties":{"ordinal":{"const":0}},"required":["ordinal"]},
-				"then":{"properties":{"body":{
-					"type":"object",
-					"required":["kind","input"],
-					"properties":{
-						"kind":{"const":"jobStart"},
-						"input":{
-							"type":"object",
-							"required":["kind"],
-							"properties":{"kind":{"const":"valid"}}
-						}
-					}
-				}}}
-			},
-			{
-				"if":{"properties":{"ordinal":{"minimum":1}},"required":["ordinal"]},
-				"then":{"properties":{"body":{
+		"chapterShape":{
+			"type":"object",
+			"required":["body"],
+			"properties":{
+				"body":{
 					"type":"object",
 					"required":["kind","outcome"],
 					"properties":{
@@ -258,9 +269,53 @@ func chapterValidationSchemaForTest() []byte {
 							}
 						}
 					}
-				}}}
+				}
 			}
-		]
+		},
+		"firstChapterShape":{
+			"type":"object",
+			"required":["ordinal","body"],
+			"properties":{
+				"ordinal":{"const":0},
+				"body":{
+					"type":"object",
+					"required":["kind","input"],
+					"properties":{
+						"kind":{"const":"jobStart"},
+						"input":{
+							"type":"object",
+							"required":["kind"],
+							"properties":{"kind":{"const":"valid"}}
+						}
+					}
+				}
+			}
+		},
+		"lastChapterShape":{
+			"type":"object",
+			"required":["body"],
+			"properties":{
+				"body":{
+					"type":"object",
+					"required":["kind","outcome"],
+					"properties":{
+						"kind":{"const":"jobAttemptOutcome"},
+						"outcome":{
+							"type":"object",
+							"required":["kind","output"],
+							"properties":{
+								"kind":{"const":"success"},
+								"output":{
+									"type":"object",
+									"required":["final"],
+									"properties":{"final":{"const":true}}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}`)
 }
 

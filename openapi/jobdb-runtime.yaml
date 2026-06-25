@@ -798,7 +798,25 @@ components:
       type: string
       pattern: '^sha256:[0-9a-f]{64}$'
     JobSchemaDocument:
-      description: JSON Schema draft 2020-12 document used to validate visible JobDB chapter records.
+      type: object
+      required: [chapterShape]
+      additionalProperties: false
+      description: JobDB schema envelope. Each shape is a JSON Schema draft 2020-12 schema fragment that validates a visible chapter record.
+      x-go-type: json.RawMessage
+      properties:
+        $schema:
+          type: string
+          description: Optional JSON Schema dialect URI for the JobDB schema envelope.
+        description:
+          type: string
+        chapterShape:
+          $ref: '#/components/schemas/JsonSchemaFragment'
+        firstChapterShape:
+          $ref: '#/components/schemas/JsonSchemaFragment'
+        lastChapterShape:
+          $ref: '#/components/schemas/JsonSchemaFragment'
+    JsonSchemaFragment:
+      description: JSON Schema draft 2020-12 object or boolean schema fragment.
       x-go-type: json.RawMessage
     JobSchemaSelector:
       type: object

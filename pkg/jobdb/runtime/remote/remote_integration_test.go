@@ -432,9 +432,17 @@ func TestRemoteRuntimeSchemaRegistryRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	schema := json.RawMessage(`{
 		"$schema":"https://json-schema.org/draft/2020-12/schema",
-		"type":"object",
-		"properties":{"kind":{"const":"jobStart"}},
-		"required":["kind"]
+		"chapterShape":{
+			"type":"object",
+			"required":["body"],
+			"properties":{
+				"body":{
+					"type":"object",
+					"required":["kind"],
+					"properties":{"kind":{"enum":["jobStart","taskAttemptOutcome","jobAttemptOutcome","restartExtra"]}}
+				}
+			}
+		}
 	}`)
 	registered, err := runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
 		TenantId: "tenant-schema-remote",
@@ -506,7 +514,7 @@ func TestRemoteRuntimeSchemaRegistryRoundTrip(t *testing.T) {
 
 	_, err = runtime.RegisterJobSchema(ctx, jobdb.RegisterJobSchemaRequest{
 		TenantId: "tenant-schema-remote",
-		Schema:   []byte(`{"type":"not-a-real-type"}`),
+		Schema:   []byte(`{"chapterShape":{"type":"not-a-real-type"}}`),
 	})
 	if !errors.Is(err, jobdb.ErrJobSchemaValidation) {
 		t.Fatalf("register invalid schema error = %v, want ErrJobSchemaValidation", err)
@@ -586,27 +594,11 @@ func TestRemoteRuntimeSchemaValidationErrors(t *testing.T) {
 
 func remoteChapterValidationSchemaForTest() []byte {
 	return []byte(`{
-		"type":"object",
-		"required":["ordinal","body"],
-		"allOf":[
-			{
-				"if":{"properties":{"ordinal":{"const":0}},"required":["ordinal"]},
-				"then":{"properties":{"body":{
-					"type":"object",
-					"required":["kind","input"],
-					"properties":{
-						"kind":{"const":"jobStart"},
-						"input":{
-							"type":"object",
-							"required":["kind"],
-							"properties":{"kind":{"const":"valid"}}
-						}
-					}
-				}}}
-			},
-			{
-				"if":{"properties":{"ordinal":{"minimum":1}},"required":["ordinal"]},
-				"then":{"properties":{"body":{
+		"chapterShape":{
+			"type":"object",
+			"required":["body"],
+			"properties":{
+				"body":{
 					"type":"object",
 					"required":["kind","outcome"],
 					"properties":{
@@ -624,9 +616,28 @@ func remoteChapterValidationSchemaForTest() []byte {
 							}
 						}
 					}
-				}}}
+				}
 			}
-		]
+		},
+		"firstChapterShape":{
+			"type":"object",
+			"required":["ordinal","body"],
+			"properties":{
+				"ordinal":{"const":0},
+				"body":{
+					"type":"object",
+					"required":["kind","input"],
+					"properties":{
+						"kind":{"const":"jobStart"},
+						"input":{
+							"type":"object",
+							"required":["kind"],
+							"properties":{"kind":{"const":"valid"}}
+						}
+					}
+				}
+			}
+		}
 	}`)
 }
 
