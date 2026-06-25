@@ -108,26 +108,16 @@ matches JSON Schema semantics.
 
 ## Compatibility
 
-There are existing registered schemas whose document is directly a JSON Schema
-for every chapter. Treat those as legacy documents equivalent to:
+Do not support legacy raw JSON Schema documents in this change. A registered
+JobDB schema document must use the formal envelope and must include
+`chapterShape`.
 
-```json
-{
-  "chapterShape": <legacy-schema>
-}
-```
+Reject documents that do not use the envelope. This keeps the mental model
+simple: every JobDB schema has the same top-level shape, and every shape slot is
+explicitly named.
 
-Compatibility detection should be explicit and conservative:
-
-- A document with any of `chapterShape`, `firstChapterShape`, or
-  `lastChapterShape` is parsed as the new envelope.
-- A document without those fields is parsed as a legacy all-chapters schema.
-- A new-envelope document must not have unknown top-level fields except
-  metadata fields that we explicitly allow, such as `$schema` and `description`.
-
-This keeps old schema hashes meaningful and avoids forcing an immediate registry
-migration. New envelope schemas naturally hash to different values because the
-stored document bytes differ.
+The envelope must not have unknown top-level fields except metadata fields that
+we explicitly allow, such as `$schema` and `description`.
 
 ## Validation Roles
 
@@ -290,7 +280,6 @@ type ParsedJobSchema struct {
     ChapterShape      json.RawMessage
     FirstChapterShape json.RawMessage
     LastChapterShape  json.RawMessage
-    Legacy            bool
 }
 
 func ParseJobSchemaDocument(raw json.RawMessage) (ParsedJobSchema, error)
@@ -300,9 +289,10 @@ Responsibilities:
 
 1. Decode exactly one JSON value.
 2. Require the root value to be an object.
-3. Detect legacy vs envelope mode.
-4. In envelope mode, require `chapterShape`.
-5. Permit each shape to be a JSON object or boolean.
+3. Require `chapterShape`.
+4. Permit each shape to be a JSON object or boolean.
+5. Reject unknown top-level fields other than explicitly allowed metadata
+   fields.
 6. Reject invalid JSON Schema fragments during registration.
 7. Canonicalize the whole stored document for hashing, not each fragment
    independently.
@@ -334,14 +324,12 @@ jobdb-schema:///sha256:<hash>/first
 jobdb-schema:///sha256:<hash>/last
 ```
 
-For legacy documents, compile the raw document as `chapter`; `first` and `last`
-remain nil.
-
 ## Error Behavior
 
 Keep `jobdb.ErrJobSchemaValidation` for:
 
 - invalid envelope documents;
+- missing `chapterShape`;
 - invalid JSON Schema fragments;
 - chapter validation failure for any role.
 
@@ -375,15 +363,15 @@ sentinel.
    - `firstChapterShape` overrides only submit/retained first chapter;
    - `lastChapterShape` overrides only lease completion;
    - ordinary `PutChapter` does not use `lastChapterShape`;
-   - legacy raw schemas still validate all roles;
+   - raw JSON Schema documents without `chapterShape` are rejected;
    - invalid envelope shape fragments are rejected at registration.
 
 ## Rollout Notes
 
-- Existing stored schemas continue to work as legacy all-chapter schemas.
-- New clients can start sending the formal envelope immediately after the parser
-  and OpenAPI changes land.
-- Existing clients that send raw JSON Schema documents should keep working until
-  we intentionally remove legacy mode.
+- New clients must send the formal envelope immediately after the parser and
+  OpenAPI changes land.
+- Existing raw-schema documents will not register under the new parser. If any
+  are already stored in non-production data, re-register them as
+  `{ "chapterShape": <raw-schema> }`.
 - The archive model does not change. An archived schema remains valid for
   mutable jobs that already reference its hash.
