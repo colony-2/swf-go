@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,16 +215,29 @@ func TestSubmitJobSchemaAssociation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("complete valid schema chapter after archive: %v", err)
 	}
-	_, err = rt.SubmitJob(ctx, jobdb.SubmitJobRequest{
-		Job: jobdb.SubmitJob{
-			TenantId: tenantID,
-			JobType:  "archived-schema-job",
-			Data:     jobdb.NewTaskDataOrPanic(map[string]string{"kind": "valid"}),
-			Schema:   &jobdb.JobSchemaSelector{Hash: registered.SchemaHash},
-		},
-	})
-	if !errors.Is(err, jobdb.ErrJobSchemaArchived) {
-		t.Fatalf("submit archived schema error = %v, want ErrJobSchemaArchived", err)
+	for _, tc := range []struct {
+		name     string
+		selector *jobdb.JobSchemaSelector
+	}{
+		{name: "hash", selector: &jobdb.JobSchemaSelector{Hash: registered.SchemaHash}},
+		{name: "inline", selector: &jobdb.JobSchemaSelector{Schema: schema}},
+	} {
+		t.Run("submit archived schema by "+tc.name, func(t *testing.T) {
+			_, err = rt.SubmitJob(ctx, jobdb.SubmitJobRequest{
+				Job: jobdb.SubmitJob{
+					TenantId: tenantID,
+					JobType:  "archived-schema-job-" + tc.name,
+					Data:     jobdb.NewTaskDataOrPanic(map[string]string{"kind": "valid"}),
+					Schema:   tc.selector,
+				},
+			})
+			if !errors.Is(err, jobdb.ErrJobSchemaArchived) {
+				t.Fatalf("submit archived schema error = %v, want ErrJobSchemaArchived", err)
+			}
+			if !strings.Contains(err.Error(), jobdb.ErrJobSchemaArchived.Error()) {
+				t.Fatalf("submit archived schema error = %q, want message containing %q", err.Error(), jobdb.ErrJobSchemaArchived.Error())
+			}
+		})
 	}
 
 	plain, err := rt.SubmitJob(ctx, jobdb.SubmitJobRequest{

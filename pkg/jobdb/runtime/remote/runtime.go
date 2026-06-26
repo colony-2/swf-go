@@ -828,6 +828,9 @@ func responseError(operation string, status int, body []byte, sentinel error) er
 			return fmt.Errorf("%w: %s", sentinel, message)
 		}
 	case http.StatusConflict:
+		if err := archivedSchemaError(message); err != nil {
+			return err
+		}
 		if sentinel != nil {
 			return fmt.Errorf("%w: %s", sentinel, message)
 		}
@@ -859,6 +862,9 @@ func responseErrorWithConflict(operation string, status int, body []byte, notFou
 			return fmt.Errorf("%w: %s", notFoundSentinel, message)
 		}
 	case http.StatusConflict:
+		if err := archivedSchemaError(message); err != nil {
+			return err
+		}
 		if conflictSentinel != nil {
 			return fmt.Errorf("%w: %s", conflictSentinel, message)
 		}
@@ -881,6 +887,9 @@ func explicitJobCreateError(operation string, status int, body []byte, conflict 
 		}
 		return fmt.Errorf("%s: %s", operation, message)
 	case http.StatusConflict:
+		if err := archivedSchemaError(message); err != nil {
+			return err
+		}
 		if conflict != nil && conflict.Code == runtimeapi.ExistingJobMismatch {
 			return jobdb.NewExistingJobMismatchError(message)
 		}
@@ -888,6 +897,16 @@ func explicitJobCreateError(operation string, status int, body []byte, conflict 
 	default:
 		return fmt.Errorf("%s: http %d: %s", operation, status, message)
 	}
+}
+
+func archivedSchemaError(message string) error {
+	if !strings.Contains(message, jobdb.ErrJobSchemaArchived.Error()) {
+		return nil
+	}
+	if message == jobdb.ErrJobSchemaArchived.Error() {
+		return jobdb.ErrJobSchemaArchived
+	}
+	return fmt.Errorf("%w: %s", jobdb.ErrJobSchemaArchived, message)
 }
 
 func predicatesFilter(predicates []jobdb.MetadataPredicate) jobdb.MetadataFilter {
