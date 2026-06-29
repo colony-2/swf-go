@@ -27,6 +27,10 @@ import (
 )
 
 func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	return r.submitJobWithParent(ctx, req, "")
+}
+
+func (r *Runtime) submitJobWithParent(ctx context.Context, req jobdb.SubmitJobRequest, parentJobID string) (jobdb.JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -48,7 +52,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
@@ -81,7 +85,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	}
 	if _, err := r.chapterStore.CreateStory(sctx, storyKeyForJob(jobKey), story.CreateOptions{RequestID: uuid.New().String(), InitialChapter: initialChapter}); err != nil {
 		if req.Job.JobID != "" && errors.Is(err, core.ErrConflict) {
-			if handle, handled, reconcileErr := r.reconcileExistingSubmitJob(ctx, req, jobKey, inputHash, prereqs, waitFor, jobPolicy, schemaHash); handled || reconcileErr != nil {
+			if handle, handled, reconcileErr := r.reconcileExistingSubmitJob(ctx, req, jobKey, inputHash, prereqs, waitFor, jobPolicy, schemaHash, parentJobID); handled || reconcileErr != nil {
 				return handle, reconcileErr
 			}
 		}
@@ -98,6 +102,10 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 }
 
 func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	return r.submitRestartJobWithParent(ctx, req, "")
+}
+
+func (r *Runtime) submitRestartJobWithParent(ctx context.Context, req jobdb.SubmitRestartJobRequest, parentJobID string) (jobdb.JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -119,7 +127,7 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJ
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(nil, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(nil, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
@@ -625,6 +633,9 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 	if err := r.validate(); err != nil {
 		return jobdb.ListJobsResponse{}, err
 	}
+	if req.RootOnly && len(req.ParentJobIDs) > 0 {
+		return jobdb.ListJobsResponse{}, fmt.Errorf("RootOnly cannot be combined with ParentJobIDs")
+	}
 	if len(req.TenantIds) == 0 {
 		return jobdb.ListJobsResponse{}, fmt.Errorf("tenant_ids is required for ListJobs")
 	}
@@ -678,6 +689,7 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 	statusAllowed := statusSet(req.Statuses)
 	jobKeyAllowed := jobKeySet(req.JobKeys)
 	jobTypeAllowed := stringSet(req.JobTypes)
+	parentJobIDAllowed := stringSet(req.ParentJobIDs)
 	includeActive, includeArchive, err := listStoreSelection(req)
 	if err != nil {
 		return jobdb.ListJobsResponse{}, err
@@ -711,6 +723,20 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 			continue
 		}
 		if len(req.JobTasks) > 0 && !jobTaskMatches(row.nextNeed, req.JobTasks) {
+			continue
+		}
+		parentJobID := ""
+		if row.parentJobID.Valid {
+			parentJobID = row.parentJobID.String
+		} else if extracted, ok, err := jobdb.ExtractParentJobID(row.metadata); err != nil {
+			return jobdb.ListJobsResponse{}, err
+		} else if ok {
+			parentJobID = extracted
+		}
+		if req.RootOnly && parentJobID != "" {
+			continue
+		}
+		if len(parentJobIDAllowed) > 0 && !parentJobIDAllowed[parentJobID] {
 			continue
 		}
 		createdAt := timeFromNS(row.createdAtNS)
@@ -756,6 +782,7 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 			Payload:         jobPayloadVisibleJSON(row.payload),
 			Metadata:        jobdb.StripRuntimeMetadata(row.metadata),
 			SchemaHash:      jobmetadata.SchemaHashFromStoredMetadata(row.metadata),
+			ParentJobID:     parentJobID,
 		}
 		if tw, waitErr := extractTaskWaitFromRaw(row.payload); waitErr == nil && tw != nil {
 			summary.TaskWaitInput = &tw.InputStep

@@ -154,6 +154,9 @@ type ExecutionLease interface
   method Payload func() encoding/json.RawMessage
   method Reschedule func(ctx context.Context, req RescheduleExecutionRequest) error
   method StopKeepAlive func()
+  method SubmitJob func(ctx context.Context, req SubmitJobRequest) (JobHandle, error)
+  method SubmitRestartJob func(ctx context.Context, req SubmitRestartJobRequest) (JobHandle, error)
+func ExtractParentJobID func(raw encoding/json.RawMessage) (string, bool, error)
 func ExtractScheduleOccurrenceMetadata func(raw encoding/json.RawMessage) (ScheduleOccurrenceMetadata, bool, error)
 func ExtractTaskDataResult func(data TaskData) (TaskData, error)
 type FieldName string
@@ -292,6 +295,7 @@ type JobSummary struct
   field Payload encoding/json.RawMessage
   field Metadata encoding/json.RawMessage
   field SchemaHash string
+  field ParentJobID string
   field TaskWaitInput *int64
   field TaskWaitOutput *int64
   field TaskWaitInputHash *string
@@ -316,6 +320,8 @@ type ListJobsRequest struct
   field JobTypes []string
   field JobTasks []JobTaskFilter
   field JobKeys []JobKey
+  field ParentJobIDs []string
+  field RootOnly bool
   field MetadataFilter MetadataFilter
   field CreatedAfter *time.Time
   field CreatedBefore *time.Time
@@ -411,6 +417,7 @@ type RunPolicy struct
 type RuntimeJobMetadata struct
   field Schedule *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
   field SchemaHash string `json:"schemaHash,omitempty"`
+  field ParentJobID string `json:"parentJobId,omitempty"`
 type ScheduleFailureHistory struct
   field Bits string `json:"bits,omitempty"`
   field WindowSize int `json:"windowSize,omitempty"`
@@ -775,6 +782,8 @@ type JobContext interface
   method DoTask func(policy RunPolicy, taskType string, data TaskData) (TaskData, error)
   method GetJobKey func() JobKey
   method Logger func() *log/slog.Logger
+  method SubmitJob func(ctx context.Context, submit SubmitJob) (JobKey, error)
+  method SubmitRestartJob func(ctx context.Context, restart SubmitRestartJob) (JobKey, error)
 type JobData = github.com/colony-2/jobdb/pkg/jobdb.TaskData
 type JobEndEvent struct
   field JobKey JobKey
@@ -933,6 +942,8 @@ type TaskContext struct
   field Logger *log/slog.Logger
 method TaskContext.AwaitDuration func(waitFor Duration) error
 method TaskContext.AwaitJobs func(jobIds ...string) error
+method TaskContext.SubmitJob func(ctx context.Context, submit SubmitJob) (JobKey, error)
+method TaskContext.SubmitRestartJob func(ctx context.Context, restart SubmitRestartJob) (JobKey, error)
 type TaskData = github.com/colony-2/jobdb/pkg/jobdb.TaskData
 type TaskDeterminismMeta struct
   field Ordinal int64 `json:"ordinal"`
@@ -1104,7 +1115,9 @@ method Runtime.RegisterJobSchema func(ctx context.Context, req github.com/colony
 method Runtime.RescheduleJobWithLeaseByID func(ctx context.Context, jobKey github.com/colony-2/jobdb/pkg/jobdb.JobKey, leaseID string, workerID string, req github.com/colony-2/jobdb/pkg/jobdb.RescheduleExecutionRequest) error
 method Runtime.ResumeSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.ScheduleMutationRequest) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
 method Runtime.SubmitJob func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.SubmitJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
+method Runtime.SubmitJobWithLeaseByID func(ctx context.Context, parentJobKey github.com/colony-2/jobdb/pkg/jobdb.JobKey, leaseID string, workerID string, req github.com/colony-2/jobdb/pkg/jobdb.SubmitJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
 method Runtime.SubmitRestartJob func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.SubmitRestartJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
+method Runtime.SubmitRestartJobWithLeaseByID func(ctx context.Context, parentJobKey github.com/colony-2/jobdb/pkg/jobdb.JobKey, leaseID string, workerID string, req github.com/colony-2/jobdb/pkg/jobdb.SubmitRestartJobRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
 method Runtime.TriggerSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.TriggerScheduleRequest) (github.com/colony-2/jobdb/pkg/jobdb.JobHandle, error)
 method Runtime.UpsertSchedule func(ctx context.Context, req github.com/colony-2/jobdb/pkg/jobdb.UpsertScheduleRequest) (github.com/colony-2/jobdb/pkg/jobdb.ScheduleInfo, error)
 func StartEmbeddedRuntime func(ctx context.Context) (*EmbeddedRuntime, error)

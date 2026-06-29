@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS jobdb_jobs (
 	next_need TEXT NOT NULL,
 	payload BLOB NOT NULL DEFAULT x'',
 	metadata BLOB,
+	parent_job_id TEXT,
 	wait_for BLOB NOT NULL DEFAULT x'',
 	available_at_ns INTEGER NOT NULL,
 	created_at_ns INTEGER NOT NULL,

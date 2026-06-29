@@ -171,6 +171,130 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs:
+    post:
+      tags: [leases]
+      operationId: submitJobWithLease
+      summary: Submit child job with lease
+      description: |
+        Submits a new child job while holding the identified parent job lease.
+        The request body is the same shape as `submitJob`; the parent tenant is
+        taken from the path and the server records the parent job ID in internal
+        job metadata.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/ParentJobId'
+        - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitJobRequest'
+      responses:
+        '200':
+          description: Child job submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobHandle'
+  /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}:
+    put:
+      tags: [leases]
+      operationId: putJobWithLease
+      summary: Submit child job with explicit job ID and lease
+      description: |
+        Submits a new child job with the path-supplied child job ID while
+        holding the identified parent job lease. Equivalent requests are
+        idempotent using the same semantics as `putJob`, including the stored
+        parent job ID.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/ParentJobId'
+        - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/ChildJobId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitJobRequest'
+      responses:
+        '200':
+          description: Child job submitted or confirmed/recovered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobHandle'
+        '409':
+          description: Existing job does not match the requested durable state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/restarts:
+    post:
+      tags: [leases]
+      operationId: submitRestartJobWithLease
+      summary: Submit child restart job with lease
+      description: |
+        Submits a restart child job while holding the identified parent job
+        lease. The prior job tenant must match the path tenant when supplied.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/ParentJobId'
+        - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitRestartJobRequest'
+      responses:
+        '200':
+          description: Child restart job submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobHandle'
+  /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}/restart:
+    put:
+      tags: [leases]
+      operationId: putRestartJobWithLease
+      summary: Submit child restart job with explicit job ID and lease
+      description: |
+        Submits a restart child job with the path-supplied child job ID while
+        holding the identified parent job lease. Equivalent requests are
+        idempotent using the same semantics as `putRestartJob`, including the
+        stored parent job ID.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - $ref: '#/components/parameters/ParentJobId'
+        - $ref: '#/components/parameters/LeaseId'
+        - $ref: '#/components/parameters/ChildJobId'
+        - $ref: '#/components/parameters/LeaseTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitRestartJobRequest'
+      responses:
+        '200':
+          description: Child restart job submitted or confirmed/recovered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobHandle'
+        '409':
+          description: Existing job does not match the requested durable state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /v1/tenants/{tenantId}/jobs/query:
     post:
       tags: [jobs]
@@ -688,6 +812,18 @@ components:
         type: string
     JobId:
       name: jobId
+      in: path
+      required: true
+      schema:
+        type: string
+    ParentJobId:
+      name: parentJobId
+      in: path
+      required: true
+      schema:
+        type: string
+    ChildJobId:
+      name: childJobId
       in: path
       required: true
       schema:
@@ -1898,6 +2034,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/JobKey'
+        parentJobIds:
+          type: array
+          description: Direct parent job IDs whose children should be returned.
+          items:
+            type: string
+        rootOnly:
+          type: boolean
+          description: Return only jobs without a parent job ID.
         metadataPredicates:
           type: array
           description: |
@@ -1970,6 +2114,8 @@ components:
           $ref: '#/components/schemas/Metadata'
         schemaHash:
           $ref: '#/components/schemas/JobSchemaHash'
+        parentJobId:
+          type: string
         taskWaitInput:
           x-go-type: int64
           oneOf:

@@ -178,8 +178,9 @@ type ScheduleFailureHistory struct {
 }
 
 type RuntimeJobMetadata struct {
-	Schedule   *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
-	SchemaHash string                      `json:"schemaHash,omitempty"`
+	Schedule    *ScheduleOccurrenceMetadata `json:"schedule,omitempty"`
+	SchemaHash  string                      `json:"schemaHash,omitempty"`
+	ParentJobID string                      `json:"parentJobId,omitempty"`
 }
 
 type JobMetadataEnvelope struct {
@@ -390,7 +391,8 @@ func storedInternalMetadataKnown(raw json.RawMessage) bool {
 	}
 	_, hasSchedule := internal["schedule"]
 	_, hasSchemaHash := internal["schemaHash"]
-	return hasSchedule || hasSchemaHash
+	_, hasParentJobID := internal["parentJobId"]
+	return hasSchedule || hasSchemaHash || hasParentJobID
 }
 
 func MergeScheduleOccurrenceMetadata(appMetadata json.RawMessage, occurrence ScheduleOccurrenceMetadata, manual bool) (json.RawMessage, error) {
@@ -421,7 +423,27 @@ func BuildJobMetadataEnvelope(appMetadata json.RawMessage, internal RuntimeJobMe
 }
 
 func runtimeJobMetadataEmpty(meta RuntimeJobMetadata) bool {
-	return meta.Schedule == nil && strings.TrimSpace(meta.SchemaHash) == ""
+	return meta.Schedule == nil && strings.TrimSpace(meta.SchemaHash) == "" && strings.TrimSpace(meta.ParentJobID) == ""
+}
+
+func ExtractParentJobID(raw json.RawMessage) (string, bool, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return "", false, nil
+	}
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return "", false, fmt.Errorf("metadata must be a JSON object: %w", err)
+	}
+	internalRaw, ok := root["internal"]
+	if !ok {
+		return "", false, nil
+	}
+	var runtimeMeta RuntimeJobMetadata
+	if err := json.Unmarshal(internalRaw, &runtimeMeta); err != nil {
+		return "", true, fmt.Errorf("internal metadata must be a JSON object: %w", err)
+	}
+	parentJobID := strings.TrimSpace(runtimeMeta.ParentJobID)
+	return parentJobID, parentJobID != "", nil
 }
 
 func ExtractScheduleOccurrenceMetadata(raw json.RawMessage) (ScheduleOccurrenceMetadata, bool, error) {

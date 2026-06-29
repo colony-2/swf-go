@@ -603,6 +603,9 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jo
 	if len(req.TenantIds) == 0 {
 		return jobdb.ListJobsResponse{}, fmt.Errorf("tenant_ids is required for ListJobs")
 	}
+	if req.RootOnly && len(req.ParentJobIDs) > 0 {
+		return jobdb.ListJobsResponse{}, fmt.Errorf("RootOnly cannot be combined with ParentJobIDs")
+	}
 
 	pageSize := req.PageSize
 	if pageSize <= 0 {
@@ -709,6 +712,18 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jo
 		return false
 	}
 
+	parentJobIDAllowed := func(parentJobID string) bool {
+		if len(req.ParentJobIDs) == 0 {
+			return true
+		}
+		for _, expect := range req.ParentJobIDs {
+			if parentJobID == expect {
+				return true
+			}
+		}
+		return false
+	}
+
 	jobTaskAllowed := func(rec *jobRecord) bool {
 		if len(req.JobTasks) == 0 {
 			return true
@@ -783,6 +798,20 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jo
 			rec.mu.Unlock()
 			continue
 		}
+		parentJobID, hasParent, err := jobdb.ExtractParentJobID(rec.metadata)
+		if err != nil {
+			rec.mu.Unlock()
+			e.mu.Unlock()
+			return jobdb.ListJobsResponse{}, err
+		}
+		if req.RootOnly && hasParent {
+			rec.mu.Unlock()
+			continue
+		}
+		if !parentJobIDAllowed(parentJobID) {
+			rec.mu.Unlock()
+			continue
+		}
 		if req.CreatedAfter != nil && rec.createdAt.Before(*req.CreatedAfter) {
 			rec.mu.Unlock()
 			continue
@@ -825,6 +854,7 @@ func (e *ToyEngine) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jo
 			Payload:           payloadCopy,
 			Metadata:          metadataCopy,
 			SchemaHash:        jobmetadata.SchemaHashFromStoredMetadata(rec.metadata),
+			ParentJobID:       parentJobID,
 			TaskWaitInput:     nil,
 			TaskWaitOutput:    nil,
 			TaskWaitInputHash: nil,

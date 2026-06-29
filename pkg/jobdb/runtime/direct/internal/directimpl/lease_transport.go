@@ -187,6 +187,48 @@ func (r *Runtime) RescheduleJobWithLeaseByID(ctx context.Context, jobKey jobdb.J
 	return nil
 }
 
+func (r *Runtime) SubmitJobWithLeaseByID(ctx context.Context, parentJobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	if err := r.validateLeaseByID(ctx, parentJobKey, leaseID, workerID); err != nil {
+		return jobdb.JobHandle{}, err
+	}
+	req.Job.TenantId = parentJobKey.TenantId
+	return r.submitJobWithParent(ctx, req, parentJobKey.JobId)
+}
+
+func (r *Runtime) SubmitRestartJobWithLeaseByID(ctx context.Context, parentJobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	if err := r.validateLeaseByID(ctx, parentJobKey, leaseID, workerID); err != nil {
+		return jobdb.JobHandle{}, err
+	}
+	if req.Job.PriorJobKey.TenantId != "" && req.Job.PriorJobKey.TenantId != parentJobKey.TenantId {
+		return jobdb.JobHandle{}, fmt.Errorf("prior job tenantId must match parent tenantId")
+	}
+	req.Job.PriorJobKey.TenantId = parentJobKey.TenantId
+	return r.submitRestartJobWithParent(ctx, req, parentJobKey.JobId)
+}
+
+func (r *Runtime) validateLeaseByID(ctx context.Context, jobKey jobdb.JobKey, leaseID string, workerID string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := r.validate(); err != nil {
+		return err
+	}
+	if leaseID == "" || workerID == "" {
+		return jobdb.ErrExecutionLeaseLost
+	}
+	status, err := pgwf.GetJobStatus(ctx, r.pgwfDB(ctx), pgwf.TenantID(jobKey.TenantId), pgwf.JobID(jobKey.JobId))
+	if err != nil {
+		return directLeaseMutationError(err)
+	}
+	if status == nil || status.LeaseID == nil || *status.LeaseID != leaseID || status.LeaseExpiresAt == nil {
+		return jobdb.ErrExecutionLeaseLost
+	}
+	if !status.LeaseExpiresAt.After(time.Now().UTC()) {
+		return jobdb.ErrExecutionLeaseLost
+	}
+	return nil
+}
+
 func directLeaseMutationError(err error) error {
 	if err == nil {
 		return nil

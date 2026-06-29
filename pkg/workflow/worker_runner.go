@@ -362,6 +362,48 @@ func (r *workerRunner) AwaitJobs(jobIds ...string) error {
 	return nil
 }
 
+func (r *workerRunner) SubmitJob(ctx context.Context, submit SubmitJob) (JobKey, error) {
+	if r.lease == nil || r.replay {
+		return JobKey{}, fmt.Errorf("submitting jobs requires an active execution lease")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if submit.TenantId == "" {
+		submit.TenantId = r.GetJobKey().TenantId
+	}
+	handle, err := r.lease.SubmitJob(ctx, SubmitJobRequest{
+		Job:         submit,
+		RequestTime: nowUTC(),
+		WorkerID:    r.workerID,
+	})
+	if err != nil {
+		return JobKey{}, err
+	}
+	return handle.JobKey, nil
+}
+
+func (r *workerRunner) SubmitRestartJob(ctx context.Context, restart SubmitRestartJob) (JobKey, error) {
+	if r.lease == nil || r.replay {
+		return JobKey{}, fmt.Errorf("submitting restart jobs requires an active execution lease")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if restart.PriorJobKey.TenantId == "" {
+		restart.PriorJobKey.TenantId = r.GetJobKey().TenantId
+	}
+	handle, err := r.lease.SubmitRestartJob(ctx, SubmitRestartJobRequest{
+		Job:         restart,
+		RequestTime: nowUTC(),
+		WorkerID:    r.workerID,
+	})
+	if err != nil {
+		return JobKey{}, err
+	}
+	return handle.JobKey, nil
+}
+
 func (r *workerRunner) AwaitDuration(waitFor Duration) error {
 	wait := waitFor.ToDuration()
 	if wait <= 0 {
@@ -909,7 +951,7 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 					}
 					taskErr = normalizeComparableError(taskErr)
 				}()
-				output, taskErr = worker.Run(NewTaskContext(
+				output, taskErr = worker.Run(newTaskContextWithLeaseActions(
 					r.GetJobKey(),
 					ordinal,
 					r.logger.With("task", taskType, "step", ordinal, "attempt", attemptNum),
@@ -927,6 +969,8 @@ func (r *workerRunner) DoTask(policy RunPolicy, taskType string, data TaskData) 
 						}
 						return nil
 					},
+					r.SubmitJob,
+					r.SubmitRestartJob,
 				), data)
 			}()
 			resultCh <- taskResult{output: output, err: taskErr}

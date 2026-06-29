@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"sort"
@@ -299,6 +300,8 @@ type fakeExecutionLease struct {
 	stopKeepAliveCalls int
 	completeCalls      []CompleteExecutionRequest
 	rescheduleCalls    []RescheduleExecutionRequest
+	submitJobCalls     []SubmitJobRequest
+	submitRestartCalls []SubmitRestartJobRequest
 	completeErr        error
 	rescheduleErr      error
 }
@@ -370,12 +373,97 @@ func (l *fakeExecutionLease) Reschedule(_ context.Context, req RescheduleExecuti
 	return l.rescheduleErr
 }
 
+func (l *fakeExecutionLease) SubmitJob(_ context.Context, req SubmitJobRequest) (JobHandle, error) {
+	if req.Job.TenantId == "" {
+		req.Job.TenantId = l.job.JobKey.TenantId
+	}
+	l.mu.Lock()
+	if req.Job.JobID == "" {
+		req.Job.JobID = fmt.Sprintf("child-%d", len(l.submitJobCalls)+1)
+	}
+	l.submitJobCalls = append(l.submitJobCalls, req)
+	l.mu.Unlock()
+	return JobHandle{JobKey: JobKey{TenantId: req.Job.TenantId, JobId: req.Job.JobID}}, nil
+}
+
+func (l *fakeExecutionLease) SubmitRestartJob(_ context.Context, req SubmitRestartJobRequest) (JobHandle, error) {
+	if req.Job.PriorJobKey.TenantId == "" {
+		req.Job.PriorJobKey.TenantId = l.job.JobKey.TenantId
+	}
+	l.mu.Lock()
+	if req.Job.JobID == "" {
+		req.Job.JobID = fmt.Sprintf("child-restart-%d", len(l.submitRestartCalls)+1)
+	}
+	l.submitRestartCalls = append(l.submitRestartCalls, req)
+	l.mu.Unlock()
+	return JobHandle{JobKey: JobKey{TenantId: req.Job.PriorJobKey.TenantId, JobId: req.Job.JobID}}, nil
+}
+
 func (l *fakeExecutionLease) snapshot() (int, int, []CompleteExecutionRequest, []RescheduleExecutionRequest) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	complete := append([]CompleteExecutionRequest(nil), l.completeCalls...)
 	reschedule := append([]RescheduleExecutionRequest(nil), l.rescheduleCalls...)
 	return l.keepAliveCalls, l.stopKeepAliveCalls, complete, reschedule
+}
+
+func TestWorkerRunnerContextSubmitJobUsesLease(t *testing.T) {
+	parent := JobKey{TenantId: "tenant-context-submit", JobId: "parent"}
+	lease := &fakeExecutionLease{
+		leaseID:    "lease-context-submit",
+		job:        JobHandle{JobKey: parent},
+		capability: "parent",
+		payload:    json.RawMessage(`{}`),
+	}
+	runner := &workerRunner{
+		lease:    lease,
+		workerID: "worker-context-submit",
+		jobKey:   parent,
+	}
+
+	var jobCtx JobContext = runner
+	childKey, err := jobCtx.SubmitJob(context.Background(), SubmitJob{
+		JobID:   "child",
+		JobType: "child-type",
+		Data:    &SimpleTaskData{Data: json.RawMessage(`{"n":1}`)},
+	})
+	if err != nil {
+		t.Fatalf("job context submit job: %v", err)
+	}
+	if childKey != (JobKey{TenantId: parent.TenantId, JobId: "child"}) {
+		t.Fatalf("child key = %+v", childKey)
+	}
+
+	taskCtx := newTaskContextWithLeaseActions(parent, 1, nil, nil, nil, runner.SubmitJob, runner.SubmitRestartJob)
+	restartKey, err := taskCtx.SubmitRestartJob(context.Background(), SubmitRestartJob{
+		JobID:          "child-restart",
+		PriorJobKey:    JobKey{JobId: "prior"},
+		LastStepToKeep: 0,
+	})
+	if err != nil {
+		t.Fatalf("task context submit restart job: %v", err)
+	}
+	if restartKey != (JobKey{TenantId: parent.TenantId, JobId: "child-restart"}) {
+		t.Fatalf("restart key = %+v", restartKey)
+	}
+
+	lease.mu.Lock()
+	defer lease.mu.Unlock()
+	if len(lease.submitJobCalls) != 1 {
+		t.Fatalf("submit job calls = %d, want 1", len(lease.submitJobCalls))
+	}
+	if lease.submitJobCalls[0].WorkerID != "worker-context-submit" {
+		t.Fatalf("submit job worker = %q", lease.submitJobCalls[0].WorkerID)
+	}
+	if lease.submitJobCalls[0].Job.TenantId != parent.TenantId {
+		t.Fatalf("submit job tenant = %q, want %q", lease.submitJobCalls[0].Job.TenantId, parent.TenantId)
+	}
+	if len(lease.submitRestartCalls) != 1 {
+		t.Fatalf("submit restart calls = %d, want 1", len(lease.submitRestartCalls))
+	}
+	if lease.submitRestartCalls[0].Job.PriorJobKey.TenantId != parent.TenantId {
+		t.Fatalf("restart prior tenant = %q, want %q", lease.submitRestartCalls[0].Job.PriorJobKey.TenantId, parent.TenantId)
+	}
 }
 
 func seedJobStartForTest(t *testing.T, runtime *runnerTestRuntime, jobKey JobKey, jobType string, input TaskData, policy RunPolicy) {

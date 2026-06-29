@@ -171,6 +171,10 @@ func resolveBlobStoreURI(uri string) string {
 }
 
 func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	return r.submitJobWithParent(ctx, req, "")
+}
+
+func (r *Runtime) submitJobWithParent(ctx context.Context, req jobdb.SubmitJobRequest, parentJobID string) (jobdb.JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -196,7 +200,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
@@ -228,7 +232,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	}
 	if _, err := r.chapterStore.CreateStory(ctx, storyKeyForJob(jobKey), co); err != nil {
 		if req.Job.JobID != "" && errors.Is(err, core.ErrConflict) {
-			if handle, handled, reconcileErr := r.reconcileExistingSubmitJob(ctx, req, jobKey, inputHash, prereqs, waitFor, jobPolicy, schemaHash); handled || reconcileErr != nil {
+			if handle, handled, reconcileErr := r.reconcileExistingSubmitJob(ctx, req, jobKey, inputHash, prereqs, waitFor, jobPolicy, schemaHash, parentJobID); handled || reconcileErr != nil {
 				return handle, reconcileErr
 			}
 		}
@@ -249,6 +253,10 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 }
 
 func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	return r.submitRestartJobWithParent(ctx, req, "")
+}
+
+func (r *Runtime) submitRestartJobWithParent(ctx context.Context, req jobdb.SubmitRestartJobRequest, parentJobID string) (jobdb.JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -274,7 +282,7 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJ
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(nil, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(nil, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
@@ -590,6 +598,9 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 	if len(req.TenantIds) == 0 {
 		return jobdb.ListJobsResponse{}, fmt.Errorf("tenant_ids is required for ListJobs")
 	}
+	if req.RootOnly && len(req.ParentJobIDs) > 0 {
+		return jobdb.ListJobsResponse{}, fmt.Errorf("RootOnly cannot be combined with ParentJobIDs")
+	}
 
 	metadataPredicates, err := metadataPredicatesToPgwf(req.MetadataFilter)
 	if err != nil {
@@ -622,6 +633,10 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 	for _, jk := range req.JobKeys {
 		requestedJobKeys[jk] = true
 	}
+	requestedParentJobIDs := make(map[string]bool, len(req.ParentJobIDs))
+	for _, id := range req.ParentJobIDs {
+		requestedParentJobIDs[id] = true
+	}
 
 	jobs := make([]jobdb.JobSummary, 0, len(result.Jobs))
 	for _, job := range result.Jobs {
@@ -631,6 +646,16 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 		}
 		jobdbStatus := convertPgwfStatusToJobDB(job.Status, job.CancelRequested, job.ArchivedAt)
 		if len(requestedStatuses) > 0 && !requestedStatuses[jobdbStatus] {
+			continue
+		}
+		parentJobID, hasParent, err := jobdb.ExtractParentJobID(job.Metadata)
+		if err != nil {
+			return jobdb.ListJobsResponse{}, err
+		}
+		if req.RootOnly && hasParent {
+			continue
+		}
+		if len(requestedParentJobIDs) > 0 && !requestedParentJobIDs[parentJobID] {
 			continue
 		}
 		summary := jobdb.JobSummary{
@@ -647,6 +672,7 @@ func (r *Runtime) ListJobs(ctx context.Context, req jobdb.ListJobsRequest) (jobd
 			ArchivedAt:      job.ArchivedAt,
 			Metadata:        jobdb.StripRuntimeMetadata(job.Metadata),
 			SchemaHash:      jobmetadata.SchemaHashFromStoredMetadata(job.Metadata),
+			ParentJobID:     parentJobID,
 		}
 		if strings.Contains(job.NextNeed, ":") {
 			details, detailErr := pgwf.GetJob(ctx, r.pgwfDB(ctx), pgwf.TenantID(job.TenantID), pgwf.JobID(job.JobID), pgwf.GetJobOptions{IncludePayload: true})
@@ -1217,4 +1243,18 @@ func (l *executionLease) Reschedule(ctx context.Context, req jobdb.RescheduleExe
 		}
 	}
 	return err
+}
+
+func (l *executionLease) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	if l.runtime == nil {
+		return jobdb.JobHandle{}, fmt.Errorf("runtime is required for lease child submission")
+	}
+	return l.runtime.SubmitJobWithLeaseByID(ctx, l.Job().JobKey, l.LeaseID(), l.workerID, req)
+}
+
+func (l *executionLease) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	if l.runtime == nil {
+		return jobdb.JobHandle{}, fmt.Errorf("runtime is required for lease child submission")
+	}
+	return l.runtime.SubmitRestartJobWithLeaseByID(ctx, l.Job().JobKey, l.LeaseID(), l.workerID, req)
 }

@@ -21,6 +21,8 @@ type leaseOperationRuntime interface {
 	KeepAliveLeaseByID(ctx context.Context, jobKey jobdb.JobKey, leaseID string, workerID string, leaseDuration time.Duration) error
 	CompleteJobWithLeaseByID(ctx context.Context, jobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.CompleteExecutionRequest) error
 	RescheduleJobWithLeaseByID(ctx context.Context, jobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.RescheduleExecutionRequest) error
+	SubmitJobWithLeaseByID(ctx context.Context, parentJobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error)
+	SubmitRestartJobWithLeaseByID(ctx context.Context, parentJobKey jobdb.JobKey, leaseID string, workerID string, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error)
 }
 
 type leaseRenewalRuntime interface {
@@ -146,32 +148,11 @@ func (s *proxyServer) SubmitJob(ctx context.Context, request runtimeapi.SubmitJo
 	if request.Body == nil {
 		return nil, badRequest("submit job body is required")
 	}
-	data, err := taskDataFromAPIWrite(request.Body.Job.Data)
+	req, err := submitJobRequestFromAPI(*request.Body, request.TenantId, "")
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
-	metadata, err := metadataAPIToJSON(request.Body.Job.Metadata)
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	runPolicy, err := runPolicyFromAPI(request.Body.Job.RunPolicy)
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	handle, err := s.runtime.SubmitJob(ctx, jobdb.SubmitJobRequest{
-		Job: jobdb.SubmitJob{
-			AvailableAt:   cloneTime(request.Body.Job.AvailableAt),
-			TenantId:      request.TenantId,
-			JobType:       request.Body.Job.JobType,
-			Data:          jobdb.JobData(data),
-			RunPolicy:     runPolicy,
-			Metadata:      metadata,
-			Prerequisites: fromAPIPrerequisites(request.Body.Job.Prerequisites),
-			Schema:        jobSchemaSelectorFromAPI(request.Body.Job.Schema),
-		},
-		RequestTime: derefTime(request.Body.RequestTime),
-		WorkerID:    stringValue(request.Body.WorkerId),
-	})
+	handle, err := s.runtime.SubmitJob(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -182,37 +163,45 @@ func (s *proxyServer) PutJob(ctx context.Context, request runtimeapi.PutJobReque
 	if request.Body == nil {
 		return nil, badRequest("submit job body is required")
 	}
-	data, err := taskDataFromAPIWrite(request.Body.Job.Data)
+	req, err := submitJobRequestFromAPI(*request.Body, request.TenantId, request.JobId)
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
-	metadata, err := metadataAPIToJSON(request.Body.Job.Metadata)
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	runPolicy, err := runPolicyFromAPI(request.Body.Job.RunPolicy)
-	if err != nil {
-		return nil, badRequest(err.Error())
-	}
-	handle, err := s.runtime.SubmitJob(ctx, jobdb.SubmitJobRequest{
-		Job: jobdb.SubmitJob{
-			AvailableAt:   cloneTime(request.Body.Job.AvailableAt),
-			TenantId:      request.TenantId,
-			JobID:         request.JobId,
-			JobType:       request.Body.Job.JobType,
-			Data:          jobdb.JobData(data),
-			RunPolicy:     runPolicy,
-			Metadata:      metadata,
-			Prerequisites: fromAPIPrerequisites(request.Body.Job.Prerequisites),
-			Schema:        jobSchemaSelectorFromAPI(request.Body.Job.Schema),
-		},
-		RequestTime: derefTime(request.Body.RequestTime),
-		WorkerID:    stringValue(request.Body.WorkerId),
-	})
+	handle, err := s.runtime.SubmitJob(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	return runtimeapi.PutJob200JSONResponse(toAPIJobHandle(handle)), nil
+}
+
+func submitJobRequestFromAPI(body runtimeapi.SubmitJobRequest, tenantID string, jobID string) (jobdb.SubmitJobRequest, error) {
+	data, err := taskDataFromAPIWrite(body.Job.Data)
+	if err != nil {
+		return jobdb.SubmitJobRequest{}, err
+	}
+	metadata, err := metadataAPIToJSON(body.Job.Metadata)
+	if err != nil {
+		return jobdb.SubmitJobRequest{}, err
+	}
+	runPolicy, err := runPolicyFromAPI(body.Job.RunPolicy)
+	if err != nil {
+		return jobdb.SubmitJobRequest{}, err
+	}
+	return jobdb.SubmitJobRequest{
+		Job: jobdb.SubmitJob{
+			AvailableAt:   cloneTime(body.Job.AvailableAt),
+			TenantId:      tenantID,
+			JobID:         jobID,
+			JobType:       body.Job.JobType,
+			Data:          jobdb.JobData(data),
+			RunPolicy:     runPolicy,
+			Metadata:      metadata,
+			Prerequisites: fromAPIPrerequisites(body.Job.Prerequisites),
+			Schema:        jobSchemaSelectorFromAPI(body.Job.Schema),
+		},
+		RequestTime: derefTime(body.RequestTime),
+		WorkerID:    stringValue(body.WorkerId),
+	}, nil
 }
 
 func (s *proxyServer) ListJobs(ctx context.Context, request runtimeapi.ListJobsRequestObject) (runtimeapi.ListJobsResponseObject, error) {
@@ -230,6 +219,12 @@ func (s *proxyServer) ListJobs(ctx context.Context, request runtimeapi.ListJobsR
 		CreatedBefore:  request.Body.CreatedBefore,
 		PageSize:       derefInt(request.Body.PageSize),
 		PageToken:      stringValue(request.Body.PageToken),
+	}
+	if request.Body.ParentJobIds != nil {
+		req.ParentJobIDs = append(req.ParentJobIDs, (*request.Body.ParentJobIds)...)
+	}
+	if request.Body.RootOnly != nil {
+		req.RootOnly = *request.Body.RootOnly
 	}
 	if request.Body.JobKeys != nil {
 		for _, jobKey := range *request.Body.JobKeys {
@@ -530,34 +525,11 @@ func (s *proxyServer) SubmitRestartJob(ctx context.Context, request runtimeapi.S
 	if request.Body == nil {
 		return nil, badRequest("submit restart job body is required")
 	}
-	job := jobdb.SubmitRestartJob{
-		PriorJobKey:    fromAPIJobKey(request.Body.Job.PriorJobKey),
-		LastStepToKeep: request.Body.Job.LastStepToKeep,
-		Prerequisites:  fromAPIPrerequisites(request.Body.Job.Prerequisites),
-		Schema:         jobSchemaSelectorFromAPI(request.Body.Job.Schema),
+	req, err := submitRestartJobRequestFromAPI(*request.Body, request.TenantId, "")
+	if err != nil {
+		return nil, badRequest(err.Error())
 	}
-	if job.PriorJobKey.TenantId != request.TenantId {
-		return nil, badRequest("priorJobKey tenantId must match path tenantId")
-	}
-	if request.Body.Job.ExtraTaskInput != nil {
-		data, err := taskDataFromAPIWrite(*request.Body.Job.ExtraTaskInput)
-		if err != nil {
-			return nil, badRequest(err.Error())
-		}
-		job.ExtraTaskInput = data
-	}
-	if request.Body.Job.ExtraTaskOutput != nil {
-		data, err := taskDataFromAPIWrite(*request.Body.Job.ExtraTaskOutput)
-		if err != nil {
-			return nil, badRequest(err.Error())
-		}
-		job.ExtraTaskOutput = data
-	}
-	handle, err := s.runtime.SubmitRestartJob(ctx, jobdb.SubmitRestartJobRequest{
-		Job:         job,
-		RequestTime: derefTime(request.Body.RequestTime),
-		WorkerID:    stringValue(request.Body.WorkerId),
-	})
+	handle, err := s.runtime.SubmitRestartJob(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -568,39 +540,48 @@ func (s *proxyServer) PutRestartJob(ctx context.Context, request runtimeapi.PutR
 	if request.Body == nil {
 		return nil, badRequest("submit restart job body is required")
 	}
-	job := jobdb.SubmitRestartJob{
-		PriorJobKey:    fromAPIJobKey(request.Body.Job.PriorJobKey),
-		LastStepToKeep: request.Body.Job.LastStepToKeep,
-		JobID:          request.JobId,
-		Prerequisites:  fromAPIPrerequisites(request.Body.Job.Prerequisites),
-		Schema:         jobSchemaSelectorFromAPI(request.Body.Job.Schema),
+	req, err := submitRestartJobRequestFromAPI(*request.Body, request.TenantId, request.JobId)
+	if err != nil {
+		return nil, badRequest(err.Error())
 	}
-	if job.PriorJobKey.TenantId != request.TenantId {
-		return nil, badRequest("priorJobKey tenantId must match path tenantId")
-	}
-	if request.Body.Job.ExtraTaskInput != nil {
-		data, err := taskDataFromAPIWrite(*request.Body.Job.ExtraTaskInput)
-		if err != nil {
-			return nil, badRequest(err.Error())
-		}
-		job.ExtraTaskInput = data
-	}
-	if request.Body.Job.ExtraTaskOutput != nil {
-		data, err := taskDataFromAPIWrite(*request.Body.Job.ExtraTaskOutput)
-		if err != nil {
-			return nil, badRequest(err.Error())
-		}
-		job.ExtraTaskOutput = data
-	}
-	handle, err := s.runtime.SubmitRestartJob(ctx, jobdb.SubmitRestartJobRequest{
-		Job:         job,
-		RequestTime: derefTime(request.Body.RequestTime),
-		WorkerID:    stringValue(request.Body.WorkerId),
-	})
+	handle, err := s.runtime.SubmitRestartJob(ctx, req)
 	if err != nil {
 		return nil, err
 	}
 	return runtimeapi.PutRestartJob200JSONResponse(toAPIJobHandle(handle)), nil
+}
+
+func submitRestartJobRequestFromAPI(body runtimeapi.SubmitRestartJobRequest, tenantID string, jobID string) (jobdb.SubmitRestartJobRequest, error) {
+	job := jobdb.SubmitRestartJob{
+		PriorJobKey:    fromAPIJobKey(body.Job.PriorJobKey),
+		LastStepToKeep: body.Job.LastStepToKeep,
+		JobID:          jobID,
+		Prerequisites:  fromAPIPrerequisites(body.Job.Prerequisites),
+		Schema:         jobSchemaSelectorFromAPI(body.Job.Schema),
+	}
+	if job.PriorJobKey.TenantId != "" && job.PriorJobKey.TenantId != tenantID {
+		return jobdb.SubmitRestartJobRequest{}, fmt.Errorf("priorJobKey tenantId must match path tenantId")
+	}
+	job.PriorJobKey.TenantId = tenantID
+	if body.Job.ExtraTaskInput != nil {
+		data, err := taskDataFromAPIWrite(*body.Job.ExtraTaskInput)
+		if err != nil {
+			return jobdb.SubmitRestartJobRequest{}, err
+		}
+		job.ExtraTaskInput = data
+	}
+	if body.Job.ExtraTaskOutput != nil {
+		data, err := taskDataFromAPIWrite(*body.Job.ExtraTaskOutput)
+		if err != nil {
+			return jobdb.SubmitRestartJobRequest{}, err
+		}
+		job.ExtraTaskOutput = data
+	}
+	return jobdb.SubmitRestartJobRequest{
+		Job:         job,
+		RequestTime: derefTime(body.RequestTime),
+		WorkerID:    stringValue(body.WorkerId),
+	}, nil
 }
 
 func (s *proxyServer) GetJob(ctx context.Context, request runtimeapi.GetJobRequestObject) (runtimeapi.GetJobResponseObject, error) {
@@ -894,6 +875,106 @@ func (s *proxyServer) RescheduleJobWithLease(ctx context.Context, request runtim
 		return nil, err
 	}
 	return runtimeapi.RescheduleJobWithLease204Response{}, nil
+}
+
+func (s *proxyServer) SubmitJobWithLease(ctx context.Context, request runtimeapi.SubmitJobWithLeaseRequestObject) (runtimeapi.SubmitJobWithLeaseResponseObject, error) {
+	if request.Body == nil {
+		return nil, badRequest("submit job body is required")
+	}
+	jobKey := jobdb.JobKey{TenantId: request.TenantId, JobId: request.ParentJobId}
+	claims, err := s.validatedLeaseClaims(request.Params.XJobDBLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
+		return nil, err
+	}
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	req, err := submitJobRequestFromAPI(*request.Body, request.TenantId, "")
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	ctx = leaseauth.WithClaims(ctx, claims.leaseAuthClaims())
+	handle, err := ops.SubmitJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, req)
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.SubmitJobWithLease200JSONResponse(toAPIJobHandle(handle)), nil
+}
+
+func (s *proxyServer) PutJobWithLease(ctx context.Context, request runtimeapi.PutJobWithLeaseRequestObject) (runtimeapi.PutJobWithLeaseResponseObject, error) {
+	if request.Body == nil {
+		return nil, badRequest("submit job body is required")
+	}
+	jobKey := jobdb.JobKey{TenantId: request.TenantId, JobId: request.ParentJobId}
+	claims, err := s.validatedLeaseClaims(request.Params.XJobDBLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
+		return nil, err
+	}
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	req, err := submitJobRequestFromAPI(*request.Body, request.TenantId, request.ChildJobId)
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	ctx = leaseauth.WithClaims(ctx, claims.leaseAuthClaims())
+	handle, err := ops.SubmitJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, req)
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.PutJobWithLease200JSONResponse(toAPIJobHandle(handle)), nil
+}
+
+func (s *proxyServer) SubmitRestartJobWithLease(ctx context.Context, request runtimeapi.SubmitRestartJobWithLeaseRequestObject) (runtimeapi.SubmitRestartJobWithLeaseResponseObject, error) {
+	if request.Body == nil {
+		return nil, badRequest("submit restart job body is required")
+	}
+	jobKey := jobdb.JobKey{TenantId: request.TenantId, JobId: request.ParentJobId}
+	claims, err := s.validatedLeaseClaims(request.Params.XJobDBLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
+		return nil, err
+	}
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	req, err := submitRestartJobRequestFromAPI(*request.Body, request.TenantId, "")
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	ctx = leaseauth.WithClaims(ctx, claims.leaseAuthClaims())
+	handle, err := ops.SubmitRestartJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, req)
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.SubmitRestartJobWithLease200JSONResponse(toAPIJobHandle(handle)), nil
+}
+
+func (s *proxyServer) PutRestartJobWithLease(ctx context.Context, request runtimeapi.PutRestartJobWithLeaseRequestObject) (runtimeapi.PutRestartJobWithLeaseResponseObject, error) {
+	if request.Body == nil {
+		return nil, badRequest("submit restart job body is required")
+	}
+	jobKey := jobdb.JobKey{TenantId: request.TenantId, JobId: request.ParentJobId}
+	claims, err := s.validatedLeaseClaims(request.Params.XJobDBLeaseToken, jobKey, request.LeaseId)
+	if err != nil {
+		return nil, err
+	}
+	ops, err := s.requireLeaseOps()
+	if err != nil {
+		return nil, err
+	}
+	req, err := submitRestartJobRequestFromAPI(*request.Body, request.TenantId, request.ChildJobId)
+	if err != nil {
+		return nil, badRequest(err.Error())
+	}
+	ctx = leaseauth.WithClaims(ctx, claims.leaseAuthClaims())
+	handle, err := ops.SubmitRestartJobWithLeaseByID(ctx, jobKey, request.LeaseId, claims.WorkerID, req)
+	if err != nil {
+		return nil, err
+	}
+	return runtimeapi.PutRestartJobWithLease200JSONResponse(toAPIJobHandle(handle)), nil
 }
 
 func (s *proxyServer) toAPIExecutionLease(lease jobdb.ExecutionLease, requestedDuration time.Duration) (runtimeapi.ExecutionLease, error) {

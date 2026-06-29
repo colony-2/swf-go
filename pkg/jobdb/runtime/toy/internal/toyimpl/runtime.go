@@ -46,6 +46,10 @@ func New(opts ...Option) *Runtime {
 }
 
 func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	return r.submitJobWithParent(ctx, req, "")
+}
+
+func (r *Runtime) submitJobWithParent(ctx context.Context, req jobdb.SubmitJobRequest, parentJobID string) (jobdb.JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -72,7 +76,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
@@ -81,7 +85,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 		if err != nil {
 			return jobdb.JobHandle{}, err
 		}
-		if handle, ok, err := r.existingEquivalentJob(jobKey, req.Job, inputHash, schemaHash); ok || err != nil {
+		if handle, ok, err := r.existingEquivalentJob(jobKey, req.Job, inputHash, schemaHash, parentJobID); ok || err != nil {
 			return handle, err
 		}
 	}
@@ -170,7 +174,7 @@ func (r *Runtime) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jo
 	return jobdb.JobHandle{JobKey: jobKey}, nil
 }
 
-func (r *Runtime) existingEquivalentJob(jobKey jobdb.JobKey, job jobdb.SubmitJob, inputHash string, schemaHash string) (jobdb.JobHandle, bool, error) {
+func (r *Runtime) existingEquivalentJob(jobKey jobdb.JobKey, job jobdb.SubmitJob, inputHash string, schemaHash string, parentJobID string) (jobdb.JobHandle, bool, error) {
 	r.engine.mu.Lock()
 	defer r.engine.mu.Unlock()
 
@@ -188,7 +192,7 @@ func (r *Runtime) existingEquivalentJob(jobKey jobdb.JobKey, job jobdb.SubmitJob
 	if start.InputHash != inputHash {
 		return jobdb.JobHandle{}, false, jobdb.NewExistingJobMismatchError(fmt.Sprintf("job %s already exists with different input", jobKey))
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, false, err
 	}
@@ -213,6 +217,10 @@ func (r *Runtime) existingEquivalentJob(jobKey jobdb.JobKey, job jobdb.SubmitJob
 }
 
 func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	return r.submitRestartJobWithParent(ctx, req, "")
+}
+
+func (r *Runtime) submitRestartJobWithParent(ctx context.Context, req jobdb.SubmitRestartJobRequest, parentJobID string) (jobdb.JobHandle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -240,7 +248,7 @@ func (r *Runtime) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJ
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(nil, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(nil, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, err
 	}
@@ -1154,6 +1162,12 @@ func (l *runtimeLease) Complete(ctx context.Context, req jobdb.CompleteExecution
 }
 func (l *runtimeLease) Reschedule(ctx context.Context, req jobdb.RescheduleExecutionRequest) error {
 	return l.runtime.rescheduleLease(l.jobKey, l.leaseID, req)
+}
+func (l *runtimeLease) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	return l.runtime.SubmitJobWithLeaseByID(ctx, l.jobKey, l.leaseID, "", req)
+}
+func (l *runtimeLease) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	return l.runtime.SubmitRestartJobWithLeaseByID(ctx, l.jobKey, l.leaseID, "", req)
 }
 
 func toyLeaseDurationOrDefault(d time.Duration) time.Duration {

@@ -58,6 +58,20 @@ func TestRemoteRuntimesConstructAndExecuteThroughBuilder(t *testing.T) {
 	}
 }
 
+func TestExecutionLeaseSubmitJobTracksParentAcrossRemoteRuntimes(t *testing.T) {
+	for _, harness := range jobdbtest.RemoteRuntimeHarnesses() {
+		harness := harness
+		t.Run(harness.Name, func(t *testing.T) {
+			if !harness.SupportsLeases {
+				t.Skip("runtime does not support leases")
+			}
+			built := harness.New(t)
+			defer built.Shutdown(t)
+			assertExecutionLeaseSubmitJobTracksParent(t, built)
+		})
+	}
+}
+
 func TestRemoteRuntimeChapterAndArtifactRoundTripAcrossExistingRuntimes(t *testing.T) {
 	for _, harness := range jobdbtest.RemoteRuntimeHarnesses() {
 		harness := harness

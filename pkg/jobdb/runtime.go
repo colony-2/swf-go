@@ -59,6 +59,8 @@ type ExecutionLease interface {
 	StopKeepAlive()
 	Complete(ctx context.Context, req CompleteExecutionRequest) error
 	Reschedule(ctx context.Context, req RescheduleExecutionRequest) error
+	SubmitJob(ctx context.Context, req SubmitJobRequest) (JobHandle, error)
+	SubmitRestartJob(ctx context.Context, req SubmitRestartJobRequest) (JobHandle, error)
 }
 
 type SubmitJobRequest struct {

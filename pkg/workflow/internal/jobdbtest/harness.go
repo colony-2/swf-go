@@ -763,6 +763,24 @@ func (l *tenantNamespacedLease) Complete(ctx context.Context, req jobdb.Complete
 func (l *tenantNamespacedLease) Reschedule(ctx context.Context, req jobdb.RescheduleExecutionRequest) error {
 	return l.lease.Reschedule(ctx, req)
 }
+func (l *tenantNamespacedLease) SubmitJob(ctx context.Context, req jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	req.Job.TenantId = l.runtime.prefixTenant(req.Job.TenantId)
+	handle, err := l.lease.SubmitJob(ctx, req)
+	if err != nil {
+		return jobdb.JobHandle{}, err
+	}
+	handle.JobKey = l.runtime.stripJobKey(handle.JobKey)
+	return handle, nil
+}
+func (l *tenantNamespacedLease) SubmitRestartJob(ctx context.Context, req jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	req.Job.PriorJobKey = l.runtime.prefixJobKey(req.Job.PriorJobKey)
+	handle, err := l.lease.SubmitRestartJob(ctx, req)
+	if err != nil {
+		return jobdb.JobHandle{}, err
+	}
+	handle.JobKey = l.runtime.stripJobKey(handle.JobKey)
+	return handle, nil
+}
 func (l *tenantNamespacedLease) Job() jobdb.JobHandle {
 	handle := l.lease.Job()
 	handle.JobKey = l.runtime.stripJobKey(handle.JobKey)

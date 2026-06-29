@@ -13,7 +13,7 @@ import (
 	"github.com/colony-2/jobdb/pkg/jobdb/internal/chapterstore/story"
 )
 
-func (r *Runtime) reconcileExistingSubmitJob(ctx context.Context, req jobdb.SubmitJobRequest, jobKey jobdb.JobKey, inputHash string, prereqs []jobdb.JobPrerequisite, waitFor []string, jobPolicy jobdb.RunPolicy, schemaHash string) (jobdb.JobHandle, bool, error) {
+func (r *Runtime) reconcileExistingSubmitJob(ctx context.Context, req jobdb.SubmitJobRequest, jobKey jobdb.JobKey, inputHash string, prereqs []jobdb.JobPrerequisite, waitFor []string, jobPolicy jobdb.RunPolicy, schemaHash string, parentJobID string) (jobdb.JobHandle, bool, error) {
 	start, exists, err := r.loadExistingStartChapter(ctx, jobKey)
 	if err != nil {
 		return jobdb.JobHandle{}, false, err
@@ -27,7 +27,7 @@ func (r *Runtime) reconcileExistingSubmitJob(ctx context.Context, req jobdb.Subm
 	if err := compareSubmitStartChapter(jobKey, start, req.Job.JobType, inputHash, req.Job.Metadata, prereqs, jobPolicy); err != nil {
 		return jobdb.JobHandle{}, true, err
 	}
-	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash})
+	storedMetadata, err := jobdb.BuildJobMetadataEnvelope(req.Job.Metadata, jobdb.RuntimeJobMetadata{SchemaHash: schemaHash, ParentJobID: parentJobID})
 	if err != nil {
 		return jobdb.JobHandle{}, true, err
 	}

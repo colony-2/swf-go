@@ -123,6 +123,12 @@ func (l *testExecutionLease) Complete(context.Context, jobdb.CompleteExecutionRe
 func (l *testExecutionLease) Reschedule(context.Context, jobdb.RescheduleExecutionRequest) error {
 	return nil
 }
+func (l *testExecutionLease) SubmitJob(context.Context, jobdb.SubmitJobRequest) (jobdb.JobHandle, error) {
+	return jobdb.JobHandle{}, nil
+}
+func (l *testExecutionLease) SubmitRestartJob(context.Context, jobdb.SubmitRestartJobRequest) (jobdb.JobHandle, error) {
+	return jobdb.JobHandle{}, nil
+}
 func (l *testExecutionLease) LeaseWorkerID() string   { return l.workerID }
 func (l *testExecutionLease) LeaseExpiry() time.Time  { return l.expiresAt }
 func (l *testExecutionLease) LeaseSchemaHash() string { return l.schemaHash }

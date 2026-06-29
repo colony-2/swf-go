@@ -31,8 +31,10 @@ type TaskContext struct {
 	Step   int64
 	Logger *slog.Logger
 	// await is set by the runner so AwaitDuration can be engine-directed.
-	await     func(wakeAt time.Time) error
-	awaitJobs func(jobIds ...string) error
+	await            func(wakeAt time.Time) error
+	awaitJobs        func(jobIds ...string) error
+	submitJob        func(context.Context, SubmitJob) (JobKey, error)
+	submitRestartJob func(context.Context, SubmitRestartJob) (JobKey, error)
 }
 
 // AwaitDuration pauses task execution for the specified duration.
@@ -59,6 +61,22 @@ func (tc TaskContext) AwaitJobs(jobIds ...string) error {
 	return tc.awaitJobs(jobIds...)
 }
 
+// SubmitJob starts a child job using the current job lease.
+func (tc TaskContext) SubmitJob(ctx context.Context, submit SubmitJob) (JobKey, error) {
+	if tc.submitJob == nil {
+		return JobKey{}, fmt.Errorf("submitting jobs not supported in this context")
+	}
+	return tc.submitJob(ctx, submit)
+}
+
+// SubmitRestartJob starts a child restart job using the current job lease.
+func (tc TaskContext) SubmitRestartJob(ctx context.Context, restart SubmitRestartJob) (JobKey, error) {
+	if tc.submitRestartJob == nil {
+		return JobKey{}, fmt.Errorf("submitting restart jobs not supported in this context")
+	}
+	return tc.submitRestartJob(ctx, restart)
+}
+
 // NewTaskContext builds a task context with an optional await handler.
 func NewTaskContext(jobKey JobKey, step int64, logger *slog.Logger, await func(time.Time) error, awaitJobs func(...string) error) TaskContext {
 	return TaskContext{
@@ -68,6 +86,21 @@ func NewTaskContext(jobKey JobKey, step int64, logger *slog.Logger, await func(t
 		await:     await,
 		awaitJobs: awaitJobs,
 	}
+}
+
+func newTaskContextWithLeaseActions(
+	jobKey JobKey,
+	step int64,
+	logger *slog.Logger,
+	await func(time.Time) error,
+	awaitJobs func(...string) error,
+	submitJob func(context.Context, SubmitJob) (JobKey, error),
+	submitRestartJob func(context.Context, SubmitRestartJob) (JobKey, error),
+) TaskContext {
+	tc := NewTaskContext(jobKey, step, logger, await, awaitJobs)
+	tc.submitJob = submitJob
+	tc.submitRestartJob = submitRestartJob
+	return tc
 }
 
 type Worker interface {

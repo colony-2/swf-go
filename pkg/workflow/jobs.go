@@ -14,6 +14,8 @@ type JobContext interface {
 	DoTask(policy RunPolicy, taskType string, data TaskData) (TaskData, error)
 	AwaitDuration(waitFor Duration) error
 	AwaitJobs(jobIds ...string) error
+	SubmitJob(ctx context.Context, submit SubmitJob) (JobKey, error)
+	SubmitRestartJob(ctx context.Context, restart SubmitRestartJob) (JobKey, error)
 }
 
 type JobWorker interface {

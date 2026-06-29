@@ -25,6 +25,7 @@ type JobSummary struct {
 	Payload           json.RawMessage
 	Metadata          json.RawMessage
 	SchemaHash        string
+	ParentJobID       string
 	TaskWaitInput     *int64
 	TaskWaitOutput    *int64
 	TaskWaitInputHash *string
@@ -55,6 +56,8 @@ type ListJobsRequest struct {
 	JobTypes       []string
 	JobTasks       []JobTaskFilter
 	JobKeys        []JobKey
+	ParentJobIDs   []string
+	RootOnly       bool
 	MetadataFilter MetadataFilter
 	CreatedAfter   *time.Time
 	CreatedBefore  *time.Time

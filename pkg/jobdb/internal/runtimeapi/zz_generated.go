@@ -417,6 +417,7 @@ type JobSummary struct {
 	LeaseExpiresAt    *time.Time        `json:"leaseExpiresAt,omitempty"`
 	Metadata          *Metadata         `json:"metadata,omitempty"`
 	NextNeed          *string           `json:"nextNeed,omitempty"`
+	ParentJobId       *string           `json:"parentJobId,omitempty"`
 	Payload           *SchedulerPayload `json:"payload,omitempty"`
 	SchemaHash        *JobSchemaHash    `json:"schemaHash,omitempty"`
 	Status            JobStatus         `json:"status"`
@@ -465,8 +466,14 @@ type ListJobsRequest struct {
 	MetadataPredicates *[]MetadataPredicate `json:"metadataPredicates,omitempty"`
 	PageSize           *int                 `json:"pageSize,omitempty"`
 	PageToken          *string              `json:"pageToken,omitempty"`
-	Statuses           *[]JobStatus         `json:"statuses,omitempty"`
-	Stores             *[]JobStore          `json:"stores,omitempty"`
+
+	// ParentJobIds Direct parent job IDs whose children should be returned.
+	ParentJobIds *[]string `json:"parentJobIds,omitempty"`
+
+	// RootOnly Return only jobs without a parent job ID.
+	RootOnly *bool        `json:"rootOnly,omitempty"`
+	Statuses *[]JobStatus `json:"statuses,omitempty"`
+	Stores   *[]JobStore  `json:"stores,omitempty"`
 }
 
 // ListJobsResponse defines model for ListJobsResponse.
@@ -905,6 +912,9 @@ type UpsertScheduleRequest struct {
 // ArtifactName defines model for ArtifactName.
 type ArtifactName = string
 
+// ChildJobId defines model for ChildJobId.
+type ChildJobId = string
+
 // EndOrdinal defines model for EndOrdinal.
 type EndOrdinal = int64
 
@@ -919,6 +929,9 @@ type LeaseTokenHeader = string
 
 // Ordinal defines model for Ordinal.
 type Ordinal = int64
+
+// ParentJobId defines model for ParentJobId.
+type ParentJobId = string
 
 // ScheduleId defines model for ScheduleId.
 type ScheduleId = string
@@ -952,6 +965,26 @@ type KeepAliveLeaseParams struct {
 
 // RescheduleJobWithLeaseParams defines parameters for RescheduleJobWithLease.
 type RescheduleJobWithLeaseParams struct {
+	XJobDBLeaseToken LeaseTokenHeader `json:"X-JobDB-Lease-Token"`
+}
+
+// SubmitJobWithLeaseParams defines parameters for SubmitJobWithLease.
+type SubmitJobWithLeaseParams struct {
+	XJobDBLeaseToken LeaseTokenHeader `json:"X-JobDB-Lease-Token"`
+}
+
+// SubmitRestartJobWithLeaseParams defines parameters for SubmitRestartJobWithLease.
+type SubmitRestartJobWithLeaseParams struct {
+	XJobDBLeaseToken LeaseTokenHeader `json:"X-JobDB-Lease-Token"`
+}
+
+// PutJobWithLeaseParams defines parameters for PutJobWithLease.
+type PutJobWithLeaseParams struct {
+	XJobDBLeaseToken LeaseTokenHeader `json:"X-JobDB-Lease-Token"`
+}
+
+// PutRestartJobWithLeaseParams defines parameters for PutRestartJobWithLease.
+type PutRestartJobWithLeaseParams struct {
 	XJobDBLeaseToken LeaseTokenHeader `json:"X-JobDB-Lease-Token"`
 }
 
@@ -995,6 +1028,18 @@ type RescheduleJobWithLeaseJSONRequestBody = RescheduleExecutionRequest
 
 // PutRestartJobJSONRequestBody defines body for PutRestartJob for application/json ContentType.
 type PutRestartJobJSONRequestBody = SubmitRestartJobRequest
+
+// SubmitJobWithLeaseJSONRequestBody defines body for SubmitJobWithLease for application/json ContentType.
+type SubmitJobWithLeaseJSONRequestBody = SubmitJobRequest
+
+// SubmitRestartJobWithLeaseJSONRequestBody defines body for SubmitRestartJobWithLease for application/json ContentType.
+type SubmitRestartJobWithLeaseJSONRequestBody = SubmitRestartJobRequest
+
+// PutJobWithLeaseJSONRequestBody defines body for PutJobWithLease for application/json ContentType.
+type PutJobWithLeaseJSONRequestBody = SubmitJobRequest
+
+// PutRestartJobWithLeaseJSONRequestBody defines body for PutRestartJobWithLease for application/json ContentType.
+type PutRestartJobWithLeaseJSONRequestBody = SubmitRestartJobRequest
 
 // ListSchedulesJSONRequestBody defines body for ListSchedules for application/json ContentType.
 type ListSchedulesJSONRequestBody = ListSchedulesRequest
@@ -1705,6 +1750,26 @@ type ClientInterface interface {
 
 	PutRestartJob(ctx context.Context, tenantId TenantId, jobId JobId, body PutRestartJobJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// SubmitJobWithLeaseWithBody request with any body
+	SubmitJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SubmitJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, body SubmitJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SubmitRestartJobWithLeaseWithBody request with any body
+	SubmitRestartJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SubmitRestartJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, body SubmitRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutJobWithLeaseWithBody request with any body
+	PutJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PutJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, body PutJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PutRestartJobWithLeaseWithBody request with any body
+	PutRestartJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PutRestartJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, body PutRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// ListSchedulesWithBody request with any body
 	ListSchedulesWithBody(ctx context.Context, tenantId TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -2096,6 +2161,102 @@ func (c *Client) PutRestartJobWithBody(ctx context.Context, tenantId TenantId, j
 
 func (c *Client) PutRestartJob(ctx context.Context, tenantId TenantId, jobId JobId, body PutRestartJobJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPutRestartJobRequest(c.Server, tenantId, jobId, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SubmitJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSubmitJobWithLeaseRequestWithBody(c.Server, tenantId, parentJobId, leaseId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SubmitJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, body SubmitJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSubmitJobWithLeaseRequest(c.Server, tenantId, parentJobId, leaseId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SubmitRestartJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSubmitRestartJobWithLeaseRequestWithBody(c.Server, tenantId, parentJobId, leaseId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SubmitRestartJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, body SubmitRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSubmitRestartJobWithLeaseRequest(c.Server, tenantId, parentJobId, leaseId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PutJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutJobWithLeaseRequestWithBody(c.Server, tenantId, parentJobId, leaseId, childJobId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PutJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, body PutJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutJobWithLeaseRequest(c.Server, tenantId, parentJobId, leaseId, childJobId, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PutRestartJobWithLeaseWithBody(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutRestartJobWithLeaseRequestWithBody(c.Server, tenantId, parentJobId, leaseId, childJobId, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PutRestartJobWithLease(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, body PutRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPutRestartJobWithLeaseRequest(c.Server, tenantId, parentJobId, leaseId, childJobId, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -3306,6 +3467,316 @@ func NewPutRestartJobRequestWithBody(server string, tenantId TenantId, jobId Job
 	return req, nil
 }
 
+// NewSubmitJobWithLeaseRequest calls the generic SubmitJobWithLease builder with application/json body
+func NewSubmitJobWithLeaseRequest(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, body SubmitJobWithLeaseJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSubmitJobWithLeaseRequestWithBody(server, tenantId, parentJobId, leaseId, params, "application/json", bodyReader)
+}
+
+// NewSubmitJobWithLeaseRequestWithBody generates requests for SubmitJobWithLease with any type of body
+func NewSubmitJobWithLeaseRequestWithBody(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "parentJobId", runtime.ParamLocationPath, parentJobId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "leaseId", runtime.ParamLocationPath, leaseId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/jobs/%s/leases/%s/jobs", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-JobDB-Lease-Token", runtime.ParamLocationHeader, params.XJobDBLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-JobDB-Lease-Token", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewSubmitRestartJobWithLeaseRequest calls the generic SubmitRestartJobWithLease builder with application/json body
+func NewSubmitRestartJobWithLeaseRequest(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, body SubmitRestartJobWithLeaseJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSubmitRestartJobWithLeaseRequestWithBody(server, tenantId, parentJobId, leaseId, params, "application/json", bodyReader)
+}
+
+// NewSubmitRestartJobWithLeaseRequestWithBody generates requests for SubmitRestartJobWithLease with any type of body
+func NewSubmitRestartJobWithLeaseRequestWithBody(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "parentJobId", runtime.ParamLocationPath, parentJobId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "leaseId", runtime.ParamLocationPath, leaseId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/jobs/%s/leases/%s/jobs/restarts", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-JobDB-Lease-Token", runtime.ParamLocationHeader, params.XJobDBLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-JobDB-Lease-Token", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewPutJobWithLeaseRequest calls the generic PutJobWithLease builder with application/json body
+func NewPutJobWithLeaseRequest(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, body PutJobWithLeaseJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutJobWithLeaseRequestWithBody(server, tenantId, parentJobId, leaseId, childJobId, params, "application/json", bodyReader)
+}
+
+// NewPutJobWithLeaseRequestWithBody generates requests for PutJobWithLease with any type of body
+func NewPutJobWithLeaseRequestWithBody(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "parentJobId", runtime.ParamLocationPath, parentJobId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "leaseId", runtime.ParamLocationPath, leaseId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam3 string
+
+	pathParam3, err = runtime.StyleParamWithLocation("simple", false, "childJobId", runtime.ParamLocationPath, childJobId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/jobs/%s/leases/%s/jobs/%s", pathParam0, pathParam1, pathParam2, pathParam3)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-JobDB-Lease-Token", runtime.ParamLocationHeader, params.XJobDBLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-JobDB-Lease-Token", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewPutRestartJobWithLeaseRequest calls the generic PutRestartJobWithLease builder with application/json body
+func NewPutRestartJobWithLeaseRequest(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, body PutRestartJobWithLeaseJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPutRestartJobWithLeaseRequestWithBody(server, tenantId, parentJobId, leaseId, childJobId, params, "application/json", bodyReader)
+}
+
+// NewPutRestartJobWithLeaseRequestWithBody generates requests for PutRestartJobWithLease with any type of body
+func NewPutRestartJobWithLeaseRequestWithBody(server string, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "tenantId", runtime.ParamLocationPath, tenantId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "parentJobId", runtime.ParamLocationPath, parentJobId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "leaseId", runtime.ParamLocationPath, leaseId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam3 string
+
+	pathParam3, err = runtime.StyleParamWithLocation("simple", false, "childJobId", runtime.ParamLocationPath, childJobId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/tenants/%s/jobs/%s/leases/%s/jobs/%s/restart", pathParam0, pathParam1, pathParam2, pathParam3)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "X-JobDB-Lease-Token", runtime.ParamLocationHeader, params.XJobDBLeaseToken)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-JobDB-Lease-Token", headerParam0)
+
+	}
+
+	return req, nil
+}
+
 // NewListSchedulesRequest calls the generic ListSchedules builder with application/json body
 func NewListSchedulesRequest(server string, tenantId TenantId, body ListSchedulesJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -4021,6 +4492,26 @@ type ClientWithResponsesInterface interface {
 
 	PutRestartJobWithResponse(ctx context.Context, tenantId TenantId, jobId JobId, body PutRestartJobJSONRequestBody, reqEditors ...RequestEditorFn) (*PutRestartJobHTTPResponse, error)
 
+	// SubmitJobWithLeaseWithBodyWithResponse request with any body
+	SubmitJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SubmitJobWithLeaseHTTPResponse, error)
+
+	SubmitJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, body SubmitJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*SubmitJobWithLeaseHTTPResponse, error)
+
+	// SubmitRestartJobWithLeaseWithBodyWithResponse request with any body
+	SubmitRestartJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SubmitRestartJobWithLeaseHTTPResponse, error)
+
+	SubmitRestartJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, body SubmitRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*SubmitRestartJobWithLeaseHTTPResponse, error)
+
+	// PutJobWithLeaseWithBodyWithResponse request with any body
+	PutJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutJobWithLeaseHTTPResponse, error)
+
+	PutJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, body PutJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*PutJobWithLeaseHTTPResponse, error)
+
+	// PutRestartJobWithLeaseWithBodyWithResponse request with any body
+	PutRestartJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutRestartJobWithLeaseHTTPResponse, error)
+
+	PutRestartJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, body PutRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*PutRestartJobWithLeaseHTTPResponse, error)
+
 	// ListSchedulesWithBodyWithResponse request with any body
 	ListSchedulesWithBodyWithResponse(ctx context.Context, tenantId TenantId, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ListSchedulesHTTPResponse, error)
 
@@ -4440,6 +4931,96 @@ func (r PutRestartJobHTTPResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r PutRestartJobHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SubmitJobWithLeaseHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobHandle
+}
+
+// Status returns HTTPResponse.Status
+func (r SubmitJobWithLeaseHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SubmitJobWithLeaseHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SubmitRestartJobWithLeaseHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobHandle
+}
+
+// Status returns HTTPResponse.Status
+func (r SubmitRestartJobWithLeaseHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SubmitRestartJobWithLeaseHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PutJobWithLeaseHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobHandle
+	JSON409      *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PutJobWithLeaseHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutJobWithLeaseHTTPResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PutRestartJobWithLeaseHTTPResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *JobHandle
+	JSON409      *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PutRestartJobWithLeaseHTTPResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PutRestartJobWithLeaseHTTPResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -4958,6 +5539,74 @@ func (c *ClientWithResponses) PutRestartJobWithResponse(ctx context.Context, ten
 		return nil, err
 	}
 	return ParsePutRestartJobHTTPResponse(rsp)
+}
+
+// SubmitJobWithLeaseWithBodyWithResponse request with arbitrary body returning *SubmitJobWithLeaseHTTPResponse
+func (c *ClientWithResponses) SubmitJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SubmitJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.SubmitJobWithLeaseWithBody(ctx, tenantId, parentJobId, leaseId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSubmitJobWithLeaseHTTPResponse(rsp)
+}
+
+func (c *ClientWithResponses) SubmitJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitJobWithLeaseParams, body SubmitJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*SubmitJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.SubmitJobWithLease(ctx, tenantId, parentJobId, leaseId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSubmitJobWithLeaseHTTPResponse(rsp)
+}
+
+// SubmitRestartJobWithLeaseWithBodyWithResponse request with arbitrary body returning *SubmitRestartJobWithLeaseHTTPResponse
+func (c *ClientWithResponses) SubmitRestartJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SubmitRestartJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.SubmitRestartJobWithLeaseWithBody(ctx, tenantId, parentJobId, leaseId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSubmitRestartJobWithLeaseHTTPResponse(rsp)
+}
+
+func (c *ClientWithResponses) SubmitRestartJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params *SubmitRestartJobWithLeaseParams, body SubmitRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*SubmitRestartJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.SubmitRestartJobWithLease(ctx, tenantId, parentJobId, leaseId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSubmitRestartJobWithLeaseHTTPResponse(rsp)
+}
+
+// PutJobWithLeaseWithBodyWithResponse request with arbitrary body returning *PutJobWithLeaseHTTPResponse
+func (c *ClientWithResponses) PutJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.PutJobWithLeaseWithBody(ctx, tenantId, parentJobId, leaseId, childJobId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutJobWithLeaseHTTPResponse(rsp)
+}
+
+func (c *ClientWithResponses) PutJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutJobWithLeaseParams, body PutJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*PutJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.PutJobWithLease(ctx, tenantId, parentJobId, leaseId, childJobId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutJobWithLeaseHTTPResponse(rsp)
+}
+
+// PutRestartJobWithLeaseWithBodyWithResponse request with arbitrary body returning *PutRestartJobWithLeaseHTTPResponse
+func (c *ClientWithResponses) PutRestartJobWithLeaseWithBodyWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PutRestartJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.PutRestartJobWithLeaseWithBody(ctx, tenantId, parentJobId, leaseId, childJobId, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutRestartJobWithLeaseHTTPResponse(rsp)
+}
+
+func (c *ClientWithResponses) PutRestartJobWithLeaseWithResponse(ctx context.Context, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params *PutRestartJobWithLeaseParams, body PutRestartJobWithLeaseJSONRequestBody, reqEditors ...RequestEditorFn) (*PutRestartJobWithLeaseHTTPResponse, error) {
+	rsp, err := c.PutRestartJobWithLease(ctx, tenantId, parentJobId, leaseId, childJobId, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePutRestartJobWithLeaseHTTPResponse(rsp)
 }
 
 // ListSchedulesWithBodyWithResponse request with arbitrary body returning *ListSchedulesHTTPResponse
@@ -5530,6 +6179,124 @@ func ParsePutRestartJobHTTPResponse(rsp *http.Response) (*PutRestartJobHTTPRespo
 	return response, nil
 }
 
+// ParseSubmitJobWithLeaseHTTPResponse parses an HTTP response from a SubmitJobWithLeaseWithResponse call
+func ParseSubmitJobWithLeaseHTTPResponse(rsp *http.Response) (*SubmitJobWithLeaseHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SubmitJobWithLeaseHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobHandle
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSubmitRestartJobWithLeaseHTTPResponse parses an HTTP response from a SubmitRestartJobWithLeaseWithResponse call
+func ParseSubmitRestartJobWithLeaseHTTPResponse(rsp *http.Response) (*SubmitRestartJobWithLeaseHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SubmitRestartJobWithLeaseHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobHandle
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePutJobWithLeaseHTTPResponse parses an HTTP response from a PutJobWithLeaseWithResponse call
+func ParsePutJobWithLeaseHTTPResponse(rsp *http.Response) (*PutJobWithLeaseHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutJobWithLeaseHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobHandle
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePutRestartJobWithLeaseHTTPResponse parses an HTTP response from a PutRestartJobWithLeaseWithResponse call
+func ParsePutRestartJobWithLeaseHTTPResponse(rsp *http.Response) (*PutRestartJobWithLeaseHTTPResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PutRestartJobWithLeaseHTTPResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest JobHandle
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseListSchedulesHTTPResponse parses an HTTP response from a ListSchedulesWithResponse call
 func ParseListSchedulesHTTPResponse(rsp *http.Response) (*ListSchedulesHTTPResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -5902,6 +6669,18 @@ type ServerInterface interface {
 	// Submit restart job with explicit job ID
 	// (PUT /v1/tenants/{tenantId}/jobs/{jobId}/restart)
 	PutRestartJob(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId)
+	// Submit child job with lease
+	// (POST /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs)
+	SubmitJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params SubmitJobWithLeaseParams)
+	// Submit child restart job with lease
+	// (POST /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/restarts)
+	SubmitRestartJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params SubmitRestartJobWithLeaseParams)
+	// Submit child job with explicit job ID and lease
+	// (PUT /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId})
+	PutJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params PutJobWithLeaseParams)
+	// Submit child restart job with explicit job ID and lease
+	// (PUT /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}/restart)
+	PutRestartJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params PutRestartJobWithLeaseParams)
 	// List schedules
 	// (POST /v1/tenants/{tenantId}/schedules/query)
 	ListSchedules(w http.ResponseWriter, r *http.Request, tenantId TenantId)
@@ -6043,6 +6822,30 @@ func (_ Unimplemented) RescheduleJobWithLease(w http.ResponseWriter, r *http.Req
 // Submit restart job with explicit job ID
 // (PUT /v1/tenants/{tenantId}/jobs/{jobId}/restart)
 func (_ Unimplemented) PutRestartJob(w http.ResponseWriter, r *http.Request, tenantId TenantId, jobId JobId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Submit child job with lease
+// (POST /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs)
+func (_ Unimplemented) SubmitJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params SubmitJobWithLeaseParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Submit child restart job with lease
+// (POST /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/restarts)
+func (_ Unimplemented) SubmitRestartJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params SubmitRestartJobWithLeaseParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Submit child job with explicit job ID and lease
+// (PUT /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId})
+func (_ Unimplemented) PutJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params PutJobWithLeaseParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Submit child restart job with explicit job ID and lease
+// (PUT /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}/restart)
+func (_ Unimplemented) PutRestartJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params PutRestartJobWithLeaseParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -6970,6 +7773,332 @@ func (siw *ServerInterfaceWrapper) PutRestartJob(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// SubmitJobWithLease operation middleware
+func (siw *ServerInterfaceWrapper) SubmitJobWithLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "parentJobId" -------------
+	var parentJobId ParentJobId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "parentJobId", chi.URLParam(r, "parentJobId"), &parentJobId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "parentJobId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "leaseId" -------------
+	var leaseId LeaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "leaseId", chi.URLParam(r, "leaseId"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "leaseId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SubmitJobWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-JobDB-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-JobDB-Lease-Token")]; found {
+		var XJobDBLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-JobDB-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-JobDB-Lease-Token", valueList[0], &XJobDBLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-JobDB-Lease-Token", Err: err})
+			return
+		}
+
+		params.XJobDBLeaseToken = XJobDBLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-JobDB-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-JobDB-Lease-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubmitJobWithLease(w, r, tenantId, parentJobId, leaseId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SubmitRestartJobWithLease operation middleware
+func (siw *ServerInterfaceWrapper) SubmitRestartJobWithLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "parentJobId" -------------
+	var parentJobId ParentJobId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "parentJobId", chi.URLParam(r, "parentJobId"), &parentJobId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "parentJobId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "leaseId" -------------
+	var leaseId LeaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "leaseId", chi.URLParam(r, "leaseId"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "leaseId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params SubmitRestartJobWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-JobDB-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-JobDB-Lease-Token")]; found {
+		var XJobDBLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-JobDB-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-JobDB-Lease-Token", valueList[0], &XJobDBLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-JobDB-Lease-Token", Err: err})
+			return
+		}
+
+		params.XJobDBLeaseToken = XJobDBLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-JobDB-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-JobDB-Lease-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SubmitRestartJobWithLease(w, r, tenantId, parentJobId, leaseId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutJobWithLease operation middleware
+func (siw *ServerInterfaceWrapper) PutJobWithLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "parentJobId" -------------
+	var parentJobId ParentJobId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "parentJobId", chi.URLParam(r, "parentJobId"), &parentJobId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "parentJobId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "leaseId" -------------
+	var leaseId LeaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "leaseId", chi.URLParam(r, "leaseId"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "leaseId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "childJobId" -------------
+	var childJobId ChildJobId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "childJobId", chi.URLParam(r, "childJobId"), &childJobId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "childJobId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PutJobWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-JobDB-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-JobDB-Lease-Token")]; found {
+		var XJobDBLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-JobDB-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-JobDB-Lease-Token", valueList[0], &XJobDBLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-JobDB-Lease-Token", Err: err})
+			return
+		}
+
+		params.XJobDBLeaseToken = XJobDBLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-JobDB-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-JobDB-Lease-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutJobWithLease(w, r, tenantId, parentJobId, leaseId, childJobId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PutRestartJobWithLease operation middleware
+func (siw *ServerInterfaceWrapper) PutRestartJobWithLease(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", chi.URLParam(r, "tenantId"), &tenantId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenantId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "parentJobId" -------------
+	var parentJobId ParentJobId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "parentJobId", chi.URLParam(r, "parentJobId"), &parentJobId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "parentJobId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "leaseId" -------------
+	var leaseId LeaseId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "leaseId", chi.URLParam(r, "leaseId"), &leaseId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "leaseId", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "childJobId" -------------
+	var childJobId ChildJobId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "childJobId", chi.URLParam(r, "childJobId"), &childJobId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "childJobId", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PutRestartJobWithLeaseParams
+
+	headers := r.Header
+
+	// ------------- Required header parameter "X-JobDB-Lease-Token" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-JobDB-Lease-Token")]; found {
+		var XJobDBLeaseToken LeaseTokenHeader
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-JobDB-Lease-Token", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-JobDB-Lease-Token", valueList[0], &XJobDBLeaseToken, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: true})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-JobDB-Lease-Token", Err: err})
+			return
+		}
+
+		params.XJobDBLeaseToken = XJobDBLeaseToken
+
+	} else {
+		err := fmt.Errorf("Header parameter X-JobDB-Lease-Token is required, but not found")
+		siw.ErrorHandlerFunc(w, r, &RequiredHeaderError{ParamName: "X-JobDB-Lease-Token", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PutRestartJobWithLease(w, r, tenantId, parentJobId, leaseId, childJobId, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListSchedules operation middleware
 func (siw *ServerInterfaceWrapper) ListSchedules(w http.ResponseWriter, r *http.Request) {
 
@@ -7599,6 +8728,18 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Put(options.BaseURL+"/v1/tenants/{tenantId}/jobs/{jobId}/restart", wrapper.PutRestartJob)
 	})
 	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs", wrapper.SubmitJobWithLease)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/restarts", wrapper.SubmitRestartJobWithLease)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}", wrapper.PutJobWithLease)
+	})
+	r.Group(func(r chi.Router) {
+		r.Put(options.BaseURL+"/v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}/restart", wrapper.PutRestartJobWithLease)
+	})
+	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/v1/tenants/{tenantId}/schedules/query", wrapper.ListSchedules)
 	})
 	r.Group(func(r chi.Router) {
@@ -8005,6 +9146,110 @@ func (response PutRestartJob409JSONResponse) VisitPutRestartJobResponse(w http.R
 	return json.NewEncoder(w).Encode(response)
 }
 
+type SubmitJobWithLeaseRequestObject struct {
+	TenantId    TenantId    `json:"tenantId"`
+	ParentJobId ParentJobId `json:"parentJobId"`
+	LeaseId     LeaseId     `json:"leaseId"`
+	Params      SubmitJobWithLeaseParams
+	Body        *SubmitJobWithLeaseJSONRequestBody
+}
+
+type SubmitJobWithLeaseResponseObject interface {
+	VisitSubmitJobWithLeaseResponse(w http.ResponseWriter) error
+}
+
+type SubmitJobWithLease200JSONResponse JobHandle
+
+func (response SubmitJobWithLease200JSONResponse) VisitSubmitJobWithLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SubmitRestartJobWithLeaseRequestObject struct {
+	TenantId    TenantId    `json:"tenantId"`
+	ParentJobId ParentJobId `json:"parentJobId"`
+	LeaseId     LeaseId     `json:"leaseId"`
+	Params      SubmitRestartJobWithLeaseParams
+	Body        *SubmitRestartJobWithLeaseJSONRequestBody
+}
+
+type SubmitRestartJobWithLeaseResponseObject interface {
+	VisitSubmitRestartJobWithLeaseResponse(w http.ResponseWriter) error
+}
+
+type SubmitRestartJobWithLease200JSONResponse JobHandle
+
+func (response SubmitRestartJobWithLease200JSONResponse) VisitSubmitRestartJobWithLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PutJobWithLeaseRequestObject struct {
+	TenantId    TenantId    `json:"tenantId"`
+	ParentJobId ParentJobId `json:"parentJobId"`
+	LeaseId     LeaseId     `json:"leaseId"`
+	ChildJobId  ChildJobId  `json:"childJobId"`
+	Params      PutJobWithLeaseParams
+	Body        *PutJobWithLeaseJSONRequestBody
+}
+
+type PutJobWithLeaseResponseObject interface {
+	VisitPutJobWithLeaseResponse(w http.ResponseWriter) error
+}
+
+type PutJobWithLease200JSONResponse JobHandle
+
+func (response PutJobWithLease200JSONResponse) VisitPutJobWithLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PutJobWithLease409JSONResponse ErrorResponse
+
+func (response PutJobWithLease409JSONResponse) VisitPutJobWithLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PutRestartJobWithLeaseRequestObject struct {
+	TenantId    TenantId    `json:"tenantId"`
+	ParentJobId ParentJobId `json:"parentJobId"`
+	LeaseId     LeaseId     `json:"leaseId"`
+	ChildJobId  ChildJobId  `json:"childJobId"`
+	Params      PutRestartJobWithLeaseParams
+	Body        *PutRestartJobWithLeaseJSONRequestBody
+}
+
+type PutRestartJobWithLeaseResponseObject interface {
+	VisitPutRestartJobWithLeaseResponse(w http.ResponseWriter) error
+}
+
+type PutRestartJobWithLease200JSONResponse JobHandle
+
+func (response PutRestartJobWithLease200JSONResponse) VisitPutRestartJobWithLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type PutRestartJobWithLease409JSONResponse ErrorResponse
+
+func (response PutRestartJobWithLease409JSONResponse) VisitPutRestartJobWithLeaseResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListSchedulesRequestObject struct {
 	TenantId TenantId `json:"tenantId"`
 	Body     *ListSchedulesJSONRequestBody
@@ -8297,6 +9542,18 @@ type StrictServerInterface interface {
 	// Submit restart job with explicit job ID
 	// (PUT /v1/tenants/{tenantId}/jobs/{jobId}/restart)
 	PutRestartJob(ctx context.Context, request PutRestartJobRequestObject) (PutRestartJobResponseObject, error)
+	// Submit child job with lease
+	// (POST /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs)
+	SubmitJobWithLease(ctx context.Context, request SubmitJobWithLeaseRequestObject) (SubmitJobWithLeaseResponseObject, error)
+	// Submit child restart job with lease
+	// (POST /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/restarts)
+	SubmitRestartJobWithLease(ctx context.Context, request SubmitRestartJobWithLeaseRequestObject) (SubmitRestartJobWithLeaseResponseObject, error)
+	// Submit child job with explicit job ID and lease
+	// (PUT /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId})
+	PutJobWithLease(ctx context.Context, request PutJobWithLeaseRequestObject) (PutJobWithLeaseResponseObject, error)
+	// Submit child restart job with explicit job ID and lease
+	// (PUT /v1/tenants/{tenantId}/jobs/{parentJobId}/leases/{leaseId}/jobs/{childJobId}/restart)
+	PutRestartJobWithLease(ctx context.Context, request PutRestartJobWithLeaseRequestObject) (PutRestartJobWithLeaseResponseObject, error)
 	// List schedules
 	// (POST /v1/tenants/{tenantId}/schedules/query)
 	ListSchedules(ctx context.Context, request ListSchedulesRequestObject) (ListSchedulesResponseObject, error)
@@ -8907,6 +10164,152 @@ func (sh *strictHandler) PutRestartJob(w http.ResponseWriter, r *http.Request, t
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(PutRestartJobResponseObject); ok {
 		if err := validResponse.VisitPutRestartJobResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SubmitJobWithLease operation middleware
+func (sh *strictHandler) SubmitJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params SubmitJobWithLeaseParams) {
+	var request SubmitJobWithLeaseRequestObject
+
+	request.TenantId = tenantId
+	request.ParentJobId = parentJobId
+	request.LeaseId = leaseId
+	request.Params = params
+
+	var body SubmitJobWithLeaseJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SubmitJobWithLease(ctx, request.(SubmitJobWithLeaseRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SubmitJobWithLease")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SubmitJobWithLeaseResponseObject); ok {
+		if err := validResponse.VisitSubmitJobWithLeaseResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SubmitRestartJobWithLease operation middleware
+func (sh *strictHandler) SubmitRestartJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, params SubmitRestartJobWithLeaseParams) {
+	var request SubmitRestartJobWithLeaseRequestObject
+
+	request.TenantId = tenantId
+	request.ParentJobId = parentJobId
+	request.LeaseId = leaseId
+	request.Params = params
+
+	var body SubmitRestartJobWithLeaseJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SubmitRestartJobWithLease(ctx, request.(SubmitRestartJobWithLeaseRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SubmitRestartJobWithLease")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SubmitRestartJobWithLeaseResponseObject); ok {
+		if err := validResponse.VisitSubmitRestartJobWithLeaseResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutJobWithLease operation middleware
+func (sh *strictHandler) PutJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params PutJobWithLeaseParams) {
+	var request PutJobWithLeaseRequestObject
+
+	request.TenantId = tenantId
+	request.ParentJobId = parentJobId
+	request.LeaseId = leaseId
+	request.ChildJobId = childJobId
+	request.Params = params
+
+	var body PutJobWithLeaseJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutJobWithLease(ctx, request.(PutJobWithLeaseRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutJobWithLease")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutJobWithLeaseResponseObject); ok {
+		if err := validResponse.VisitPutJobWithLeaseResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PutRestartJobWithLease operation middleware
+func (sh *strictHandler) PutRestartJobWithLease(w http.ResponseWriter, r *http.Request, tenantId TenantId, parentJobId ParentJobId, leaseId LeaseId, childJobId ChildJobId, params PutRestartJobWithLeaseParams) {
+	var request PutRestartJobWithLeaseRequestObject
+
+	request.TenantId = tenantId
+	request.ParentJobId = parentJobId
+	request.LeaseId = leaseId
+	request.ChildJobId = childJobId
+	request.Params = params
+
+	var body PutRestartJobWithLeaseJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PutRestartJobWithLease(ctx, request.(PutRestartJobWithLeaseRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PutRestartJobWithLease")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PutRestartJobWithLeaseResponseObject); ok {
+		if err := validResponse.VisitPutRestartJobWithLeaseResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

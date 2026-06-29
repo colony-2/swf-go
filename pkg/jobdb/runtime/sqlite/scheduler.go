@@ -12,7 +12,7 @@ import (
 )
 
 const jobColumns = `
-tenant_id, job_id, job_type, next_need, payload, metadata, wait_for,
+tenant_id, job_id, job_type, next_need, payload, metadata, parent_job_id, wait_for,
 available_at_ns, created_at_ns, updated_at_ns, archived_at_ns,
 cancel_requested, completion_status, completion_detail,
 lease_id, lease_worker_id, lease_expires_at_ns, alternate_need, alternate_at_ns
@@ -25,6 +25,7 @@ type jobRow struct {
 	nextNeed         string
 	payload          []byte
 	metadata         json.RawMessage
+	parentJobID      sql.NullString
 	waitForRaw       []byte
 	availableAtNS    int64
 	createdAtNS      int64
@@ -53,6 +54,7 @@ func scanJobRow(scanner interface{ Scan(dest ...any) error }) (jobRow, error) {
 		&row.nextNeed,
 		&payload,
 		&metadata,
+		&row.parentJobID,
 		&waitFor,
 		&row.availableAtNS,
 		&row.createdAtNS,
@@ -108,15 +110,16 @@ func (r *Runtime) insertJobRecord(ctx context.Context, jobKey jobdb.JobKey, jobT
 	}
 	_, err = r.db.ExecContext(ctx, `
 INSERT INTO jobdb_jobs (
-	tenant_id, job_id, job_type, next_need, payload, metadata, wait_for,
+	tenant_id, job_id, job_type, next_need, payload, metadata, parent_job_id, wait_for,
 	available_at_ns, created_at_ns, updated_at_ns
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		jobKey.TenantId,
 		jobKey.JobId,
 		jobType,
 		jobType,
 		payloadBytes,
 		cloneJSON(metadata),
+		parentJobIDFromMetadata(metadata),
 		waitBytes,
 		timeToNS(leaseableAt),
 		timeToNS(now),
@@ -126,6 +129,14 @@ INSERT INTO jobdb_jobs (
 		return fmt.Errorf("sqlite runtime: insert job: %w", err)
 	}
 	return nil
+}
+
+func parentJobIDFromMetadata(metadata json.RawMessage) any {
+	parentJobID, ok, err := jobdb.ExtractParentJobID(metadata)
+	if err != nil || !ok {
+		return nil
+	}
+	return parentJobID
 }
 
 func (r *Runtime) ensureSubmittedJobRecord(ctx context.Context, jobKey jobdb.JobKey, jobType string, metadata json.RawMessage, waitFor []string, payload jobPayload, workerID string, availableAt *time.Time) error {

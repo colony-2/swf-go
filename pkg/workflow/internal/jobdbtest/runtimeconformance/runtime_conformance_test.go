@@ -176,6 +176,163 @@ func TestWorkflowRuntimeLifecycleAcrossBuiltInRuntimes(t *testing.T) {
 	}
 }
 
+func TestExecutionLeaseSubmitJobTracksParentAcrossBuiltInRuntimes(t *testing.T) {
+	for _, harness := range jobdbtest.BuiltInRuntimeHarnesses() {
+		harness := harness
+		t.Run(harness.Name, func(t *testing.T) {
+			if !harness.SupportsLeases {
+				t.Skip("runtime does not support leases")
+			}
+			built := harness.New(t)
+			defer built.Shutdown(t)
+			assertExecutionLeaseSubmitJobTracksParent(t, built)
+		})
+	}
+}
+
+func assertExecutionLeaseSubmitJobTracksParent(t *testing.T, built *jobdbtest.BuiltRuntimeHarness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	const parentType = "parent-tracking-parent"
+	parent, err := built.Runtime.SubmitJob(ctx, jobdb.SubmitJobRequest{
+		Job: jobdb.SubmitJob{
+			TenantId: built.WorkerTenantID,
+			JobID:    "parent-tracking-root",
+			JobType:  parentType,
+			Data:     jobdbtest.NumberTaskData(1),
+		},
+		RequestTime: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("submit parent job: %v", err)
+	}
+
+	lease, err := built.Runtime.GetJobLease(ctx, jobdb.GetJobLeaseRequest{
+		JobKey:        parent.JobKey,
+		WorkerID:      "parent-tracking-worker",
+		Capabilities:  []string{parentType},
+		LeaseDuration: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("get parent lease: %v", err)
+	}
+	if lease == nil {
+		t.Fatal("expected parent lease")
+	}
+
+	child, err := lease.SubmitJob(ctx, jobdb.SubmitJobRequest{
+		Job: jobdb.SubmitJob{
+			JobID:   "parent-tracking-child",
+			JobType: "parent-tracking-child-type",
+			Data:    jobdbtest.NumberTaskData(2),
+		},
+		RequestTime: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("submit child job through lease: %v", err)
+	}
+	if child.JobKey.TenantId != parent.JobKey.TenantId {
+		t.Fatalf("child tenant = %q, want %q", child.JobKey.TenantId, parent.JobKey.TenantId)
+	}
+
+	const restartSourceType = "parent-tracking-restart-source"
+	restartSource, err := built.Runtime.SubmitJob(ctx, jobdb.SubmitJobRequest{
+		Job: jobdb.SubmitJob{
+			TenantId: built.WorkerTenantID,
+			JobID:    "parent-tracking-restart-source",
+			JobType:  restartSourceType,
+			Data:     jobdbtest.NumberTaskData(3),
+		},
+		RequestTime: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("submit restart source job: %v", err)
+	}
+	restartSourceLease, err := built.Runtime.GetJobLease(ctx, jobdb.GetJobLeaseRequest{
+		JobKey:        restartSource.JobKey,
+		WorkerID:      "parent-tracking-source-worker",
+		Capabilities:  []string{restartSourceType},
+		LeaseDuration: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("get restart source lease: %v", err)
+	}
+	if restartSourceLease == nil {
+		t.Fatal("expected restart source lease")
+	}
+	completeLeaseForTest(t, ctx, restartSourceLease, 1)
+
+	restartChild, err := lease.SubmitRestartJob(ctx, jobdb.SubmitRestartJobRequest{
+		Job: jobdb.SubmitRestartJob{
+			JobID:          "parent-tracking-restart-child",
+			PriorJobKey:    restartSource.JobKey,
+			LastStepToKeep: 0,
+		},
+		RequestTime: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("submit child restart job through lease: %v", err)
+	}
+	if restartChild.JobKey.TenantId != parent.JobKey.TenantId {
+		t.Fatalf("restart child tenant = %q, want %q", restartChild.JobKey.TenantId, parent.JobKey.TenantId)
+	}
+
+	children, err := built.Runtime.ListJobs(ctx, jobdb.ListJobsRequest{
+		TenantIds:    []string{parent.JobKey.TenantId},
+		JobKeys:      []jobdb.JobKey{parent.JobKey, child.JobKey, restartChild.JobKey},
+		ParentJobIDs: []string{parent.JobKey.JobId},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("list child jobs by parent: %v", err)
+	}
+	if len(children.Jobs) != 2 {
+		t.Fatalf("listed children = %d, want 2", len(children.Jobs))
+	}
+	listedChildren := make(map[jobdb.JobKey]jobdb.JobSummary, len(children.Jobs))
+	for _, childSummary := range children.Jobs {
+		listedChildren[childSummary.JobKey] = childSummary
+		if childSummary.ParentJobID != parent.JobKey.JobId {
+			t.Fatalf("listed child parent = %q, want %q", childSummary.ParentJobID, parent.JobKey.JobId)
+		}
+	}
+	if _, ok := listedChildren[child.JobKey]; !ok {
+		t.Fatalf("submitted child %+v not listed in %+v", child.JobKey, children.Jobs)
+	}
+	if _, ok := listedChildren[restartChild.JobKey]; !ok {
+		t.Fatalf("submitted restart child %+v not listed in %+v", restartChild.JobKey, children.Jobs)
+	}
+
+	roots, err := built.Runtime.ListJobs(ctx, jobdb.ListJobsRequest{
+		TenantIds: []string{parent.JobKey.TenantId},
+		JobKeys:   []jobdb.JobKey{parent.JobKey, child.JobKey, restartChild.JobKey},
+		RootOnly:  true,
+		PageSize:  10,
+	})
+	if err != nil {
+		t.Fatalf("list root jobs: %v", err)
+	}
+	if len(roots.Jobs) != 1 {
+		t.Fatalf("listed roots = %d, want 1", len(roots.Jobs))
+	}
+	if roots.Jobs[0].JobKey != parent.JobKey {
+		t.Fatalf("listed root key = %+v, want %+v", roots.Jobs[0].JobKey, parent.JobKey)
+	}
+	if roots.Jobs[0].ParentJobID != "" {
+		t.Fatalf("root parent = %q, want empty", roots.Jobs[0].ParentJobID)
+	}
+
+	if _, err := built.Runtime.ListJobs(ctx, jobdb.ListJobsRequest{
+		TenantIds:    []string{parent.JobKey.TenantId},
+		ParentJobIDs: []string{parent.JobKey.JobId},
+		RootOnly:     true,
+	}); err == nil {
+		t.Fatal("expected list error when RootOnly and ParentJobIDs are combined")
+	}
+}
+
 func TestWorkflowRuntimeChapterAndArtifactRoundTripAcrossBuiltInRuntimes(t *testing.T) {
 	for _, harness := range jobdbtest.BuiltInRuntimeHarnesses() {
 		harness := harness
